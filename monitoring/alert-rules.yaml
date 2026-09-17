@@ -1,0 +1,95 @@
+---
+# The symptoms the correlation engine reasons over.
+#
+# CONTRACT: every rule must set a `service` label whose value is a service name
+# in correlation-engine/dependency_graph.py, and every `alert:` name must appear
+# in a signature in correlation-engine/signatures.py. Break either and the
+# engine cannot place the alert in the dependency chain.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: autosre-symptoms
+  namespace: autosre
+  labels:
+    app.kubernetes.io/part-of: autosre
+spec:
+  groups:
+    - name: autosre.symptoms
+      rules:
+        # The app metrics already carry a `service` label, so it passes through
+        # the `sum by (service, ...)` aggregation untouched.
+        - alert: APILatencyHigh
+          expr: >-
+            histogram_quantile(0.95,
+              sum by (service, le) (
+                rate(http_request_duration_seconds_bucket{service="api-gateway"}[5m])
+              )
+            ) > 0.5
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "p95 latency above 500ms on {{ $labels.service }}"
+
+        - alert: ErrorRateHigh
+          expr: >-
+            sum by (service) (rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            sum by (service) (rate(http_requests_total[5m]))
+            > 0.05
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "5xx error ratio above 5% on {{ $labels.service }}"
+
+        # The deciding symptom for db_connection_pool_exhaustion. The pool gauges
+        # are exported by transaction-service, since the pool is client-side.
+        - alert: DBPoolNearExhaustion
+          expr: >-
+            db_connection_pool_active / db_connection_pool_max > 0.9
+          for: 30s
+          labels:
+            severity: critical
+          annotations:
+            summary: "connection pool above 90% utilisation on {{ $labels.service }}"
+
+        - alert: DBDiskNearFull
+          expr: db_disk_usage_ratio > 0.9
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "data volume above 90% full on {{ $labels.service }}"
+
+        # kube-state-metrics labels this by `container`, not `service`, so the
+        # label is synthesised here. This only works because every container is
+        # named after its service - see the comment in the k8s/ manifests.
+        - alert: PodRestartsHigh
+          expr: >-
+            sum by (container) (
+              increase(kube_pod_container_status_restarts_total{namespace="autosre"}[5m])
+            ) > 2
+          for: 0m
+          labels:
+            severity: warning
+            service: "{{ $labels.container }}"
+          annotations:
+            summary: "{{ $labels.container }} restarted more than twice in 5 minutes"
+
+        - alert: ContainerMemoryHigh
+          expr: >-
+            sum by (container) (
+              container_memory_working_set_bytes{namespace="autosre", container!=""}
+            )
+            /
+            sum by (container) (
+              kube_pod_container_resource_limits{namespace="autosre", resource="memory"}
+            )
+            > 0.9
+          for: 1m
+          labels:
+            severity: warning
+            service: "{{ $labels.container }}"
+          annotations:
+            summary: "{{ $labels.container }} is above 90% of its memory limit"

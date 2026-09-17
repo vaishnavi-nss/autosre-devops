@@ -1,0 +1,11 @@
+---
+# Install with:  ansible-galaxy collection install -r requirements.yml
+collections:
+  # Kubernetes modules (k8s, k8s_scale, k8s_info, k8s_exec) used by the playbooks.
+  # Also needs the Python client:  pip install kubernetes
+  - name: kubernetes.core
+    version: ">=3.0.0"
+
+  # Event-Driven Ansible. Free and open source; the paid "EDA Controller" UI is
+  # not needed. Optional - the custom dispatcher comes first (brief section 7).
+  - name: ansible.eda

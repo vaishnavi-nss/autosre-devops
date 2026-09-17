@@ -1,0 +1,75 @@
+---
+# Helm values for kube-prometheus-stack.
+#
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring --create-namespace \
+#     -f monitoring/kube-prometheus-stack-values.yaml
+
+prometheus:
+  prometheusSpec:
+    # Without these three, Prometheus only discovers ServiceMonitors, PodMonitors
+    # and PrometheusRules that carry the chart's own `release` label. Ours do not,
+    # so they would be silently ignored and nothing would ever scrape or alert.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+
+    # Keep the footprint small - minikube on a 16 GB laptop.
+    retention: 6h
+    resources:
+      requests:
+        cpu: 100m
+        memory: 400Mi
+      limits:
+        memory: 1Gi
+
+alertmanager:
+  config:
+    route:
+      receiver: "null"
+      # Step 1 of the correlation algorithm (brief section 5) is handled right
+      # here: Alertmanager buckets alerts that arrive close together, so the
+      # correlation engine receives ONE incident containing many symptoms
+      # instead of one webhook per symptom. Do not re-implement grouping in the
+      # engine unless this config changes.
+      group_by: ["namespace"]
+      group_wait: 30s
+      group_interval: 1m
+      repeat_interval: 1h
+      routes:
+        - receiver: autosre-correlation
+          matchers:
+            - namespace = "autosre"
+          continue: false
+
+    receivers:
+      - name: "null"
+      - name: autosre-correlation
+        webhook_configs:
+          - url: http://correlation-engine.autosre.svc.cluster.local:8000/alerts
+            send_resolved: true
+
+grafana:
+  # The admin password is generated into a Secret rather than committed here.
+  # Read it with:
+  #   kubectl -n monitoring get secret monitoring-grafana \
+  #     -o jsonpath="{.data.admin-password}" | base64 -d
+  defaultDashboardsTimezone: browser
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+# kube-state-metrics supplies kube_pod_container_status_restarts_total, which is
+# what the PodRestartsHigh symptom is built on.
+kubeStateMetrics:
+  enabled: true
+nodeExporter:
+  enabled: true

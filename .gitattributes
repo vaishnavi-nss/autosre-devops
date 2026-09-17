@@ -1,0 +1,9 @@
+# Force LF everywhere. Files edited on Windows otherwise pick up CRLF, and shell
+# scripts then fail inside WSL with "/bin/bash^M: bad interpreter".
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
