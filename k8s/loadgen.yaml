@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: autosre
+  labels:
+    app: loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loadgen
+  template:
+    metadata:
+      labels:
+        app: loadgen
+    spec:
+      containers:
+      - name: curl-loop
+        image: curlimages/curl:8.5.0
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            while true; do
+              curl -s -o /dev/null http://frontend.autosre.svc.cluster.local:8000/
+              sleep 0.2
+            done
+        resources:
+          limits:
+            cpu: 100m
+            memory: 64Mi
+          requests:
+            cpu: 20m
+            memory: 32Mi
