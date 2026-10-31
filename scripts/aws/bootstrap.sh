@@ -33,6 +33,8 @@ exec > >(tee -a "$LOG") 2>&1
 
 say()  { echo; echo "=== [$(date -u +%H:%M:%S)] $*"; }
 as_ubuntu() { sudo -u ubuntu -H -g docker bash -c "$*"; }
+# Network-dependent steps fail transiently; one blip should not cost a whole run.
+retry() { local n; for n in 1 2 3; do "$@" && return 0; echo "retry $n/3: $*"; sleep 10; done; return 1; }
 
 publish() {
   aws s3 cp "$LOG" "s3://$BUCKET/progress/bootstrap.log" --only-show-errors || true
@@ -48,7 +50,7 @@ diagnostics() {
   free -m || true
 }
 
-trap 'rc=$?; say "FAILED (exit $rc) at line $LINENO"; diagnostics; echo FAILED > "$RESULTS/STATUS"; publish; exit $rc' ERR
+trap 'rc=$?; say "FAILED (exit $rc) at line $LINENO"; diagnostics; echo FAILED > "$RESULTS/STATUS"; sleep 3; publish; exit $rc' ERR
 
 ( while true; do sleep 60; publish; done ) &
 echo RUNNING > "$RESULTS/STATUS"
@@ -92,7 +94,7 @@ say "build the service images inside minikube"
 as_ubuntu "cd $REPO && ./scripts/build-images.sh"
 
 say "monitoring stack (kube-prometheus-stack)"
-as_ubuntu "helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && helm repo update"
+retry as_ubuntu "helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && helm repo update"
 as_ubuntu "cd $REPO && helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
   --namespace monitoring --create-namespace \
   -f monitoring/kube-prometheus-stack-values.yaml -f monitoring/validation-values.yaml \
