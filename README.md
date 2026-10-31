@@ -120,6 +120,7 @@ services/              the four chain services, each a small FastAPI app
   transaction-service/ → database, owns the connection-pool gauges
   database/            mock DB, deepest in the chain
 correlation-engine/    Alertmanager webhook + the correlation algorithm
+second-opinion/        metric scorer that checks the engine's diagnosis (optional, shadow mode by default)
   dependency_graph.py  the chain, ordered deepest-first
   signatures.py        symptom signature per root cause
   correlate.py         algorithm steps 2–5

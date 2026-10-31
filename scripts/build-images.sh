@@ -32,6 +32,9 @@ done
 echo "==> building autosre/correlation-engine:dev"
 build autosre/correlation-engine:dev correlation-engine
 
+echo "==> building autosre/second-opinion:dev"
+build autosre/second-opinion:dev second-opinion
+
 echo "==> done"
 # The listing is cosmetic; the builds above already succeeded, so never fail on it.
 docker images --filter=reference='autosre/*' --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}' \

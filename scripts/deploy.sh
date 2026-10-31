@@ -12,7 +12,7 @@ echo "==> services"
 kubectl apply -f k8s/
 
 echo "==> waiting for rollouts"
-for svc in database transaction-service api-gateway frontend correlation-engine; do
+for svc in database transaction-service api-gateway frontend correlation-engine second-opinion; do
   kubectl -n autosre rollout status "deployment/${svc}" --timeout=120s
 done
 

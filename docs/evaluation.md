@@ -424,6 +424,69 @@ Tables: [`rcaeval-re2-results.md`](rcaeval-re2-results.md) (metrics) and
 - **Remaining confusions are physical overlaps.** Memory stress is called disk 15 times in 45
   (it drives I/O), delay and loss swap 8-12 times, and CPU and socket swap 7-11 times.
 
+## Second opinion from raw metrics
+
+The rule engine reasons over alert *names*. A second service, `second-opinion/`, looks at the
+metrics underneath them and says whether it agrees on where the fault is. It is wired in as
+a check on the rules' decision, not as a second decision-maker.
+
+**How it works.** After the rules name a cause, the engine POSTs `{root_cause, service,
+incident_start}` to the scorer. The scorer pulls the incident window from Prometheus (cpu,
+memory, p95 latency, 5xx ratio, request rate for each of the four services), scores each
+service against its own earlier behaviour, and a model trained on RCAEval RE1 names the most
+likely faulty service and fault type. The verdict is `agree`, `disagree` or `no_opinion`.
+
+**Why a separate service.** scikit-learn does not fit in the engine's 128 Mi limit, and a
+separate read-only service keeps the engine pure and lets the scorer fail without taking the
+decision path down. The engine calls it with a short timeout and treats any failure as
+`unavailable`: a dead, slow or confused scorer never blocks an incident.
+
+**Modes** (`SECOND_OPINION_MODE` on the engine; the URL being unset turns it off):
+
+| mode | effect |
+|---|---|
+| `shadow` (default) | the verdict is added to the webhook response and counted in `second_opinion_verdicts_total`; the decision is unchanged |
+| `gate` | on `disagree` the engine withholds the action and escalates (`status: vetoed`, counted in `vetoed_incidents_total`); `agree`, `no_opinion` and `unavailable` all proceed |
+
+**What it can and cannot confirm.** The model's fault vocabulary is RCAEval's (cpu, mem, disk
+I/O, delay, loss), which does not match ours:
+
+- `high_memory_usage` is checked on service **and** fault type (`mem`, which the model gets
+  99% right on held-out systems).
+- `db_disk_full` and `db_connection_pool_exhaustion` have no matching fault type, so only the
+  **service** is compared. That is still independent evidence, since it uses raw metrics
+  rather than the alerts, but a weaker check. The scorer cannot see disk usage or pool
+  gauges at all.
+
+**How good is the model?** It is trained on RE1 only, because RE1 has exactly the five
+signals our cluster exposes, and without features that depend on how many services a system
+has (RCAEval's have 12-100+, ours has four). Leave-one-system-out on 373 cases:
+
+| | service top-1 | fault right | both right |
+|---|---:|---:|---:|
+| all services present | 90.9% | 66.8% | 61.4% |
+| cut down to four services | 95.4% | 71.0% | 68.4% |
+
+Naming the *service* is the strong part, which is what the check mostly relies on.
+
+**What is not validated.** This is a transfer from three open-source demo systems to ours,
+and none of the following has been run:
+
+- The scorer has never been run against our cluster; the Prometheus queries, the
+  `container`/`service` label assumptions and the `second-opinion` image have only been tested
+  against fakes (13 service tests, 8 engine tests; five deliberately broken variants were all
+  caught). Docker was not available where this was built.
+- Our faults are staged by chaos endpoints in a 15-second-scrape setup, unlike RCAEval's
+  1-second data, and the incident-start estimate is "earliest alert minus two minutes".
+- Whether it *helps* is unknown. That is why `shadow` is the default.
+
+**To validate it,** deploy it in `shadow` mode, rerun the live validation
+(`docs/aws-validation.md`), and compare each trial's verdict with its known label. Count how
+often it agrees on correct diagnoses and how often it would have caught a wrong one; only
+then consider `gate`. `vetoed_incidents_total` is not yet charted: the dashboard's
+"Escalated to a human" panel counts only unmatched incidents, so it would undercount vetoes
+in gate mode.
+
 ## Appendix: full output
 
 Regenerate with the commands under "How it was measured". Seed 7, 5000 incidents each.

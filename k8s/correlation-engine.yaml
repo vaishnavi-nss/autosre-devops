@@ -32,6 +32,13 @@ spec:
           env:
             - name: SERVICE_NAME
               value: correlation-engine
+            # Second opinion from raw metrics. "shadow" only annotates and counts; switch
+            # to "gate" to have the engine escalate when the metrics disagree. If the
+            # scorer is absent or slow the engine carries on as if it had not asked.
+            - name: SECOND_OPINION_URL
+              value: http://second-opinion.autosre.svc.cluster.local:8000
+            - name: SECOND_OPINION_MODE
+              value: shadow
           resources:
             # Deliberately low so symptoms can be triggered on demand (brief section 4).
             requests:

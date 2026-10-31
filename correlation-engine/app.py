@@ -14,12 +14,19 @@ Endpoints:
     GET  /ready            readiness probe
     GET  /metrics          Prometheus metrics
 
+Second opinion (optional): set SECOND_OPINION_URL and each diagnosis is checked against the
+raw metrics by the second-opinion service. SECOND_OPINION_MODE=shadow (the default) only
+annotates the response and counts the verdicts; =gate also withholds the action - the
+incident escalates to a human - when the metrics disagree. A scorer that is down, slow or
+unsure never blocks anything.
+
 Evaluation capture: set CAPTURE_PATH to a file path and every incident received
 is appended to it as one JSON line, tagged with the current ground-truth label.
 Run a fault injection, PUT the label first, and the resulting file is a labelled
 dataset for evaluation/evaluate.py --replay. Off by default.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -28,11 +35,15 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
 
+import second_opinion
 from correlate import correlate, firing_only, why_unmatched
 from signatures import SIGNATURES
 
 SERVICE_NAME = os.getenv("SERVICE_NAME", "correlation-engine")
 CAPTURE_PATH = os.getenv("CAPTURE_PATH")  # unset = capture disabled
+SECOND_OPINION_URL = os.getenv("SECOND_OPINION_URL")          # unset = no second opinion
+SECOND_OPINION_MODE = os.getenv("SECOND_OPINION_MODE", "shadow")   # shadow | gate
+SECOND_OPINION_TIMEOUT = float(os.getenv("SECOND_OPINION_TIMEOUT", "4"))
 
 # Ground truth for incidents captured from now on. Module state on purpose: this
 # is experiment tooling for one operator, not part of the decision path.
@@ -62,6 +73,16 @@ root_causes_identified_total = Counter(
 unmatched_incidents_total = Counter(
     "unmatched_incidents_total",
     "Incidents with no matching signature - these escalate to a human.",
+    ["service"],
+)
+second_opinion_verdicts_total = Counter(
+    "second_opinion_verdicts_total",
+    "What the metric scorer said about each diagnosis: agree, disagree, no_opinion, unavailable.",
+    ["service", "verdict"],
+)
+vetoed_incidents_total = Counter(
+    "vetoed_incidents_total",
+    "Diagnoses withheld because the metric scorer disagreed (gate mode only); these escalate.",
     ["service"],
 )
 # Exported so Grafana can chart the confidence score, per brief section 4.
@@ -124,10 +145,46 @@ async def receive_alerts(payload: dict):
             "received_alerts": len(firing),
         }
 
+    opinion = None
+    if SECOND_OPINION_URL:
+        opinion = await _second_opinion(result, firing)
+        if SECOND_OPINION_MODE == "gate" and opinion["verdict"] == "disagree":
+            vetoed_incidents_total.labels(SERVICE_NAME).inc()
+            log.warning("second opinion disagrees, escalating: %s", opinion.get("reason"))
+            return {
+                "root_cause": None,
+                "confidence": None,
+                "status": "vetoed",
+                "action": "escalate_to_human",
+                "reason": f"the rules said {result['root_cause']} but the metrics disagree: "
+                          f"{opinion.get('reason')}",
+                "rule_root_cause": result["root_cause"],
+                "rule_confidence": result["confidence"],
+                "second_opinion": opinion,
+                "received_alerts": len(firing),
+            }
+
     root_causes_identified_total.labels(SERVICE_NAME, result["root_cause"]).inc()
     last_confidence.labels(SERVICE_NAME).set(result["confidence"])
     log.info("root cause: %s (%s)", result["root_cause"], result["explanation"])
-    return {"status": "correlated", "received_alerts": len(firing), **result}
+    response = {"status": "correlated", "received_alerts": len(firing), **result}
+    if opinion is not None:
+        response["second_opinion"] = opinion
+    return response
+
+
+async def _second_opinion(result: dict, firing: list) -> dict:
+    """Ask the metric scorer, off the event loop. Never raises: failures are `unavailable`."""
+    started = second_opinion.earliest_start(firing)
+    if started is None:
+        opinion = {"verdict": "unavailable", "reason": "alerts carry no start time"}
+    else:
+        opinion = await asyncio.to_thread(
+            second_opinion.ask, SECOND_OPINION_URL, result["root_cause"], result["service"],
+            started, SECOND_OPINION_TIMEOUT)
+    second_opinion_verdicts_total.labels(result["service"], opinion["verdict"]).inc()
+    log.info("second opinion on %s: %s (%s)", result["root_cause"], opinion["verdict"], opinion.get("reason"))
+    return opinion
 
 
 def _capture(payload: dict) -> None:
