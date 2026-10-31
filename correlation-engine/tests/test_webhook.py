@@ -39,6 +39,29 @@ def test_webhook_ignores_resolved_alerts(client, sample_payload):
     assert response.json()["received_alerts"] == 3
 
 
+def test_resolved_notifications_are_not_counted_as_incidents_or_escalations(client, sample_payload):
+    """Regression, found on a live cluster: the dashboard showed 48 "escalated to a human"
+    after a run with a handful of real escalations, because every "resolved" notification
+    Alertmanager sent was scored as an incident the engine failed to diagnose."""
+    from prometheus_client import REGISTRY
+
+    def value(name):
+        return REGISTRY.get_sample_value(name, {"service": "correlation-engine"}) or 0.0
+
+    before = {n: value(n) for n in
+              ("incidents_received_total", "unmatched_incidents_total", "resolved_notifications_total")}
+    for alert in sample_payload["alerts"]:
+        alert["status"] = "resolved"
+    sample_payload["status"] = "resolved"
+
+    body = client.post("/alerts", json=sample_payload).json()
+
+    assert body["status"] == "resolved" and body["action"] == "none"
+    assert value("incidents_received_total") == before["incidents_received_total"]
+    assert value("unmatched_incidents_total") == before["unmatched_incidents_total"]
+    assert value("resolved_notifications_total") == before["resolved_notifications_total"] + 1
+
+
 def test_unmatched_incident_escalates_to_a_human(client, sample_payload):
     # Drop the deciding symptom: what remains is consequences with no cause.
     sample_payload["alerts"] = [

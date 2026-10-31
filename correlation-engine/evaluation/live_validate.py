@@ -152,12 +152,15 @@ def wait_quiet(timeout: int = 600) -> bool:
 
 
 def reset_cluster() -> None:
-    """Replace the pods. This discards injected state AND flushes the rate windows.
+    """Replace the pods. This discards every injected fault (they live in process memory).
 
-    The alert rules use rate(...[5m]); after a fault ends the old samples keep the
-    ratio high for minutes. A replaced pod is a new time series, so the old one goes
-    stale and the alert clears in seconds. Rolling restarts keep a replica serving
-    throughout, so this does not itself cause errors.
+    It does NOT make the alerts clear quickly, which this was first assumed to do. The
+    rules use rate(...[5m]); a replaced pod's series goes stale, but its earlier samples
+    stay inside the 5-minute range, so APILatencyHigh and ErrorRateHigh keep firing for
+    up to ~5 minutes after a fault ends. Measured on a live cluster: about 8-9 minutes per
+    trial, mostly spent in wait_quiet(). That recovery lag is a property of the alert
+    design, not of this script. Rolling restarts keep a replica serving throughout, so
+    the restart does not itself cause errors.
     """
     kubectl("-n", NS, "rollout", "restart", *[f"deploy/{s}" for s in SERVICES])
     for service in SERVICES:

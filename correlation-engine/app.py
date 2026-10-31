@@ -45,7 +45,14 @@ logging.basicConfig(
 log = logging.getLogger("correlation-engine")
 
 incidents_received_total = Counter(
-    "incidents_received_total", "Alertmanager incident groups received.", ["service"]
+    "incidents_received_total",
+    "Alertmanager notifications that carried at least one FIRING alert.",
+    ["service"],
+)
+resolved_notifications_total = Counter(
+    "resolved_notifications_total",
+    "Alertmanager notifications with nothing firing (an incident ending, not starting).",
+    ["service"],
 )
 root_causes_identified_total = Counter(
     "root_causes_identified_total",
@@ -82,6 +89,16 @@ async def receive_alerts(payload: dict):
     """Receive one grouped incident from Alertmanager."""
     alerts = payload.get("alerts", [])
     firing = firing_only(alerts)
+
+    if not firing:
+        # When alerts clear, Alertmanager sends a "resolved" notification. That is the end
+        # of an incident, not an incident: counting it inflated `incidents_received_total`
+        # and, worse, `unmatched_incidents_total` - the dashboard's "escalated to a human"
+        # read 48 after a run that produced only a handful of real escalations.
+        resolved_notifications_total.labels(SERVICE_NAME).inc()
+        log.info("resolved notification (%d alert(s)); nothing to diagnose", len(alerts))
+        return {"status": "resolved", "action": "none", "received_alerts": 0}
+
     incidents_received_total.labels(SERVICE_NAME).inc()
 
     log.info(

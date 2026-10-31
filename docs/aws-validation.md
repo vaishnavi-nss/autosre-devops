@@ -65,7 +65,12 @@ PER_CAUSE=6 UNKNOWN=4 DEADLINE_MIN=150 bash /home/ubuntu/autosre/scripts/aws/boo
 ```
 
 `DEADLINE_MIN` stops *starting* new trials after that many minutes, so a run always ends
-cleanly inside the session. Budget roughly 7 minutes per trial.
+cleanly inside the session. Budget **8-9 minutes per trial**: detection takes 1-2 minutes, the
+fault is then held for 2, and the rest is waiting for the previous trial's alerts to clear.
+They clear slowly because the rules use `rate(...[5m])`, so `APILatencyHigh` and
+`ErrorRateHigh` keep firing for up to ~5 minutes after a fault ends (replacing the pods does
+not help: their old samples stay inside the 5-minute range). A 4-hour session therefore fits
+about 20 trials, not the 30+ the arithmetic suggests.
 
 > **Console gotcha:** when you change the AMI in the launch wizard, a *"Some of your
 > current settings will be changed"* dialog appears. Until you click **Confirm**, the page
@@ -114,6 +119,17 @@ reachable only from the IP in the security group.
 | Grafana UI intermittent, port-forward dropping | Grafana was OOM-killed (exit 137): the 256Mi limit is too small for ~30 dashboards | Limit raised to 768Mi |
 | Port-forward gone after the pod restarted | `kubectl port-forward` exits when its pod does | Run it in a restart loop |
 | Unhelpful *"Failed to fetch"* in Grafana | Same OOM crash-loop | As above |
+| Memory-injection trial errored with `exit code 137` | `kubectl exec` runs its client *inside the target container's memory cgroup*; with the held memory just under the 128Mi limit, the injector's own overhead pushed the pod over and it was OOM-killed | Inject through the API server's service proxy (`kubectl create --raw .../proxy/...`), which runs nothing in the pod; aim for 0.925 of the limit |
+| Trials slower than planned | `rate(...[5m])` keeps alerts firing ~5 minutes after a fault ends | Budget 8-9 minutes per trial |
+
+### Patching a run in flight
+
+Everything is reachable through Systems Manager, so a bug found mid-run can be fixed without
+restarting the cluster: upload a new tarball, pull it onto the instance, and start the
+orchestrator again with `--resume`. It keeps the completed trials, redoes errored ones, replaces
+every pod so no earlier fault lingers, and numbers new trials after the existing ones. Stop the
+old orchestrator *between* trials (right after a record lands in `results/trials.jsonl`), and
+use a `15[0]`-style regex in `pkill -f` so the pattern does not match its own command line.
 
 ## Cleaning up
 
