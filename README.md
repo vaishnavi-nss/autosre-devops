@@ -94,7 +94,7 @@ Rule-based and explainable, not machine learning.
 | 2 | **Dependency graph lookup** — map each alert's `service` label to the chain | `correlation-engine/dependency_graph.py` |
 | 3 | **Root cause ranking** — the deepest alerting service wins | `correlation-engine/correlate.py` |
 | 4 | **Symptom-signature matching** — which named cause fits these alerts | `correlation-engine/signatures.py` |
-| 5 | **Confidence score** — `matched / expected` symptoms | `correlation-engine/correlate.py` |
+| 5 | **Confidence score** — weighted share of expected symptoms seen | `correlation-engine/correlate.py` |
 
 > **The `service` label is the contract.** Every rule in `monitoring/alert-rules.yaml` sets
 > it, and every alert name there must appear in a signature. Break either and the engine
@@ -123,6 +123,7 @@ correlation-engine/    Alertmanager webhook + the correlation algorithm
   dependency_graph.py  the chain, ordered deepest-first
   signatures.py        symptom signature per root cause
   correlate.py         algorithm steps 2–5
+  evaluation/          incident simulator, metrics, evaluator, optional classifier
   tests/               pytest suite
 ansible/
   playbooks/           one playbook per root cause
@@ -175,12 +176,15 @@ Adapted from section 7 of the brief. Owners are for the team to assign.
 | 1 | **Base app** — build images, deploy to minikube, confirm the chain works | ⬜ | TBD |
 | 2 | **Metrics** — install kube-prometheus-stack, confirm scraping, build Grafana dashboards | ⬜ | TBD |
 | 3 | **Fault injection** — trigger each symptom, confirm Alertmanager fires | ⬜ | TBD |
-| 4 | **Correlation engine** — implement algorithm steps 2–5 in `correlate.py` | ⬜ | TBD |
+| 4 | **Correlation engine** — algorithm steps 2–5 in `correlate.py` | ✅ done, tested on simulated and fixture incidents; ⬜ live validation | ML |
 | 5 | **Remediation** — dispatcher that runs the mapped playbook; finish `clear_logs.yml` | ⬜ | TBD |
 | 6 | **End-to-end demo** — run the worked example live, show the dip and recovery | ⬜ | TBD |
 
-Step 0 left deliberate `TODO` markers in `correlation-engine/correlate.py` and
-`ansible/playbooks/clear_logs.yml`. Those are steps 4 and 5.
+The engine's accuracy, its failure modes and the decisions the team still has to make are
+written up in **[`docs/evaluation.md`](docs/evaluation.md)**. Every number there comes from
+**simulated** incidents; the same document has the procedure for capturing real ones.
+
+The one remaining `TODO` marker is in `ansible/playbooks/clear_logs.yml` (step 5).
 
 ## Deliverables
 
@@ -196,12 +200,19 @@ Step 0 left deliberate `TODO` markers in `correlation-engine/correlate.py` and
 
 ## Open questions for the team
 
-1. **The confidence score can't produce the brief's "91%".** With `matched / expected` over
-   4 expected symptoms you can only get 25%, 50%, 75% or 100%. Either weight the symptoms,
-   or use a number the formula can actually produce in the demo.
-2. **Service ownership** — three people, five components. Who owns what?
-3. **Licence** — none chosen yet.
-4. **AWS** — the brief rules out EKS because AWS Academy blocks IAM role creation, and
+1. **Fail safe or fall back?** When the deepest alerting service matches no known cause,
+   the engine escalates to a human instead of acting on a shallower match. That trades
+   about 5 points of automation for far fewer wrong playbooks *if* deeper faults occur at
+   all — a cost judgement the team should make deliberately. See `docs/evaluation.md`.
+2. **Two simultaneous causes.** When two causes' deciding symptoms fire together the engine
+   picks one by score, and this is where every wrong action in the evaluation came from.
+   Escalating instead is a one-line rule the evaluation recommends but cannot validate.
+3. **Confidence gate.** The score measures how complete the symptoms are, not whether the
+   diagnosis is right, so a gate of 0.75 removes few wrong actions. Don't present it as a
+   safety mechanism without that caveat.
+4. **Service ownership** — three people, five components. Who owns what?
+5. **Licence** — none chosen yet.
+6. **AWS** — the brief rules out EKS because AWS Academy blocks IAM role creation, and
    accounts are individual rather than shared. If any AWS is used, one member owns that
    environment.
 

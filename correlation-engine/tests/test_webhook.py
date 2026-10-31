@@ -25,9 +25,11 @@ def test_webhook_accepts_alertmanager_payload(client, sample_payload):
     assert response.status_code == 202
     body = response.json()
     assert body["received_alerts"] == 4
-    # Until build step 4 lands, every incident is reported as uncorrelated.
-    assert body["root_cause"] is None
-    assert body["status"] == "correlation not implemented"
+    assert body["status"] == "correlated"
+    assert body["root_cause"] == "db_connection_pool_exhaustion"
+    assert body["service"] == "transaction-service"
+    assert body["playbook"] == "restart_service.yml"
+    assert body["confidence"] == 1.0
 
 
 def test_webhook_ignores_resolved_alerts(client, sample_payload):
@@ -35,6 +37,19 @@ def test_webhook_ignores_resolved_alerts(client, sample_payload):
     response = client.post("/alerts", json=sample_payload)
     assert response.status_code == 202
     assert response.json()["received_alerts"] == 3
+
+
+def test_unmatched_incident_escalates_to_a_human(client, sample_payload):
+    # Drop the deciding symptom: what remains is consequences with no cause.
+    sample_payload["alerts"] = [
+        a for a in sample_payload["alerts"]
+        if a["labels"]["alertname"] != "DBPoolNearExhaustion"
+    ]
+    body = client.post("/alerts", json=sample_payload).json()
+    assert body["root_cause"] is None
+    assert body["status"] == "unmatched"
+    assert body["action"] == "escalate_to_human"
+    assert "DBPoolNearExhaustion" in body["reason"]
 
 
 def test_database_is_the_deepest_service():

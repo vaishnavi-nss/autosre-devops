@@ -1,15 +1,22 @@
 """The correlation algorithm (brief section 5).
 
-    1. Time-window grouping      - already done by Alertmanager, see below
+    1. Time-window grouping      - done by Alertmanager, see below
     2. Dependency graph lookup   - map each alert's `service` label to the chain
     3. Root cause ranking        - the deepest alerting service wins
     4. Symptom-signature match   - which named cause fits the alerts that fired
-    5. Confidence score          - matched / expected symptoms
+    5. Confidence score          - weighted share of the expected symptoms seen
 
-STATUS: build step 4 of the brief. The data tables in dependency_graph.py and
-signatures.py are complete; the functions below are stubs. `correlate()`
-returns None until they are implemented, and the webhook in app.py answers
-202 either way so the Alertmanager wiring can be tested first.
+Pure functions over a list of Alertmanager alert dicts. No I/O, no globals, no
+clock - the same input always gives the same output, which is what makes the
+decision auditable after the fact.
+
+FAILING SAFE
+    `correlate()` returns None whenever it cannot name a cause, and None means
+    "escalate to a human" (brief section 6) - never "try something". Notably, if
+    the deepest alerting service has no matching signature the engine does NOT
+    fall back to a shallower service that does match. A deeper service alerting
+    for an unknown reason is the likeliest true cause, and acting on a shallower
+    one would restart the wrong thing.
 
 On step 1: Alertmanager already buckets alerts by time. The route in
 monitoring/kube-prometheus-stack-values.yaml sets `group_wait: 30s`, so this
@@ -19,8 +26,13 @@ re-implement grouping here unless that config is removed.
 
 from __future__ import annotations
 
-from dependency_graph import depth
+from dependency_graph import depth, is_known
 from signatures import SIGNATURES, signatures_for
+
+
+def firing_only(alerts: list[dict]) -> list[dict]:
+    """Drop alerts that have already resolved."""
+    return [a for a in alerts if a.get("status", "firing") == "firing"]
 
 
 def alert_names(alerts: list[dict]) -> list[str]:
@@ -41,49 +53,129 @@ def alerting_services(alerts: list[dict]) -> set[str]:
     }
 
 
+def services_by_depth(alerts: list[dict]) -> list[str]:
+    """Step 2: alerting services that are in the chain, deepest first.
+
+    Services outside the modelled chain are ignored - the engine has no idea
+    where they sit, so it must not reason about them.
+    """
+    known = [s for s in alerting_services(alerts) if is_known(s)]
+    return sorted(known, key=depth)
+
+
 def deepest_alerting_service(alerts: list[dict]) -> str | None:
     """Step 3: the alerting service closest to the database.
 
-    TODO: return the service from `alerting_services()` with the smallest
-    `depth()`, ignoring services that are not part of the chain.
+    Problems cascade upward through the chain, so the deepest service that is
+    alerting is the one nothing else can explain.
     """
-    return None
-
-
-def match_signature(service: str, alerts: list[dict]) -> str | None:
-    """Step 4: pick the root-cause label whose signature fits these alerts.
-
-    TODO: for each signature owned by `service`, check that every
-    `required_symptoms` entry is present in `alert_names(alerts)`, and return
-    the best-scoring match.
-    """
-    return None
+    ordered = services_by_depth(alerts)
+    return ordered[0] if ordered else None
 
 
 def confidence(cause: str, alerts: list[dict]) -> float:
-    """Step 5: matched symptoms over expected symptoms, as a 0.0-1.0 ratio.
+    """Step 5: weighted share of this cause's expected symptoms that fired.
 
-    Deliberately a plain explainable ratio rather than a black-box probability.
+    A plain explainable ratio rather than a black-box probability - see the
+    CONFIDENCE MODEL note in signatures.py. Symptoms count wherever in the
+    chain they fired, because consequences surface upstream of the cause
+    (a database fault raises latency at the gateway).
 
-    TODO: count how many of the signature's `expected_symptoms` appear in
-    `alert_names(alerts)` and divide by the number expected.
+    Returns 0.0 to 1.0, rounded to four places.
     """
-    return 0.0
+    weights = SIGNATURES[cause]["weights"]
+    fired = set(alert_names(alerts))
+    matched = sum(w for symptom, w in weights.items() if symptom in fired)
+    return round(matched / sum(weights.values()), 4)
+
+
+def match_signature(service: str, alerts: list[dict]) -> str | None:
+    """Step 4: the root-cause label whose signature fits these alerts.
+
+    A signature matches only if every one of its `required_symptoms` fired *on
+    the owning service itself*. The deciding metric is exported by the owner,
+    so the same alert name appearing on a different service is a coincidence,
+    not evidence.
+
+    If several signatures match, the highest-scoring wins; ties are broken by
+    name so the result is deterministic.
+    """
+    fired_here = {
+        a.get("labels", {}).get("alertname", "")
+        for a in alerts
+        if a.get("labels", {}).get("service") == service
+    }
+
+    candidates = [
+        cause
+        for cause, spec in signatures_for(service).items()
+        if set(spec["required_symptoms"]) <= fired_here
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda c: (-confidence(c, alerts), c))
+
+
+def why_unmatched(alerts: list[dict]) -> str:
+    """A one-line reason for returning None, for logs and the webhook response."""
+    firing = firing_only(alerts)
+    if not firing:
+        return "no firing alerts in this incident"
+    service = deepest_alerting_service(firing)
+    if service is None:
+        return "no alert carries a service label that is part of the dependency chain"
+    owned = signatures_for(service)
+    if not owned:
+        return (
+            f"{service} is the deepest alerting service but no known cause is "
+            f"owned by it"
+        )
+    needed = sorted({s for spec in owned.values() for s in spec["required_symptoms"]})
+    return (
+        f"{service} is the deepest alerting service but none of its deciding "
+        f"symptoms fired ({', '.join(needed)})"
+    )
+
+
+def explain(result: dict) -> str:
+    """Render a result as the sentence an auditor would want to read."""
+    spec = SIGNATURES[result["root_cause"]]
+    matched = result["matched_symptoms"]
+    return (
+        f"{result['service']} is the deepest alerting service in the chain; "
+        f"its deciding symptom {', '.join(spec['required_symptoms'])} fired; "
+        f"{len(matched)} of {len(spec['weights'])} expected symptoms present "
+        f"({', '.join(matched)}); confidence {result['confidence']:.0%}."
+    )
 
 
 def correlate(alerts: list[dict]) -> dict | None:
     """Run steps 2-5 over one incident's alerts.
 
-    Returns None when no root cause can be determined, which the dispatcher
-    treats as "escalate to a human" (brief section 6).
+    Returns a dict with the keys the dispatcher depends on -
+    `root_cause`, `service`, `confidence`, `playbook` - plus `matched_symptoms`,
+    `missing_symptoms` and `explanation` for the audit trail. Returns None when
+    no root cause can be named, which the dispatcher treats as "escalate".
     """
-    # TODO (build step 4): wire the functions above together, e.g.
-    #     service = deepest_alerting_service(alerts)
-    #     cause = match_signature(service, alerts) if service else None
-    #     return None if cause is None else {
-    #         "root_cause": cause,
-    #         "service": service,
-    #         "confidence": confidence(cause, alerts),
-    #         "playbook": SIGNATURES[cause]["playbook"],
-    #     }
-    return None
+    firing = firing_only(alerts)
+
+    service = deepest_alerting_service(firing)       # steps 2-3
+    if service is None:
+        return None
+
+    cause = match_signature(service, firing)         # step 4
+    if cause is None:
+        return None
+
+    spec = SIGNATURES[cause]
+    fired = set(alert_names(firing))
+    result = {
+        "root_cause": cause,
+        "service": service,
+        "confidence": confidence(cause, firing),     # step 5
+        "playbook": spec["playbook"],
+        "matched_symptoms": [s for s in spec["weights"] if s in fired],
+        "missing_symptoms": [s for s in spec["weights"] if s not in fired],
+    }
+    result["explanation"] = explain(result)
+    return result

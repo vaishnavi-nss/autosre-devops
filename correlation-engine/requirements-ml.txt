@@ -1,0 +1,5 @@
+# Only needed for the optional classifier in evaluation/train_classifier.py.
+# Kept out of requirements.txt so the engine image stays small.
+-r requirements.txt
+scikit-learn==1.6.1
+numpy>=1.26
