@@ -474,7 +474,7 @@ and none of the following has been run:
 
 - The scorer has never been run against our cluster; the Prometheus queries, the
   `container`/`service` label assumptions and the `second-opinion` image have only been tested
-  against fakes (13 service tests, 8 engine tests; five deliberately broken variants were all
+  against fakes (14 service tests, 8 engine tests; five deliberately broken variants were all
   caught). Docker was not available where this was built.
 - Our faults are staged by chaos endpoints in a 15-second-scrape setup, unlike RCAEval's
   1-second data, and the incident-start estimate is "earliest alert minus two minutes".
