@@ -60,12 +60,15 @@ grafana:
   #   kubectl -n monitoring get secret monitoring-grafana \
   #     -o jsonpath="{.data.admin-password}" | base64 -d
   defaultDashboardsTimezone: browser
+  # 768Mi, not less: the chart loads ~30 dashboards, and a 256Mi limit made the
+  # Grafana container OOM-kill (exit 137) and crash-loop on a real cluster. The
+  # symptom is an intermittent UI and dropped port-forwards, not an obvious error.
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
-    limits:
       memory: 256Mi
+    limits:
+      memory: 768Mi
 
 # kube-state-metrics supplies kube_pod_container_status_restarts_total, which is
 # what the PodRestartsHigh symptom is built on.

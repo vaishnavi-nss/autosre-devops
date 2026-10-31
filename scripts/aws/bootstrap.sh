@@ -107,8 +107,17 @@ say "Grafana dashboard"
 as_ubuntu "cd $REPO && ./scripts/install-dashboard.sh"
 
 say "expose Grafana on :3000 (the security group restricts this to one IP)"
-as_ubuntu "setsid nohup kubectl -n monitoring port-forward --address 0.0.0.0 svc/monitoring-grafana 3000:80 \
-  >/tmp/grafana-forward.log 2>&1 < /dev/null &"
+# A bare `kubectl port-forward` exits whenever its pod restarts, so supervise it.
+cat > "$HOME_DIR/grafana-forward.sh" <<'FORWARD'
+#!/bin/bash
+while true; do
+  kubectl -n monitoring port-forward --address 0.0.0.0 svc/monitoring-grafana 3000:80
+  sleep 2
+done
+FORWARD
+chmod +x "$HOME_DIR/grafana-forward.sh"
+chown ubuntu:ubuntu "$HOME_DIR/grafana-forward.sh"
+as_ubuntu "setsid nohup $HOME_DIR/grafana-forward.sh >/tmp/grafana-forward.log 2>&1 < /dev/null &"
 sleep 5
 
 say "pipeline sanity check before the trials"
