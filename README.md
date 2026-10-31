@@ -176,13 +176,14 @@ Adapted from section 7 of the brief. Owners are for the team to assign.
 | 1 | **Base app** — build images, deploy to minikube, confirm the chain works | ⬜ | TBD |
 | 2 | **Metrics** — install kube-prometheus-stack, confirm scraping, build Grafana dashboards | ⬜ | TBD |
 | 3 | **Fault injection** — trigger each symptom, confirm Alertmanager fires | ⬜ | TBD |
-| 4 | **Correlation engine** — algorithm steps 2–5 in `correlate.py` | ✅ done, tested on simulated and fixture incidents; ⬜ live validation | ML |
+| 4 | **Correlation engine** — algorithm steps 2–5 in `correlate.py` | ✅ done; tested on simulated incidents and live-validated on a real Prometheus → Alertmanager pipeline (17 injected-fault trials, 0 wrong actions) | ML |
 | 5 | **Remediation** — dispatcher that runs the mapped playbook; finish `clear_logs.yml` | ⬜ | TBD |
 | 6 | **End-to-end demo** — run the worked example live, show the dip and recovery | ⬜ | TBD |
 
 The engine's accuracy, its failure modes and the decisions the team still has to make are
-written up in **[`docs/evaluation.md`](docs/evaluation.md)**. Every number there comes from
-**simulated** incidents; the same document has the procedure for capturing real ones.
+written up in **[`docs/evaluation.md`](docs/evaluation.md)**. The headline numbers there come from
+**simulated** incidents; a smaller live run on AWS (injected faults, real alert pipeline) is reported
+separately in the same document, with raw results in `docs/live-validation/`.
 
 The one remaining `TODO` marker is in `ansible/playbooks/clear_logs.yml` (step 5).
 

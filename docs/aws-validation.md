@@ -146,3 +146,9 @@ aws s3 ls $B/results/
 
 `report.md` is the headline. To read it in a browser without downloading, copy it to a
 `.txt` key with a `text/plain` content type, presign it for a few minutes, and open the URL.
+
+Reading files from the console: a `.jsonl` object is served as a download, and browser
+downloads from the S3 console can stall as `.tmp` files. Copy the file to a `.txt` key with
+`--content-type text/plain` (in CloudShell), then **Open** it from the console and it renders
+inline. Pages opened that way cannot call `localhost`, so there is no way to push a file to a
+local receiver; read the text and write it into the repo.

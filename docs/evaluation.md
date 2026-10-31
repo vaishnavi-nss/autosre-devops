@@ -3,11 +3,13 @@
 How well does the engine name root causes, how was that measured, and what can and
 cannot be concluded from it. Written by the ML role; see `correlation-engine/`.
 
-> **Read this first.** Every number below was measured on **simulated** incidents. They
+> **Read this first.** Every number below, except the [Live validation](#live-validation)
+> section, was measured on **simulated** incidents. They
 > show how the engine behaves when symptoms drop out, cascade and get buried in noise.
 > They are **not** an accuracy figure for real banking incidents, because the simulator
 > and the signatures were written by the same person. Real numbers need incidents
-> captured from the live cluster - see [Live validation](#live-validation-not-yet-run).
+> captured from a live cluster - the small run in [Live validation](#live-validation) is a
+> start, not a rate.
 
 ## What the engine is
 
@@ -257,30 +259,84 @@ simulator back, so this comparison is only meaningful once repeated on captured 
 2. **Measure the real deeper-fault rate** before relying on the fail-safe finding.
 3. **Set the dispatcher's confidence gate with the caveat above.** 0.75 is a sanity floor,
    not a safeguard.
-4. **Run the live validation** below and replace the simulated headline numbers.
+4. **Read the live validation** below alongside the simulated figures; it is a small, single-cause, injected-fault run.
 
-## Live validation (not yet run)
+## Live validation
 
-This needs the cluster, so it has **not** been done. The tooling is ready:
+Run on 2026-10-31 on a single `t3.large` (minikube + kube-prometheus-stack), through the real
+Prometheus → Alertmanager → engine pipeline. The faults were **injected** through the
+`CHAOS_ENABLED` endpoints; everything downstream of the injection is real. So this measures
+detection and correlation on staged faults - not whether real failures look like these.
+The full generated report is [`live-validation/report.md`](live-validation/report.md), with
+per-trial records in [`trials.jsonl`](live-validation/trials.jsonl).
 
-```bash
-# on the cluster, enable capture on the engine
-kubectl -n autosre set env deploy/correlation-engine CAPTURE_PATH=/tmp/incidents.jsonl
-kubectl -n autosre port-forward deploy/correlation-engine 8000:8000 &
+**Sample size is small - treat it as anecdote, not a rate.** 18 trials were run, 17 usable
+(trial 3 errored in the injector, see below): 4 pool exhaustion, 5 disk full, 5 memory
+pressure, 3 "unknown" faults the engine should escalate.
 
-# before EACH fault injection, tell the engine the ground truth
-curl -X PUT localhost:8000/capture/label -H 'content-type: application/json' \
-     -d '{"label": "db_connection_pool_exhaustion"}'
-#   ...inject the fault, wait for the incident to arrive and resolve...
-# use {"label": null} for an incident the engine should escalate
+### Result: the first webhook of each trial (what a dispatcher would act on)
 
-# repeat each fault at least 10 times, then evaluate
-kubectl -n autosre cp deploy/correlation-engine:/tmp/incidents.jsonl ./incidents.jsonl
-python evaluation/evaluate.py --replay incidents.jsonl
-```
+| outcome | count |
+|---|---:|
+| correct action | 14 |
+| correct escalation (unknown faults) | 3 |
+| missed (escalated a known cause) | 0 |
+| **wrong action** | **0** |
 
-Report that output **separately** from the simulated figures, with the number of
-incidents. Anything under about 30 per cause is an anecdote, not a rate.
+No wrong action in 17 trials. With n this small, the honest reading is "no counter-example
+found", not "100% accurate": the faults were written by the same people who wrote the
+signatures, each one isolates a single cause, and the three unknown faults were all
+consequence-only (gateway latency or errors), so the live run never exercised the case the
+simulation flagged as dangerous - a deeper fault with no signature, or two causes at once.
+
+### Timing and the confidence gate
+
+- A first incident reached the engine a median **83 s** after injection (range 60-140 s):
+  15 s scrape + `for:` + the 30 s Alertmanager `group_wait`.
+- The deciding symptom alerts **first and alone**, so the first webhook usually scores only
+  0.55-0.60 (`DBPoolNearExhaustion` 0.55, `ContainerMemoryHigh`/`DBDiskNearFull` 0.60).
+  A dispatcher gated at 0.75 would therefore wait for a later webhook: it acted at a median
+  **138 s**, and in **4 of 14** known-cause trials (#2, #5, #6, #11) it never reached the
+  gate at all. The 0.75 gate trades speed - and some automation - for caution; pool
+  exhaustion at 19/20 connections produces too few consequences to clear it.
+- A trial takes 8-10 minutes, not 6, because the rules use `rate(...[5m])`: latency and error
+  alerts keep firing for about five minutes after a fault ends.
+
+### The "every record" figure is not an accuracy
+
+The report also scores every webhook, giving 61.5% with 20 "missed". That number is an
+artefact and should not be quoted as accuracy: once the deciding alert clears, the lingering
+consequence alerts (`APILatencyHigh`, `ErrorRateHigh`) still produce webhooks, and with the
+cause gone the engine correctly escalates them. It shows the engine failing safe, and that a
+dispatcher must treat "the cause already cleared" updates as noise rather than new incidents.
+
+### What running it live found that the simulator could not
+
+1. **Alerts never reached the engine.** `sum by (service)` drops the `namespace` label, and
+   Alertmanager only routes `namespace = "autosre"`. Every rule now sets it explicitly, and a
+   test enforces it.
+2. **Grafana was OOM-killed** (256Mi limit); raised to 768Mi.
+3. **The memory injector killed its own target.** `kubectl exec` runs inside the container's
+   memory cgroup, so the injector's overhead pushed the pod over its limit (exit 137, trial
+   3). Injection now goes through the API-server proxy.
+4. **The dashboard's "Escalated to a human" was wrong.** Resolved notifications were counted
+   as failed diagnoses (48 shown after a handful of real escalations). Fixed with a
+   regression test.
+
+### Dashboard (M7)
+
+All 13 panel queries return data on the live cluster (`live-validation/dashboard_check.txt`),
+including the confidence panel with the 0.75 gate marked.
+
+![Decisions](images/dashboard-decisions.jpg)
+![Symptoms](images/dashboard-symptoms.jpg)
+
+### Not in the repo
+
+`incidents.jsonl` (the raw 52 captured webhooks, 223 KB) lives only in the S3 bucket
+`autosre-validation-841736140404`; `report.md` is derived from it by
+`evaluation/live_report.py`. Download it before deleting the bucket if you want to reproduce
+the report.
 
 ## Appendix: full output
 
