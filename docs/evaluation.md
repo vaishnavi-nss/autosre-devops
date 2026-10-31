@@ -338,6 +338,61 @@ including the confidence panel with the 0.75 gate marked.
 `evaluation/live_report.py`. Download it before deleting the bucket if you want to reproduce
 the report.
 
+## Third-party benchmark: RCAEval RE1
+
+The simulation and the live run were both written by us. To test the approach on data we did
+not write, we used [RCAEval](https://github.com/phamquiluan/RCAEval) RE1: 375 real fault
+injections (373 loaded) across three systems - Online Boutique, Sock Shop, Train Ticket -
+with five fault types (cpu, mem, disk I/O, delay, loss) and the faulty service labelled.
+Full tables: [`rcaeval-results.md`](rcaeval-results.md). Code: `evaluation/rcaeval_eval.py`.
+
+RE1 is raw 1-second metrics, not alerts, so each metric is scored by how far the first five
+minutes after injection sit from its own normal behaviour, and those scores replace "which
+alerts fired". Two diagnosers see only those scores:
+
+- **Replay baseline** - rules in the style of `correlate.py`, written before looking at the
+  results: resource symptoms outrank latency; latency with errors is loss, latency alone is
+  delay; nothing firing escalates. Only the threshold was chosen, on Online Boutique, and
+  then frozen.
+- **Learned model** - a random forest ranks services as the root cause, then a calibrated
+  gradient-boosted classifier names the fault. Features are system-agnostic, and the
+  evaluation is **leave-one-system-out**, so every test system is unseen in training.
+
+| | wrong action | right action | escalates |
+|---|---:|---:|---:|
+| Replay baseline (373 cases) | 106 (28%) | 138 (37%) | 129 (35%) |
+| Learned, always acts | 145 (39%) | 228 (61%) | 0 |
+| Learned, acts at confidence >= 0.5 | 60 (16%) | 133 (36%) | 180 (48%) |
+
+**Read this as a modest result, not a win.**
+
+- **The learned model only beats the rules on coverage.** Forced to act on everything it is
+  right 61% of the time and wrong 39%, which is worse than the rules' wrong-action rate.
+  Gated at 0.5 it matches the rules' right actions with fewer wrong ones (16% vs 28%), but
+  the gate is blunt: calibration error fell from 0.20 to 0.12 after fitting a calibrator on
+  out-of-fold predictions, yet confidence still barely separates right from wrong at the
+  high end (14% precision at 0.7, on 7 cases).
+- **Most errors are confusions the data cannot resolve.** Service localisation is good
+  (about 90% top-1). The fault type is not: cpu is called disk 48 times out of 74, disk is
+  called cpu 21 times, and delay and loss swap places 22 and 21 times. RE1 has no disk
+  metric and its error metrics never move, so CPU stress and disk I/O stress look alike, and
+  so do delay and loss. More modelling will not fix missing signal.
+- **The baseline's wrong assumptions are informative.** Its "latency plus errors means loss"
+  rule was wrong for this data (errors stay flat), so it named no loss correctly. The rules
+  also fail across systems: Online Boutique (where the threshold was set) shows 13 wrong
+  actions, Sock Shop 60. A threshold chosen on one system does not transfer.
+- **Memory faults are the clear success.** 99% right in the learned model, because memory
+  stress is the one fault with its own distinct signature.
+- **The tiny improvements were not kept.** Variability features gave no reliable gain on the
+  development systems (Online Boutique and Sock Shop) and are off by default.
+
+What this does *not* show: RE1's disk faults are I/O stress, not "disk full", and there is
+no pool-exhaustion equivalent, so these numbers say nothing about our three causes in
+particular. The faults are also injected for 35 minutes into otherwise clean systems. Two
+disclosures on method: the threshold grid was widened after the first run because every
+value then sat at its upper edge, and Train Ticket's numbers were visible during that
+iteration; later design decisions used only Online Boutique and Sock Shop.
+
 ## Appendix: full output
 
 Regenerate with the commands under "How it was measured". Seed 7, 5000 incidents each.
