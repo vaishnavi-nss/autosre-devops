@@ -78,7 +78,14 @@ minikube version
 helm version --short
 
 say "minikube cluster"
-as_ubuntu "minikube start --driver=docker --cpus=4 --memory=10g"
+# Size the cluster from the host rather than assuming a big instance: AWS Academy
+# Learner Lab denies instance types above "large" (2 vCPU / 8 GB), so leave 2 GB
+# for the OS and Docker, and cap at what a bigger machine would not need.
+MEM_MB=$(( $(free -m | awk '/^Mem:/{print $2}') - 2048 ))
+[ "$MEM_MB" -gt 10240 ] && MEM_MB=10240
+CPUS=$(nproc); [ "$CPUS" -gt 4 ] && CPUS=4
+echo "host: $(nproc) vCPU, $(free -m | awk '/^Mem:/{print $2}') MB -> minikube: $CPUS cpus, ${MEM_MB} MB"
+as_ubuntu "minikube start --driver=docker --cpus=$CPUS --memory=${MEM_MB}m"
 as_ubuntu "kubectl get nodes"
 
 say "build the service images inside minikube"
