@@ -86,6 +86,46 @@ def test_signatures_for_filters_by_owner():
     assert "db_disk_full" not in signatures_for("transaction-service")
 
 
+def test_every_alert_rule_can_reach_the_engine_through_alertmanager():
+    """Each rule must carry the labels the Alertmanager route and the engine key on.
+
+    The route forwards only `namespace = "autosre"`, and rules that aggregate with
+    `sum by (service)` drop that label - so it has to be set explicitly, or those
+    alerts silently go to the null receiver. The engine in turn needs `service`.
+    A literal label is checked, not a templated one, since templates are resolved
+    per alert and `service` for the restart/memory rules legitimately is one.
+    """
+    import yaml
+
+    rules_file = Path(__file__).resolve().parents[2] / "monitoring" / "alert-rules.yaml"
+    values_file = Path(__file__).resolve().parents[2] / "monitoring" / "kube-prometheus-stack-values.yaml"
+    spec = yaml.safe_load(rules_file.read_text(encoding="utf-8"))
+    route = yaml.safe_load(values_file.read_text(encoding="utf-8"))["alertmanager"]["config"]["route"]
+    matcher = route["routes"][0]["matchers"][0]
+    assert matcher == 'namespace = "autosre"', matcher
+
+    from dependency_graph import CHAIN
+
+    for group in spec["spec"]["groups"]:
+        for rule in group["rules"]:
+            labels = rule.get("labels", {})
+            assert labels.get("namespace") == "autosre", f"{rule['alert']} would not be routed"
+            service = labels.get("service")
+            if service and "{{" not in service:
+                assert service in CHAIN, f"{rule['alert']} labels unknown service {service!r}"
+            if not service:
+                # No explicit service label, so it must survive from the metric. A rule
+                # that does not aggregate keeps every label of its series; one that
+                # does (`sum by (...)`) keeps only what is named, so `service` must be.
+                import re
+
+                groupings = re.findall(r"\bby\s*\(([^)]*)\)", rule["expr"])
+                for names in groupings:
+                    assert "service" in [n.strip() for n in names.split(",")], (
+                        f"{rule['alert']} aggregates by ({names.strip()}) and drops `service`"
+                    )
+
+
 def test_every_expected_symptom_has_a_prometheus_rule():
     """The alert names in signatures.py must exist in monitoring/alert-rules.yaml.
 

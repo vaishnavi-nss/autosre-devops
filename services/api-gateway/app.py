@@ -15,7 +15,9 @@ Endpoints:
     GET /metrics       Prometheus metrics
 """
 
+import asyncio
 import os
+import random
 import time
 
 import httpx
@@ -73,8 +75,20 @@ async def call_downstream(path: str) -> dict:
         return response.json()
 
 
+# --- fault injection ------------------------------------------------------------
+# Routes exist only when CHAOS_ENABLED=true. On the gateway they produce a fault
+# no signature describes (latency or errors with no deciding symptom), which the
+# engine is expected to escalate rather than act on.
+CHAOS_ENABLED = os.getenv("CHAOS_ENABLED", "false").lower() == "true"
+chaos = {"error_fraction": 0.0, "latency_ms": 0}
+
+
 @app.get("/api/transfer")
 async def transfer():
+    if chaos["latency_ms"]:
+        await asyncio.sleep(chaos["latency_ms"] / 1000)
+    if chaos["error_fraction"] and random.random() < chaos["error_fraction"]:
+        raise HTTPException(status_code=500, detail="injected fault")
     try:
         downstream = await call_downstream("/transactions")
     except httpx.HTTPError as exc:
@@ -82,6 +96,28 @@ async def transfer():
             status_code=503, detail=f"transaction-service unreachable: {exc}"
         )
     return {"service": SERVICE_NAME, "downstream": downstream}
+
+
+if CHAOS_ENABLED:
+
+    @app.get("/chaos")
+    async def chaos_state():
+        return chaos
+
+    @app.post("/chaos/errors")
+    async def chaos_errors(fraction: float):
+        chaos["error_fraction"] = min(1.0, max(0.0, fraction))
+        return chaos
+
+    @app.post("/chaos/latency")
+    async def chaos_latency(ms: int):
+        chaos["latency_ms"] = max(0, ms)
+        return chaos
+
+    @app.post("/chaos/reset")
+    async def chaos_reset():
+        chaos.update(error_fraction=0.0, latency_ms=0)
+        return {"status": "reset"}
 
 
 @app.get("/health")

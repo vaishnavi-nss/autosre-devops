@@ -18,10 +18,11 @@ Endpoints:
     GET /metrics  Prometheus metrics
 """
 
+import asyncio
 import os
 import time
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, HTTPException, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 SERVICE_NAME = os.getenv("SERVICE_NAME", "database")
@@ -74,13 +75,46 @@ async def record_metrics(request, call_next):
     return response
 
 
+# --- fault injection ------------------------------------------------------------
+# Routes exist only when CHAOS_ENABLED=true. A volume that is nearly full only
+# raises the disk gauge; one that is effectively full stalls and then fails
+# queries with 507, which is how the fault reaches the services above it.
+CHAOS_ENABLED = os.getenv("CHAOS_ENABLED", "false").lower() == "true"
+DISK_FULL_THRESHOLD = 0.98
+DISK_STALL_SECONDS = float(os.getenv("DISK_STALL_SECONDS", "0.6"))
+chaos = {"disk_ratio": DISK_USAGE_RATIO}
+
+
 @app.get("/query")
 async def query():
+    if chaos["disk_ratio"] >= DISK_FULL_THRESHOLD:
+        await asyncio.sleep(DISK_STALL_SECONDS)
+        raise HTTPException(status_code=507, detail="no space left on device")
     db_queries_total.labels(SERVICE_NAME).inc()
     return {
         "service": SERVICE_NAME,
         "rows": [{"account": "ACC-1001", "balance": 4250.75, "currency": "INR"}],
     }
+
+
+if CHAOS_ENABLED:
+
+    @app.get("/chaos")
+    async def chaos_state():
+        return chaos
+
+    @app.post("/chaos/disk")
+    async def chaos_disk(ratio: float):
+        """Set how full the data volume is, 0.0 to 1.0."""
+        chaos["disk_ratio"] = min(1.0, max(0.0, ratio))
+        db_disk_usage_ratio.labels(SERVICE_NAME).set(chaos["disk_ratio"])
+        return chaos
+
+    @app.post("/chaos/reset")
+    async def chaos_reset():
+        chaos["disk_ratio"] = DISK_USAGE_RATIO
+        db_disk_usage_ratio.labels(SERVICE_NAME).set(DISK_USAGE_RATIO)
+        return {"status": "reset"}
 
 
 @app.get("/health")

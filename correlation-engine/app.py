@@ -114,8 +114,13 @@ async def receive_alerts(payload: dict):
 
 
 def _capture(payload: dict) -> None:
-    """Append the incident to CAPTURE_PATH as one JSON line, if capture is on."""
-    if not CAPTURE_PATH:
+    """Append the incident to CAPTURE_PATH as one JSON line, if capture is on.
+
+    Notifications with nothing firing are skipped: when alerts clear, Alertmanager
+    sends a "resolved" notification, which is the end of an incident rather than
+    an incident, and recording it would score as a missed detection.
+    """
+    if not CAPTURE_PATH or not firing_only(payload.get("alerts", [])):
         return
     record = {
         "label": _capture_label,

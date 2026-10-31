@@ -1,6 +1,11 @@
 ---
 # The symptoms the correlation engine reasons over.
 #
+# Every rule also sets `namespace: autosre` explicitly. The Alertmanager route only
+# forwards alerts carrying that label, and any rule that aggregates with
+# `sum by (service)` drops it - so without the static label those alerts would be
+# silently routed to the null receiver and the engine would never see them.
+#
 # CONTRACT: every rule must set a `service` label whose value is a service name
 # in correlation-engine/dependency_graph.py, and every `alert:` name must appear
 # in a signature in correlation-engine/signatures.py. Break either and the
@@ -27,6 +32,7 @@ spec:
             ) > 0.5
           for: 1m
           labels:
+            namespace: autosre
             severity: warning
           annotations:
             summary: "p95 latency above 500ms on {{ $labels.service }}"
@@ -39,6 +45,7 @@ spec:
             > 0.05
           for: 1m
           labels:
+            namespace: autosre
             severity: warning
           annotations:
             summary: "5xx error ratio above 5% on {{ $labels.service }}"
@@ -50,6 +57,7 @@ spec:
             db_connection_pool_active / db_connection_pool_max > 0.9
           for: 30s
           labels:
+            namespace: autosre
             severity: critical
           annotations:
             summary: "connection pool above 90% utilisation on {{ $labels.service }}"
@@ -58,6 +66,7 @@ spec:
           expr: db_disk_usage_ratio > 0.9
           for: 1m
           labels:
+            namespace: autosre
             severity: critical
           annotations:
             summary: "data volume above 90% full on {{ $labels.service }}"
@@ -72,6 +81,7 @@ spec:
             ) > 2
           for: 0m
           labels:
+            namespace: autosre
             severity: warning
             service: "{{ $labels.container }}"
           annotations:
@@ -89,6 +99,7 @@ spec:
             > 0.9
           for: 1m
           labels:
+            namespace: autosre
             severity: warning
             service: "{{ $labels.container }}"
           annotations:

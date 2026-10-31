@@ -190,6 +190,17 @@ def test_captured_file_can_be_replayed_by_the_evaluator(client, capturing, sampl
     assert truths == preds == ["db_connection_pool_exhaustion"]
 
 
+def test_resolved_notifications_are_not_captured_as_incidents(client, capturing, sample_payload):
+    # When alerts clear, Alertmanager sends a "resolved" notification. Capturing
+    # it would score as a missed detection in the evaluation.
+    client.put("/capture/label", json={"label": "db_connection_pool_exhaustion"})
+    for alert in sample_payload["alerts"]:
+        alert["status"] = "resolved"
+    sample_payload["status"] = "resolved"
+    assert client.post("/alerts", json=sample_payload).status_code == 202
+    assert not capturing.exists() or capturing.read_text(encoding="utf-8") == ""
+
+
 def test_capture_rejects_an_unknown_label(client, capturing):
     response = client.put("/capture/label", json={"label": "cosmic_rays"})
     assert response.status_code == 422

@@ -1,0 +1,47 @@
+---
+# Steady synthetic traffic against the frontend.
+#
+# The APILatencyHigh and ErrorRateHigh rules work on request RATES (rate(...[5m])),
+# so with an idle cluster they evaluate to nothing and can never fire, however
+# broken the system is. Something has to drive traffic for the whole demo.
+#
+# Three parallel loops, each roughly 3-5 requests/second when healthy. When a
+# fault slows requests down the rate drops, as it would for real clients.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: autosre
+  labels:
+    app: loadgen
+    app.kubernetes.io/part-of: autosre
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loadgen
+  template:
+    metadata:
+      labels:
+        app: loadgen
+        app.kubernetes.io/part-of: autosre
+    spec:
+      containers:
+        - name: loadgen
+          image: curlimages/curl:8.11.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              URL=http://frontend.autosre.svc.cluster.local:8000/
+              loop() { while true; do curl -s -o /dev/null --max-time 5 "$URL"; sleep 0.2; done; }
+              loop & loop & loop
+              wait
+          resources:
+            requests:
+              cpu: 20m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
