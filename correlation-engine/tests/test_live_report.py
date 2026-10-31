@@ -61,6 +61,38 @@ def test_first_decision_uses_the_first_webhook_not_the_last(tmp_path):
     assert "(0.75)" in text                      # the later, fuller decision
 
 
+def test_a_gated_dispatcher_acts_on_the_first_webhook_that_clears_the_gate(tmp_path):
+    # The first webhook (deciding symptom only, 0.55) is below the 0.75 gate; the
+    # second (0.75) clears it. Detection is at 50s, but acting is at 140s.
+    trials = [trial(1, "db_connection_pool_exhaustion", "2026-01-01T10:00:00+00:00", "2026-01-01T10:00:10+00:00")]
+    recs = [record("2026-01-01T10:01:00+00:00", "db_connection_pool_exhaustion", POOL_ALERTS[:1]),
+            record("2026-01-01T10:02:30+00:00", "db_connection_pool_exhaustion", POOL_ALERTS)]
+    write(tmp_path, trials, recs)
+    text = lr.build(tmp_path)
+    assert "| 140s | " in text                                  # the "acts at 0.75" cell
+    assert "first incident reaches the engine: median **50s**" in text
+    assert "would act on: median **140s**" in text
+    assert "in 1 of 1 trials" in text
+
+
+def test_a_trial_that_never_reaches_the_gate_is_called_out(tmp_path):
+    trials = [trial(1, "db_connection_pool_exhaustion", "2026-01-01T10:00:00+00:00", "2026-01-01T10:00:10+00:00")]
+    recs = [record("2026-01-01T10:01:00+00:00", "db_connection_pool_exhaustion", POOL_ALERTS[:1])]
+    write(tmp_path, trials, recs)
+    text = lr.build(tmp_path)
+    assert "| never | " in text
+    assert "never reached the gate** in trials #1" in text
+
+
+def test_acting_on_the_wrong_cause_is_marked(tmp_path):
+    # Labelled memory pressure, but the full pool symptom set clears the gate.
+    trials = [trial(1, "high_memory_usage", "2026-01-01T10:00:00+00:00", "2026-01-01T10:00:10+00:00")]
+    recs = [record("2026-01-01T10:01:00+00:00", "high_memory_usage",
+                   POOL_ALERTS + [("PodRestartsHigh", "transaction-service")])]
+    write(tmp_path, trials, recs)
+    assert "(WRONG)" in lr.build(tmp_path)
+
+
 def test_silent_trials_are_reported_but_not_scored_as_engine_failures(tmp_path):
     trials = [trial(1, "db_disk_full", "2026-01-01T10:00:00+00:00", "2026-01-01T10:00:10+00:00"),
               trial(2, "db_connection_pool_exhaustion", "2026-01-01T10:20:00+00:00", "2026-01-01T10:20:10+00:00")]
@@ -113,10 +145,52 @@ def test_live_validate_label_request_is_valid_python():
     assert '"label": null' in calls[1][-1]
 
 
-def test_pod_http_request_is_valid_python():
+def test_injection_goes_through_the_api_server_proxy_not_exec():
+    # Regression: injecting memory pressure via `kubectl exec` ran the client inside the
+    # container's own memory cgroup, so the injector's overhead pushed the pod past its
+    # limit and it was OOM-killed (exit 137). Nothing may run inside the target pod.
     import live_validate as lv
     calls = []
-    lv.kubectl = lambda *args, **kw: calls.append(args) or ""
-    lv.pod_http("transaction-service", "POST", "/chaos/pool?active=19")
-    compile(calls[0][-1], "<pod-code>", "exec")
-    assert "active=19" in calls[0][-1]
+    lv.kubectl = lambda *args, **kw: calls.append((args, kw)) or ""
+
+    lv.pod_http("transaction-service", "POST", "/chaos/memory?mb=76")
+    lv.pod_http("transaction-service", "GET", "/chaos")
+    lv.pod_http("api-gateway", "PUT", "/x")
+
+    (post_args, post_kw), (get_args, _), (put_args, _) = calls
+    assert post_args[0] == "create" and post_args[1] == "--raw"
+    assert post_args[2] == "/api/v1/namespaces/autosre/services/transaction-service:http/proxy/chaos/memory?mb=76"
+    assert post_kw["stdin"] == ""
+    assert get_args[:2] == ("get", "--raw")
+    assert put_args[0] == "replace"
+    assert not any("exec" in a for args, _ in calls for a in args)
+
+
+def test_resume_runs_only_what_is_missing(tmp_path, monkeypatch):
+    # An errored trial does not count as done, so it is redone; the numbering continues.
+    import live_validate as lv
+
+    trials = [
+        {"trial": 1, "label": None, "contaminated": False},
+        {"trial": 2, "label": "db_connection_pool_exhaustion", "contaminated": False},
+        {"trial": 3, "label": "high_memory_usage", "error": "OOM", "contaminated": True},
+    ]
+    (tmp_path / "trials.jsonl").write_text("\n".join(json.dumps(t) for t in trials) + "\n", encoding="utf-8")
+
+    ran = []
+    monkeypatch.setattr(lv, "prepare", lambda: None)
+    monkeypatch.setattr(lv, "reset_cluster", lambda: None)
+    monkeypatch.setattr(lv, "captured", lambda: [])
+    monkeypatch.setattr(lv, "run_trial",
+                        lambda i, label, rng, d, h: ran.append((i, label)) or
+                        {"trial": i, "label": label, "contaminated": False})
+    monkeypatch.setattr(sys, "argv", ["live_validate", "--out", str(tmp_path), "--resume",
+                                      "--per-cause", "2", "--unknown", "1"])
+    lv.main()
+
+    labels = [label for _, label in ran]
+    assert labels.count("db_connection_pool_exhaustion") == 1       # 2 wanted, 1 done
+    assert labels.count("db_disk_full") == 2                          # none done
+    assert labels.count("high_memory_usage") == 2                     # the errored one is redone
+    assert labels.count(None) == 0                                    # 1 wanted, 1 done
+    assert sorted(i for i, _ in ran) == [4, 5, 6, 7, 8]               # numbering continues from 3

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metrics as m                                   # noqa: E402
 from correlate import correlate, firing_only          # noqa: E402
 from evaluate import load_replay, report              # noqa: E402
+
+
+#: The dispatcher's planned minimum confidence to act (docs/evaluation.md).
+GATE = 0.75
 
 
 def parse(ts: str) -> datetime:
@@ -97,27 +102,57 @@ def build(results: Path) -> str:
     out.append("")
 
     rows = ["| # | injected | symptoms at first webhook | first decision | conf. | after | records "
-            "| final decision | outcome |",
-            "|---:|---|---|---|---:|---:|---:|---|---|"]
+            "| final decision | acts at 0.75 | outcome |",
+            "|---:|---|---|---|---:|---:|---:|---|---:|---|"]
     first_set, all_set = [], []
+    detect_times, act_times, never_acts = [], [], []
     for t in delivered:
         recs = grouped[t["trial"]]
         first, last = recs[0], recs[-1]
         cause, conf = decide(first)
         final_cause, final_conf = decide(last)
-        seconds = (parse(first["received_at"]) - parse(t["injected_at"])).total_seconds()
+        injected = parse(t["injected_at"])
+        seconds = (parse(first["received_at"]) - injected).total_seconds()
         truth = m.norm(t["label"])
         outcome = m.outcome(truth, cause).replace("_", " ")
         if cause != final_cause:
             outcome += " (revised later)"
+
+        # When would a dispatcher with a confidence gate actually act? Not on the first
+        # webhook if that carries only the deciding symptom: wait for one that clears it.
+        acts = None
+        for r in recs:
+            r_cause, r_conf = decide(r)
+            if r_cause != m.ESCALATE and r_conf >= GATE:
+                acts = (r_cause, (parse(r["received_at"]) - injected).total_seconds())
+                break
+        if truth != m.ESCALATE:
+            detect_times.append(seconds)
+            (act_times if acts else never_acts).append(acts[1] if acts else t["trial"])
+        act_cell = f"{acts[1]:.0f}s" if acts else "never"
+        if acts and acts[0] != truth:
+            act_cell += " (WRONG)"
+
         rows.append(
             f"| {t['trial']} | {t['label'] or 'unknown'} | {symptoms(first)} | {cause} | {conf:.2f} "
-            f"| {seconds:.0f}s | {len(recs)} | {final_cause} ({final_conf:.2f}) | {outcome} |"
+            f"| {seconds:.0f}s | {len(recs)} | {final_cause} ({final_conf:.2f}) | {act_cell} | {outcome} |"
         )
         first_set.append({"label": t["label"], "payload": first["payload"]})
         all_set.extend({"label": t["label"], "payload": r["payload"]} for r in recs)
 
     out += ["## Every trial", "", *rows, ""]
+    if detect_times:
+        out += ["## Timing, known-cause trials", "",
+                f"- first incident reaches the engine: median **{statistics.median(detect_times):.0f}s** "
+                f"(range {min(detect_times):.0f}-{max(detect_times):.0f}s) after injection",
+                f"- first decision a dispatcher gated at {GATE:.2f} would act on: "
+                + (f"median **{statistics.median(act_times):.0f}s** "
+                   f"(range {min(act_times):.0f}-{max(act_times):.0f}s)" if act_times else "none")
+                + f", in {len(act_times)} of {len(act_times) + len(never_acts)} trials"
+                + (f"; **never reached the gate** in trials {', '.join('#' + str(n) for n in never_acts)}"
+                   if never_acts else ""),
+                "- the gap between the two is the cost of waiting for the consequences to fire: the deciding "
+                "symptom alerts first and alone, so the first webhook usually scores about 0.55-0.60.", ""]
     if first_set:
         out += [report("First decision per trial",
                        "What the dispatcher would act on: the first webhook of each trial. REAL pipeline, "

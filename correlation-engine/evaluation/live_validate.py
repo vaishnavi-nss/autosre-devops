@@ -31,6 +31,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,6 +43,9 @@ SYMPTOMS = ("APILatencyHigh|ErrorRateHigh|DBPoolNearExhaustion|DBDiskNearFull|"
             "PodRestartsHigh|ContainerMemoryHigh")
 SERVICES = ["transaction-service", "api-gateway", "database", "frontend"]
 MEMORY_LIMIT_MIB = 128           # k8s/*.yaml
+# Aim just above the 0.9 alert threshold. The container is OOM-killed at 1.0, and the
+# working set carries some jitter, so leave real headroom rather than aiming at the edge.
+MEMORY_TARGET = 0.925
 
 
 def log(msg: str) -> None:
@@ -54,25 +58,27 @@ def now_iso() -> str:
 
 # -- cluster access --------------------------------------------------------------------
 
-def kubectl(*args: str, timeout: int = 180, check: bool = True) -> str:
-    run = subprocess.run(["kubectl", *args], capture_output=True, text=True, timeout=timeout)
+def kubectl(*args: str, timeout: int = 180, check: bool = True, stdin: str | None = None) -> str:
+    run = subprocess.run(["kubectl", *args], capture_output=True, text=True, timeout=timeout, input=stdin)
     if check and run.returncode != 0:
         raise RuntimeError(f"kubectl {' '.join(args)} failed: {run.stderr.strip()}")
     return run.stdout
 
 
 def pod_http(deploy: str, method: str, path: str) -> str:
-    """Call a service's own HTTP port from inside its pod.
+    """Call a service's HTTP port through the Kubernetes API server's service proxy.
 
-    `kubectl exec` rather than a port-forward: a port-forward dies when the pod is
-    replaced, which this script does between every trial.
+    Deliberately NOT `kubectl exec`: that runs the client *inside the container's own
+    memory cgroup*, so injecting memory pressure (which must sit just under the limit)
+    made the injector's own overhead push the pod over it and get it OOM-killed - the
+    exec'd process died with exit code 137. The proxy needs nothing inside the pod, and
+    unlike a port-forward it survives the pod being replaced between trials.
     """
-    code = (
-        "import urllib.request as u;"
-        f"r=u.urlopen(u.Request('http://127.0.0.1:8000{path}',method='{method}'),timeout=15);"
-        "print(r.read().decode())"
-    )
-    return kubectl("-n", NS, "exec", f"deploy/{deploy}", "--", "python", "-c", code, timeout=60)
+    uri = f"/api/v1/namespaces/{NS}/services/{deploy}:http/proxy{path}"
+    if method == "GET":
+        return kubectl("get", "--raw", uri, timeout=60)
+    verb = {"POST": "create", "PUT": "replace"}[method]
+    return kubectl(verb, "--raw", uri, "-f", "-", timeout=60, stdin="")
 
 
 def prom(expr: str) -> list[dict]:
@@ -183,7 +189,7 @@ def memory_ratio() -> float:
 def inject_memory(rng: random.Random) -> dict:
     """Hold enough memory to cross 90% of the limit, without being OOM-killed."""
     baseline = memory_ratio()
-    mb = max(10, math.ceil((0.94 - baseline) * MEMORY_LIMIT_MIB))
+    mb = max(10, math.ceil((MEMORY_TARGET - baseline) * MEMORY_LIMIT_MIB))
     pod_http("transaction-service", "POST", f"/chaos/memory?mb={mb}")
     return {"baseline_ratio": round(baseline, 3), "held_mb": mb}
 
@@ -239,7 +245,7 @@ def run_trial(index: int, label: str | None, rng: random.Random, detect_timeout:
     while time.time() < held_until:
         time.sleep(15)
         if label == "high_memory_usage" and not topped_up and memory_ratio() < 0.9:
-            extra = trial["params"]["held_mb"] + max(5, math.ceil((0.94 - memory_ratio()) * MEMORY_LIMIT_MIB))
+            extra = trial["params"]["held_mb"] + max(5, math.ceil((MEMORY_TARGET - memory_ratio()) * MEMORY_LIMIT_MIB))
             pod_http("transaction-service", "POST", f"/chaos/memory?mb={extra}")
             trial["params"]["topped_up_to_mb"] = extra
             topped_up = True
@@ -265,20 +271,37 @@ def main() -> None:
     ap.add_argument("--hold", type=int, default=120, help="seconds to keep the fault after detection")
     ap.add_argument("--deadline-minutes", type=int, default=0,
                     help="stop starting new trials after this long (0 = no limit)")
+    ap.add_argument("--resume", action="store_true",
+                    help="continue a previous run in --out: keep its trials, redo errored ones, "
+                         "and run only what is still missing")
     args = ap.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
+    trials_path = args.out / "trials.jsonl"
     rng = random.Random(args.seed)
-    plan = [label for label in KINDS if label is not None for _ in range(args.per_cause)]
-    plan += [None] * args.unknown
-    rng.shuffle(plan)
-    log(f"plan: {len(plan)} trials ({args.per_cause} per cause + {args.unknown} unknown), seed {args.seed}")
+
+    done: list[dict] = []
+    if args.resume and trials_path.exists():
+        done = [json.loads(line) for line in trials_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    have = Counter(t["label"] for t in done if "error" not in t and not t.get("contaminated"))
+    first_index = max((t["trial"] for t in done), default=0) + 1
+
+    plan: list[str | None] = []
+    for label in KINDS:
+        wanted = args.unknown if label is None else args.per_cause
+        plan += [label] * max(0, wanted - have[label])
+    # Different seed per resume so a redo does not replay identical random choices.
+    random.Random(args.seed + first_index).shuffle(plan)
+    log(f"plan: {len(plan)} trials to run ({args.per_cause} per cause + {args.unknown} unknown, "
+        f"{len(done)} already recorded), seed {args.seed}")
 
     prepare()
+    if done:
+        log("resuming: replacing every pod so no earlier fault is still injected")
+        reset_cluster()
     began = time.time()
-    trials_path = args.out / "trials.jsonl"
-    with open(trials_path, "w", encoding="utf-8") as trials_file:
-        for i, label in enumerate(plan, 1):
+    with open(trials_path, "a" if done else "w", encoding="utf-8") as trials_file:
+        for i, label in enumerate(plan, first_index):
             if args.deadline_minutes and (time.time() - began) / 60 > args.deadline_minutes:
                 log(f"deadline reached; stopping after {i - 1} trials")
                 break
