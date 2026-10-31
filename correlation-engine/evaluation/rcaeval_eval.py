@@ -31,12 +31,17 @@ from pathlib import Path
 
 import numpy as np
 
-from rcaeval_features import KINDS, load_cases
+from rcaeval_features import KINDS, LOG_KINDS, load_cases
 
 EXTRA = tuple(k + "_sd" for k in KINDS)
 USE_EXTRA = False
-FAULTS = ["cpu", "mem", "disk", "delay", "loss"]
+FAULTS = ["cpu", "mem", "disk", "delay", "loss"]       # replaced by the suite's own list in run()
 RULE_FAULTS = {"cpu", "mem", "delay", "loss"}       # faults the rules have a signature for
+USE_LOGS = False
+
+
+def active_kinds():
+    return KINDS + (LOG_KINDS if USE_LOGS else ())
 THRESHOLDS = (3.0, 5.0, 8.0, 12.0, 20.0, 50.0, 100.0)
 GATES = (0.0, 0.5, 0.6, 0.7, 0.8, 0.9)
 
@@ -47,10 +52,13 @@ def rule_diagnose(scores: dict, threshold: float):
     def fires(service, kind):
         return scores[service][kind] > threshold
 
-    resource = [s for s in scores if fires(s, "cpu") or fires(s, "mem")]
+    resource_kinds = ("cpu", "mem") + (("diskio", "socket") if "disk" in RULE_FAULTS else ())
+    resource = [s for s in scores if any(fires(s, k) for k in resource_kinds)]
     if resource:
-        service = max(resource, key=lambda s: max(scores[s]["cpu"], scores[s]["mem"]))
-        return service, "cpu" if scores[service]["cpu"] >= scores[service]["mem"] else "mem"
+        # strongest resource symptom on the strongest service; the fault is that symptom
+        service = max(resource, key=lambda s: max(scores[s][k] for k in resource_kinds))
+        kind = max(resource_kinds, key=lambda k: scores[service][k])
+        return service, {"diskio": "disk"}.get(kind, kind)
     slow = [s for s in scores if fires(s, "latency")]
     if slow:
         service = max(slow, key=lambda s: scores[s]["latency"])
@@ -70,13 +78,14 @@ def outcome(truth_service, truth_fault, decision, in_vocabulary=True):
 def service_rows(case):
     """One feature row per candidate service in a case."""
     scores = case["scores"]
-    top = {k: max(v[k] for v in scores.values()) for k in KINDS}
+    kinds = active_kinds()
+    top = {k: max(v[k] for v in scores.values()) for k in kinds}
     spread = sum(v["latency"] > 5 for v in scores.values())
     names, rows = [], []
     for service, v in scores.items():
-        row = [v[k] for k in KINDS]
-        row += [v[k] / top[k] if top[k] > 1e-6 else 0.0 for k in KINDS]
-        row += [float(v[k] >= top[k] - 1e-9) for k in KINDS]
+        row = [v[k] for k in kinds]
+        row += [v[k] / top[k] if top[k] > 1e-6 else 0.0 for k in kinds]
+        row += [float(v[k] >= top[k] - 1e-9) for k in kinds]
         row += [float(spread), float(len(scores))]
         if USE_EXTRA:
             row += [v[k] for k in EXTRA]
@@ -88,8 +97,9 @@ def service_rows(case):
 def fault_row(case, service):
     scores = case["scores"]
     mine = scores[service]
-    row = [mine[k] for k in KINDS]
-    row += [max(v[k] for v in scores.values()) for k in KINDS]
+    kinds = active_kinds()
+    row = [mine[k] for k in kinds]
+    row += [max(v[k] for v in scores.values()) for k in kinds]
     row += [sum(v["latency"] > 5 for v in scores.values()), sum(v["error"] > 5 for v in scores.values()),
             sum(v["cpu"] > 5 for v in scores.values())]
     if USE_EXTRA:
@@ -185,11 +195,14 @@ def pick_threshold(cases):
     return min(THRESHOLDS, key=key)
 
 
-def run(window_s: int):
-    cases = load_cases(window_s=window_s)
+def run(window_s: int, suite: str = "RE1"):
+    global FAULTS, RULE_FAULTS
+    cases = load_cases(window_s=window_s, suite=suite, with_logs=USE_LOGS)
+    FAULTS = sorted({c["fault"] for c in cases}, key=lambda f: ["cpu", "mem", "disk", "delay", "loss", "socket"].index(f))
+    RULE_FAULTS = {"cpu", "mem", "delay", "loss"} | ({"disk", "socket"} if suite == "RE2" else set())
     systems = sorted({c["system"] for c in cases})
     names = {"ob": "Online Boutique", "ss": "Sock Shop", "tt": "Train Ticket"}
-    lines = [f"# RCAEval RE1 evaluation (first {window_s}s after injection)", "",
+    lines = [f"# RCAEval {suite} evaluation (first {window_s}s after injection{', with logs' if USE_LOGS else ''})", "",
              f"{len(cases)} cases, {len(systems)} systems. The faults are real injections; the "
              "diagnosers see only metric scores, never the labels.", ""]
 
@@ -273,11 +286,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--window", type=int, default=300, help="seconds of post-injection data used")
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--suite", default="RE1", choices=("RE1", "RE2"))
+    parser.add_argument("--logs", action="store_true", help="add log-volume and log-error features (RE2)")
     parser.add_argument("--spread", action="store_true", help="add the variability features (did not help)")
     args = parser.parse_args()
-    global USE_EXTRA
+    global USE_EXTRA, USE_LOGS
     USE_EXTRA = args.spread
-    text = run(args.window)
+    USE_LOGS = args.logs
+    text = run(args.window, args.suite)
     if args.out:
         args.out.write_text(text, encoding="utf-8")
     print(text)

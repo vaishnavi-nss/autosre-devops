@@ -393,6 +393,37 @@ disclosures on method: the threshold grid was widened after the first run becaus
 value then sat at its upper edge, and Train Ticket's numbers were visible during that
 iteration; later design decisions used only Online Boutique and Sock Shop.
 
+### RE2: adding disk-I/O and socket metrics, and logs
+
+RE2 (270 cases: 15 per fault per system, six faults including a socket fault) has two metrics
+RE1 lacked, `diskio` and `socket`, plus container logs. The rules were extended before
+running (a disk-I/O symptom means disk, a socket symptom means socket); the "latency plus
+errors means loss" rule was left as it was, although RE1 had already shown it wrong.
+Tables: [`rcaeval-re2-results.md`](rcaeval-re2-results.md) (metrics) and
+[`rcaeval-re2-logs-results.md`](rcaeval-re2-logs-results.md) (metrics plus logs).
+
+| | wrong action | right action | escalates |
+|---|---:|---:|---:|
+| Replay baseline (270 cases) | 129 (48%) | 136 (50%) | 5 (2%) |
+| Learned, always acts | 98 (36%) | 172 (64%) | 0 |
+| Learned, acts at confidence >= 0.6 | 32 (12%) | 83 (31%) | 155 (57%) |
+| Learned, acts at confidence >= 0.9 | 2 (1%) | 9 (3%) | 259 (96%) |
+
+- **The new metrics helped where the signal exists.** Disk faults rose from confused with CPU
+  (65%) to 78% right once `diskio` was available, and the fault is now properly separable
+  from CPU stress. Confidence also became usable: precision of acted-on cases rises with the
+  gate (69% at 0.5, 72% at 0.6, 82% at 0.9), the first time it has behaved like a gate.
+- **The rules got worse, not better.** Adding symptoms to hand-written rules without
+  fitting them produced more wrong actions (48%), because the symptoms overlap: memory
+  stress also moves disk I/O, and CPU stress moves sockets. This is the clearest case so far
+  for learning the weights rather than writing them.
+- **Logs did not help.** Adding log-volume and error-line features gave 63.0% right, against
+  63.7% without. The features are crude (volume and keyword counts), so this says logs *as
+  summarised here* add nothing, not that logs cannot help. Traces (2.5 GB, not downloaded)
+  were skipped for the same reason.
+- **Remaining confusions are physical overlaps.** Memory stress is called disk 15 times in 45
+  (it drives I/O), delay and loss swap 8-12 times, and CPU and socket swap 7-11 times.
+
 ## Appendix: full output
 
 Regenerate with the commands under "How it was measured". Seed 7, 5000 incidents each.

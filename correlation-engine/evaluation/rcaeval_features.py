@@ -18,12 +18,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-KINDS = ("cpu", "mem", "latency", "error", "workload")
+KINDS = ("cpu", "mem", "latency", "error", "workload", "diskio", "socket")
+LOG_KINDS = ("lograte", "logerr")           # from container logs (RE2 and RE3 only)
+ERROR_WORDS = ("error", "err=", "fail", "timeout", "timed out", "refused", "exception", "unavailable", "panic")
 # Suffixes used by the three systems, folded onto the five kinds.
 SUFFIX_KIND = {
     "cpu": "cpu", "mem": "mem", "error": "error",
     "latency": "latency", "latency-50": "latency", "latency-90": "latency",
-    "load": "workload", "workload": "workload",
+    "load": "workload", "workload": "workload", "diskio": "diskio", "socket": "socket",
 }
 NOT_A_SERVICE = {"main"}          # the load-generator / host columns
 Z_CLIP = 10_000.0       # high enough that large faults do not all tie at the ceiling
@@ -87,10 +89,36 @@ def service_scores(metrics: pd.DataFrame, inject_time: int, window_s: int) -> di
     return out
 
 
-def load_cases(system: str | None = None, window_s: int = 300, data_dir: Path = DATA_DIR):
-    """RE1 case table plus a score dict per case. Skips cases that fail to load."""
+def log_scores(logs: pd.DataFrame, inject_time: int, window_s: int) -> dict:
+    """{container: {lograte, logerr}}: how much log volume and error-looking lines rose.
+
+    Per-second line counts before injection give a baseline; the score is the shift of the
+    post-injection mean in units of that baseline's spread (floored, as for metrics).
+    """
+    start, end = int(logs.timestamp.min()), int(logs.timestamp.max()) + 1
+    seconds = np.arange(start, end)
+    is_error = logs.message.str.lower().str.contains("|".join(ERROR_WORDS), regex=True, na=False)
+    out = {}
+    for service, group in logs.groupby("container_name"):
+        row = {}
+        for kind, rows in (("lograte", group), ("logerr", group[is_error[group.index]])):
+            counts = pd.Series(rows.timestamp.value_counts()).reindex(seconds, fill_value=0)
+            before = counts[counts.index < inject_time]
+            after = counts[(counts.index >= inject_time) & (counts.index < inject_time + window_s)]
+            if before.empty or after.empty:
+                row[kind] = 0.0
+                continue
+            scale = max(before.std(), 0.1 * before.mean(), 0.1)
+            row[kind] = float(np.clip((after.mean() - before.mean()) / scale, -Z_CLIP, Z_CLIP))
+        out[service] = row
+    return out
+
+
+def load_cases(system: str | None = None, window_s: int = 300, data_dir: Path = DATA_DIR,
+               suite: str = "RE1", with_logs: bool = False):
+    """Case table plus a score dict per case for one suite. Skips cases that fail to load."""
     table = pd.read_parquet(data_dir / "cases.parquet")
-    table = table[table.suite == "RE1"]
+    table = table[table.suite == suite]
     if system:
         table = table[table.system == system]
     cases = []
@@ -100,6 +128,11 @@ def load_cases(system: str | None = None, window_s: int = 300, data_dir: Path = 
             continue
         try:
             scores = service_scores(pd.read_parquet(path), int(row.inject_time), window_s)
+            if with_logs:
+                logs_path = data_dir / row.case / "logs.parquet"
+                logs = log_scores(pd.read_parquet(logs_path), int(row.inject_time), window_s)                     if logs_path.exists() else {}
+                for service, row_scores in scores.items():
+                    row_scores.update(logs.get(service, {k: 0.0 for k in LOG_KINDS}))
         except ValueError:
             continue
         cases.append({"case": row.case, "system": row.system, "service": row.root_cause_service,

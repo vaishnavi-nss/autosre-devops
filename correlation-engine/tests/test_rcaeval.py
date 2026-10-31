@@ -69,3 +69,30 @@ def test_outcome_scores_acting_on_an_unknown_fault_as_wrong_and_escalating_as_co
 def test_calibration_error_is_zero_when_confidence_equals_accuracy():
     assert ev.ece([0.5] * 10, [1, 0] * 5) < 1e-9
     assert ev.ece([0.9] * 10, [0] * 10) > 0.8
+
+
+def test_log_scores_pick_up_a_burst_of_error_lines_on_one_container():
+    rng = np.random.default_rng(1)
+    rows = []
+    for t in range(200):
+        for _ in range(5 + rng.integers(0, 2)):
+            rows.append((t, "a", "request ok"))
+            rows.append((t, "b", "request ok"))
+        if t >= 100:
+            rows += [(t, "a", "connection refused error")] * 8
+    logs = pd.DataFrame(rows, columns=["timestamp", "container_name", "message"])
+    scores = rf.log_scores(logs, inject_time=100, window_s=60)
+    assert scores["a"]["logerr"] > 20 and scores["a"]["lograte"] > 5
+    assert abs(scores["b"]["logerr"]) < 3 and abs(scores["b"]["lograte"]) < 3
+
+
+def test_diskio_and_socket_are_symptom_kinds_and_the_rules_use_them_when_known():
+    assert rf.parse_column("a_diskio") == ("a", "diskio")
+    assert rf.parse_column("a_socket") == ("a", "socket")
+    ev.RULE_FAULTS.update({"disk", "socket"})
+    try:
+        scores = rf.service_scores(frame({"a_cpu": 1.0}).assign(a_diskio=lambda d: 10.0)
+                                   .pipe(lambda d: d.assign(a_diskio=np.where(d.time >= 100, 90.0, 10.0))), 100, 60)
+        assert ev.rule_diagnose(scores, 8.0) == ("a", "disk")
+    finally:
+        ev.RULE_FAULTS.difference_update({"disk", "socket"})
