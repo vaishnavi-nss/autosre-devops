@@ -8,7 +8,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py correlate.py dependency_graph.py signatures.py ./
+COPY app.py correlate.py dependency_graph.py second_opinion.py signatures.py ./
 
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
