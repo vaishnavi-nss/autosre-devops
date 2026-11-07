@@ -133,6 +133,13 @@ with the true diagnosis and a deliberately wrong one. Results:
 Read the report's three numbers before ever setting `SECOND_OPINION_MODE=gate`. The scorer needs
 about five minutes of Prometheus history for its baseline, which the bootstrap's warm-up covers.
 
+## Collecting training data for a scorer of our own
+
+`COLLECT=1 PER_CAUSE=8 UNKNOWN=6 DEADLINE_MIN=150 ./bootstrap.sh <bucket>` (or the same variables in
+user-data) runs the trials in collect mode: no alert waiting, feature tables only, about 5 minutes a
+trial. `results/trials.jsonl` then feeds `second-opinion/train_own.py`. Aim for at least 8 trials per
+cause; the trainer refuses fewer than 12 trials in total.
+
 ## Problems this run hit, and the fixes
 
 | Symptom | Cause | Fix |

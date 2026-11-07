@@ -26,7 +26,11 @@ QUERIES = {
     "error": ('sum by (service) (rate(http_requests_total{status=~"5.."}[1m]))'
               ' / sum by (service) (rate(http_requests_total[1m]))', "service"),
     "workload": ('sum by (service) (rate(http_requests_total[1m]))', "service"),
+    # Our own gauges; only a model trained on our data (train_own.py) asks for these.
+    "disk": ("max by (service) (db_disk_usage_ratio)", "service"),
+    "pool": ("max by (service) (db_connection_pool_active)", "service"),
 }
+DEFAULT_KINDS = ("cpu", "mem", "latency", "error", "workload")
 
 
 def _get(base_url: str, query: str, start: float, end: float, step: int, timeout: float):
@@ -39,11 +43,12 @@ def _get(base_url: str, query: str, start: float, end: float, step: int, timeout
 
 
 def fetch_metrics(base_url: str, services, start: float, end: float, step: int = 15,
-                  timeout: float = 5.0) -> pd.DataFrame:
+                  timeout: float = 5.0, kinds=DEFAULT_KINDS) -> pd.DataFrame:
     """Frame of metrics for `services` between start and end (epoch seconds)."""
     wanted = set(services)
     columns: dict = {}
-    for kind, (query, label) in QUERIES.items():
+    for kind in kinds:
+        query, label = QUERIES[kind]
         for series in _get(base_url, query, start, end, step, timeout):
             service = series["metric"].get(label)
             if service not in wanted:

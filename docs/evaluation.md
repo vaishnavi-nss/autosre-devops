@@ -534,6 +534,29 @@ would need to record the score vectors it probes with), not to tune the RCAEval 
 crash-looped on start. `tests/test_dockerfile.py` now checks that every module reachable from
 `app.py` is copied into its image, for both services.
 
+### Next step, built and not yet run: a scorer trained on our own incidents
+
+The live result says the RCAEval model does not transfer, so the fix is training data from this
+system, not more tuning. What exists now:
+
+- `live_validate.py --collect` injects each fault and records the scorer's feature table at 150 s
+  and 270 s after injection, with no alert waiting: about 5 minutes a trial instead of 9, so roughly
+  25-30 trials fit in a lab session. `COLLECT=1 scripts/aws/bootstrap.sh <bucket>` runs it.
+- The scorer service has a `/features` endpoint and can measure two signals RCAEval has no
+  equivalent of, `db_disk_usage_ratio` and `db_connection_pool_active`, which decide two of our
+  three causes. The normal run records the same table next to every probe.
+- `second-opinion/train_own.py <results dir>...` trains on those tables. It holds out a whole trial
+  at a time (both windows of a trial together), reports service and cause accuracy, and the
+  agree/disagree counts on true and wrong claims, then saves `models/own.joblib`. A model trained
+  this way names the rule engine's own causes, so the verdict checks the cause as well as the service.
+  Boosted trees are used for the service ranking: on a small synthetic set (32 windows) a random
+  forest got 26 right in leave-one-trial-out and boosting got all 32, because a forest's bootstrap
+  samples often miss the one positive row.
+
+These are tested on synthetic tables only; there is no accuracy figure for our system until a
+collection run has been made. Gate mode stays off until the held-out numbers on real windows show it
+agreeing with true claims, not just rejecting wrong ones.
+
 ## Appendix: full output
 
 Regenerate with the commands under "How it was measured". Seed 7, 5000 incidents each.

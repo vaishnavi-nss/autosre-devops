@@ -8,6 +8,8 @@
 #   PER_CAUSE     trials per known root cause     (default 6)
 #   UNKNOWN       trials with no known cause      (default 4)
 #   DEADLINE_MIN  stop starting trials after this many minutes (default 150)
+#   COLLECT       1 = record metric feature tables only, ~5 min a trial, to train a scorer on this
+#                 system's own faults (second-opinion/train_own.py); skips the alert pipeline
 #
 # Runs as root from EC2 user-data. Progress is written to the log and uploaded to
 # s3://<bucket>/progress/ every minute, so a failure can be diagnosed without
@@ -21,6 +23,7 @@ BUCKET="${1:?usage: bootstrap.sh <bucket>}"
 PER_CAUSE="${PER_CAUSE:-6}"
 UNKNOWN="${UNKNOWN:-4}"
 DEADLINE_MIN="${DEADLINE_MIN:-150}"
+COLLECT="${COLLECT:-0}"
 
 HOME_DIR=/home/ubuntu
 REPO="$HOME_DIR/autosre"
@@ -139,7 +142,7 @@ echo "$SO_REPLY" | grep -q '"verdict"' || say "WARNING: second opinion did not a
 publish
 say "live validation: $PER_CAUSE per cause + $UNKNOWN unknown, deadline ${DEADLINE_MIN} min"
 as_ubuntu "cd $REPO/correlation-engine && python3 evaluation/live_validate.py \
-  --out $RESULTS --per-cause $PER_CAUSE --unknown $UNKNOWN --deadline-minutes $DEADLINE_MIN"
+  --out $RESULTS --per-cause $PER_CAUSE --unknown $UNKNOWN --deadline-minutes $DEADLINE_MIN \n  $([ "$COLLECT" = 1 ] && echo --collect)"
 
 say "reports"
 as_ubuntu "cd $REPO/correlation-engine && python3 evaluation/live_report.py --results $RESULTS" || true
