@@ -174,3 +174,22 @@ def test_every_expected_symptom_has_a_prometheus_rule():
 
     missing = referenced - defined
     assert not missing, f"signatures reference alerts with no Prometheus rule: {missing}"
+
+
+def test_capture_records_what_the_engine_decided_not_just_what_it_received(client, sample_payload, tmp_path, monkeypatch):
+    import json
+    import app as engine
+    path = tmp_path / "incidents.jsonl"
+    monkeypatch.setattr(engine, "CAPTURE_PATH", str(path))
+    monkeypatch.setattr(engine, "SECOND_OPINION_URL", None)
+    client.post("/alerts", json=sample_payload)
+    record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert record["response"]["root_cause"] == "db_connection_pool_exhaustion"
+    assert record["response"]["service"] == "transaction-service"
+    assert record["payload"]["alerts"]                                # the replay tooling still works
+    # an unmatched incident is captured too, with its escalation
+    sample_payload["alerts"] = [a for a in sample_payload["alerts"]
+                                if a["labels"]["alertname"] != "DBPoolNearExhaustion"]
+    client.post("/alerts", json=sample_payload)
+    last = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])
+    assert last["response"]["status"] == "unmatched" and last["response"]["action"] == "escalate_to_human"

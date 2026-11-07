@@ -76,6 +76,76 @@ def symptoms(record: dict) -> str:
     return ", ".join(names)
 
 
+def second_opinion_section(delivered: list[dict], grouped: dict) -> list[str]:
+    """What the metric scorer said, in shadow mode, and how it did on deliberately wrong diagnoses.
+
+    Two separate questions. (1) On the engine's own first decision of each trial: did the scorer
+    agree? A `disagree` on a *correct* decision is a false veto, the cost of gate mode.
+    (2) On a diagnosis the trial made wrong on purpose (probed straight from the harness): did it
+    disagree? That is the only way to see whether it could catch a wrong one, since the rules
+    were never wrong in the live trials.
+    """
+    rows, verdicts, probes = [], {"correct": {}, "wrong": {}}, []
+    for t in delivered:
+        first = grouped[t["trial"]][0]
+        response = first.get("response") or {}
+        opinion = response.get("second_opinion")
+        if opinion:
+            cause, _ = decide(first)
+            truth = m.norm(t["label"])
+            right = cause == truth
+            verdict = opinion.get("verdict", "?")
+            bucket = verdicts["correct" if right else "wrong"]
+            bucket[verdict] = bucket.get(verdict, 0) + 1
+            rows.append(f"| {t['trial']} | {t['label'] or 'unknown'} | {cause} | "
+                        f"{'right' if right else 'wrong'} | {verdict} | {opinion.get('reason', '')} |")
+        for probe in t.get("probes", []):
+            probes.append((t, probe))
+    if not rows and not probes:
+        return []
+
+    out = ["## Second opinion (shadow mode: annotated, never acted on)", "",
+           "A separate service scores the raw metrics and says whether it agrees with the rules. "
+           "REAL pipeline, INJECTED faults, a model trained on a different dataset.", ""]
+    if rows:
+        out += ["### The engine's own decisions", "",
+                "| # | injected | engine decision | rules were | scorer | why |",
+                "|---:|---|---|---|---|---|", *rows, ""]
+        right = verdicts["correct"]
+        n_right = sum(right.values())
+        if n_right:
+            out.append(f"- on the **{n_right}** correct decisions the scorer said: "
+                       + ", ".join(f"{v} {n}" for v, n in sorted(right.items()))
+                       + f". In gate mode, `disagree` would have withheld a correct action "
+                       f"(**{right.get('disagree', 0)} of {n_right}**).")
+        if verdicts["wrong"]:
+            out.append("- on wrong decisions: "
+                       + ", ".join(f"{v} {n}" for v, n in sorted(verdicts["wrong"].items())))
+        out.append("")
+
+    if probes:
+        out += ["### Probed with a true and a deliberately wrong diagnosis", "",
+                "| # | injected | probed | claim: true diagnosis | claim: wrong diagnosis |",
+                "|---:|---|---|---|---|"]
+        truth_v, wrong_v = {}, {}
+        for t, probe in probes:
+            tv = probe.get("truth", {}).get("verdict", "-")
+            wv = probe.get("wrong", {}).get("verdict", "-")
+            out.append(f"| {t['trial']} | {t['label'] or 'unknown'} | {probe['when']} | {tv} | {wv} |")
+            if "truth" in probe:
+                truth_v[tv] = truth_v.get(tv, 0) + 1
+            wrong_v[wv] = wrong_v.get(wv, 0) + 1
+        n_truth, n_wrong = sum(truth_v.values()), sum(wrong_v.values())
+        out += ["", f"- **true diagnosis** ({n_truth} probes): "
+                + ", ".join(f"{v} {n}" for v, n in sorted(truth_v.items())),
+                f"- **wrong diagnosis** ({n_wrong} probes): "
+                + ", ".join(f"{v} {n}" for v, n in sorted(wrong_v.items()))
+                + f". Caught (disagreed): **{wrong_v.get('disagree', 0)} of {n_wrong}**.",
+                "- a verifier is only useful if it agrees with the true claim and disagrees with the wrong one; "
+                "`no_opinion` is safe but adds nothing, and `unavailable` means the call failed.", ""]
+    return out
+
+
 def build(results: Path) -> str:
     records = load_replay(results / "incidents.jsonl")
     trials = load_trials(results / "trials.jsonl")
@@ -159,6 +229,7 @@ def build(results: Path) -> str:
                        "INJECTED faults.", first_set), ""]
         out += [report("Every record",
                        "All webhooks received, including later updates that carry more symptoms.", all_set), ""]
+    out += second_opinion_section(delivered, grouped)
     return "\n".join(out)
 
 

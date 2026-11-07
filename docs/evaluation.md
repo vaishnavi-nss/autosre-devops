@@ -480,12 +480,26 @@ and none of the following has been run:
   1-second data, and the incident-start estimate is "earliest alert minus two minutes".
 - Whether it *helps* is unknown. That is why `shadow` is the default.
 
-**To validate it,** deploy it in `shadow` mode, rerun the live validation
-(`docs/aws-validation.md`), and compare each trial's verdict with its known label. Count how
-often it agrees on correct diagnoses and how often it would have caught a wrong one; only
-then consider `gate`. `vetoed_incidents_total` is not yet charted: the dashboard's
-"Escalated to a human" panel counts only unmatched incidents, so it would undercount vetoes
-in gate mode.
+**Checked without a cluster.** `second-opinion/e2e_smoke.py` runs the engine, the scorer and a
+fake Prometheus as real servers over HTTP and checks five things: the scorer agrees with a true
+diagnosis, disagrees with a wrong one, the engine vetoes the wrong one in gate mode, acts on the
+true one, and carries on when the scorer is dead. It passes, deterministically. It also showed how
+sensitive the scorer is to what a fault looks like: a memory fault that moved cpu, memory and
+latency together scored 0.79 and was recognised, while the same memory pressure with cpu and
+latency flat scored 0.38-0.48 and was once attributed to the wrong service. Real RCAEval memory
+faults look like the first; whether ours do is exactly what the live run must show.
+
+**To validate it live,** the AWS run (`docs/aws-validation.md`) now deploys the scorer in
+`shadow` mode and records, for every trial, what it said about the engine's own decision. Because
+the rules were never wrong in the live trials, that alone cannot show whether it would catch a
+wrong one, so each trial also asks it about a true and a deliberately wrong diagnosis, at the first
+incident and at the end of the hold. `live_report.py` adds a section with three numbers that
+decide whether `gate` mode is worth enabling: false vetoes on correct decisions, wrong claims
+caught, and how often it abstains. The engine's capture file also now records the decision and
+verdict for each incident. Not yet run.
+
+`vetoed_incidents_total` is not charted: the dashboard's "Escalated to a human" panel counts only
+unmatched incidents, so it would undercount vetoes in gate mode.
 
 ## Appendix: full output
 

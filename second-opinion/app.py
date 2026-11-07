@@ -15,10 +15,11 @@ Endpoints:
 Environment:
     PROMETHEUS_URL      default http://monitoring-kube-prometheus-prometheus.monitoring:9090
     MODEL_PATH          default models/second_opinion.joblib
-    MIN_CONFIDENCE      below this the scorer abstains (default 0.5)
+    MIN_CONFIDENCE      below this the scorer abstains (default 0.3; precision on held-out systems is flat from 0.3 to 0.6)
     BASELINE_MINUTES    how much earlier behaviour to compare against (default 30)
-    LEAD_SECONDS        alerts fire after their `for:` delay, so the fault is assumed to have
-                        started this long before the earliest alert (default 120)
+    LEAD_SECONDS        alerts fire after the scrape interval and their `for:` delay (30-60s),
+                        so the fault is assumed to have started this long before the earliest
+                        alert (default 60). Too large and normal samples dilute the window.
 """
 
 import logging
@@ -38,10 +39,11 @@ from scoring import service_scores
 SERVICE_NAME = os.getenv("SERVICE_NAME", "second-opinion")
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://monitoring-kube-prometheus-prometheus.monitoring:9090")
 MODEL_PATH = Path(os.getenv("MODEL_PATH", Path(__file__).resolve().parent / "models" / "second_opinion.joblib"))
-MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.5"))
+MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.3"))
 BASELINE_S = int(float(os.getenv("BASELINE_MINUTES", "30")) * 60)
-LEAD_S = int(os.getenv("LEAD_SECONDS", "120"))
+LEAD_S = int(os.getenv("LEAD_SECONDS", "60"))
 MIN_FAULT_SAMPLES = 4
+MIN_BASELINE_SAMPLES = 20           # five minutes at a 15s step
 # The chain the engine reasons about (correlation-engine/dependency_graph.py).
 SERVICES = ("frontend", "api-gateway", "transaction-service", "database")
 
@@ -78,6 +80,9 @@ def opinion_for(cause: str, service: str, incident_start: float, now: float | No
     fault_samples = int(((frame.time >= fault_start)).sum())
     if fault_samples < MIN_FAULT_SAMPLES:
         return {"verdict": "no_opinion", "reason": f"only {fault_samples} samples since the incident began"}
+    baseline_samples = int((frame.time < fault_start).sum())
+    if baseline_samples < MIN_BASELINE_SAMPLES:
+        return {"verdict": "no_opinion", "reason": f"only {baseline_samples} baseline samples before the incident"}
     scores = service_scores(frame, fault_start, int(now) - fault_start + 1)
     if len(scores) < 2:
         return {"verdict": "no_opinion", "reason": f"metrics found for only {len(scores)} service(s)"}

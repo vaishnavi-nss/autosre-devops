@@ -125,6 +125,17 @@ as_ubuntu "kubectl -n monitoring get prometheusrule,servicemonitor -A | head -20
 as_ubuntu "kubectl -n monitoring get secret alertmanager-monitoring-kube-prometheus-alertmanager \
   -o jsonpath='{.data.alertmanager\\.yaml}' | base64 -d | head -40" || true
 
+say "second opinion smoke test (a dead scorer is cheaper to find now than after the trials)"
+# Ask about the current, healthy cluster: any verdict, even no_opinion, proves the image, the model
+# and the Prometheus queries all work. Only a connection error or a non-JSON reply is a failure.
+SO_REPLY=$(as_ubuntu "kubectl -n autosre exec deploy/loadgen -- curl -s -m 30 -X POST \
+  -H 'content-type: application/json' \
+  -d '{\"root_cause\":\"db_disk_full\",\"service\":\"database\",\"incident_start\":'\$(date +%s)'}' \
+  http://second-opinion.autosre.svc.cluster.local:8000/opinion" || true)
+echo "second-opinion reply: $SO_REPLY"
+echo "$SO_REPLY" > "$RESULTS/second_opinion_smoke.txt"
+echo "$SO_REPLY" | grep -q '"verdict"' || say "WARNING: second opinion did not answer; the trials will record it as unavailable"
+
 publish
 say "live validation: $PER_CAUSE per cause + $UNKNOWN unknown, deadline ${DEADLINE_MIN} min"
 as_ubuntu "cd $REPO/correlation-engine && python3 evaluation/live_validate.py \
@@ -135,6 +146,7 @@ as_ubuntu "cd $REPO/correlation-engine && python3 evaluation/live_report.py --re
 as_ubuntu "cd $REPO/correlation-engine && python3 evaluation/check_dashboard.py \
   > $RESULTS/dashboard_check.txt 2>&1; cat $RESULTS/dashboard_check.txt" || true
 as_ubuntu "kubectl get pods -A > $RESULTS/pods.txt 2>&1" || true
+as_ubuntu "kubectl -n autosre logs deploy/second-opinion --tail=2000 > $RESULTS/second-opinion.log 2>&1" || true
 
 echo DONE > "$RESULTS/STATUS"
 publish
