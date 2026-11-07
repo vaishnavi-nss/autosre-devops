@@ -489,17 +489,50 @@ latency together scored 0.79 and was recognised, while the same memory pressure 
 latency flat scored 0.38-0.48 and was once attributed to the wrong service. Real RCAEval memory
 faults look like the first; whether ours do is exactly what the live run must show.
 
-**To validate it live,** the AWS run (`docs/aws-validation.md`) now deploys the scorer in
-`shadow` mode and records, for every trial, what it said about the engine's own decision. Because
-the rules were never wrong in the live trials, that alone cannot show whether it would catch a
-wrong one, so each trial also asks it about a true and a deliberately wrong diagnosis, at the first
-incident and at the end of the hold. `live_report.py` adds a section with three numbers that
-decide whether `gate` mode is worth enabling: false vetoes on correct decisions, wrong claims
-caught, and how often it abstains. The engine's capture file also now records the decision and
-verdict for each incident. Not yet run.
+### Second opinion: live result (it does not pass)
 
-`vetoed_incidents_total` is not charted: the dashboard's "Escalated to a human" panel counts only
-unmatched incidents, so it would undercount vetoes in gate mode.
+Run on AWS on 2026-11-07: 15 injected-fault trials (5 memory, 5 disk, 3 pool, 2 unknown), scorer in
+`shadow` mode. The rules were again never wrong (13 correct actions, 2 correct escalations, 0 wrong
+actions; with the first run that is 32 trials and 0 wrong actions). Full report:
+[`live-validation-run2/report.md`](live-validation-run2/report.md).
+
+| | result |
+|---|---|
+| on the engine's 13 correct decisions | agree 3, **disagree 8**, no opinion 2 |
+| asked about a **true** diagnosis (26 probes) | agree 9, disagree 15, no opinion 2 |
+| asked about a deliberately **wrong** diagnosis (30 probes) | agree **0**, disagree 27, no opinion 3 |
+
+It is a one-sided verifier: it never endorsed a wrong claim, but it rejected most true ones. In `gate`
+mode it would have **withheld 8 of 13 correct actions** (62%) to guard against wrong ones that never
+occurred. **Do not enable `gate`.** It stays in `shadow`, where it does no harm, but it is not evidence
+for the diagnosis.
+
+Why, from the scorer's own output:
+
+- **The right service only 62% of the time** (16 of 26 true-claim probes), against 91-95% on the
+  RCAEval systems it was trained on. Latency propagates up the chain, so the scorer often blames
+  `frontend` or `api-gateway` for a fault in `transaction-service` or `database`.
+- **It sees almost everything as packet `loss`.** Our staged faults are latency-led, and `loss`
+  was its answer in nearly every probe. Memory pressure was recognised as `mem` in 1 of 5 trials,
+  although that is the one cause the check compares on fault type as well as service. The model's
+  best fault in testing (memory, 99% on RCAEval) was its worst here.
+- **It is rarely confident.** Calibrated confidence was at most 0.69 in 28 of the 30 probe moments (only one disk trial reached 0.82), and 3 moments abstained.
+- **Same output for true and wrong claims.** The verdict depends only on whether the scorer's
+  service equals the claimed one. A wrong claim names a service that is not faulty, so it is
+  rejected whenever the scorer does not happen to point at that same quiet service, which is almost
+  always. The 27-of-30 figure therefore mostly reflects how the wrong claims were chosen, not
+  insight; the 9-of-26 on true claims is the informative number.
+
+This is the transfer problem the earlier sections warned about, now measured: a model that is
+99% right on memory faults in three open-source systems does not carry over to a four-service system
+with different metrics, a 15-second scrape and faults of a different shape. The next step, if the
+second opinion is worth pursuing, is to train on **our own** labelled metric windows (the harness
+would need to record the score vectors it probes with), not to tune the RCAEval model further.
+
+**Process finding.** The live run also caught a deployment bug no test had: the engine's
+`Dockerfile` copied four named modules and not the new `second_opinion.py`, so the engine pod
+crash-looped on start. `tests/test_dockerfile.py` now checks that every module reachable from
+`app.py` is copied into its image, for both services.
 
 ## Appendix: full output
 
