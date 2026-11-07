@@ -130,20 +130,19 @@ async def receive_alerts(payload: dict):
     )
 
     result = correlate(firing)
-    _capture(payload)
 
     if result is None:
         reason = why_unmatched(firing)
         unmatched_incidents_total.labels(SERVICE_NAME).inc()
         log.warning("no root cause, escalating to a human: %s", reason)
-        return {
+        return _capture(payload, {
             "root_cause": None,
             "confidence": None,
             "status": "unmatched",
             "action": "escalate_to_human",
             "reason": reason,
             "received_alerts": len(firing),
-        }
+        })
 
     opinion = None
     if SECOND_OPINION_URL:
@@ -151,7 +150,7 @@ async def receive_alerts(payload: dict):
         if SECOND_OPINION_MODE == "gate" and opinion["verdict"] == "disagree":
             vetoed_incidents_total.labels(SERVICE_NAME).inc()
             log.warning("second opinion disagrees, escalating: %s", opinion.get("reason"))
-            return {
+            return _capture(payload, {
                 "root_cause": None,
                 "confidence": None,
                 "status": "vetoed",
@@ -162,7 +161,7 @@ async def receive_alerts(payload: dict):
                 "rule_confidence": result["confidence"],
                 "second_opinion": opinion,
                 "received_alerts": len(firing),
-            }
+            })
 
     root_causes_identified_total.labels(SERVICE_NAME, result["root_cause"]).inc()
     last_confidence.labels(SERVICE_NAME).set(result["confidence"])
@@ -170,7 +169,7 @@ async def receive_alerts(payload: dict):
     response = {"status": "correlated", "received_alerts": len(firing), **result}
     if opinion is not None:
         response["second_opinion"] = opinion
-    return response
+    return _capture(payload, response)
 
 
 async def _second_opinion(result: dict, firing: list) -> dict:
@@ -187,22 +186,30 @@ async def _second_opinion(result: dict, firing: list) -> dict:
     return opinion
 
 
-def _capture(payload: dict) -> None:
-    """Append the incident to CAPTURE_PATH as one JSON line, if capture is on.
+def _capture(payload: dict, response: dict) -> dict:
+    """Append the incident and what the engine decided to CAPTURE_PATH, if capture is on.
+
+    Returns `response` unchanged so a handler can `return _capture(payload, response)`.
 
     Notifications with nothing firing are skipped: when alerts clear, Alertmanager
     sends a "resolved" notification, which is the end of an incident rather than
     an incident, and recording it would score as a missed detection.
     """
     if not CAPTURE_PATH or not firing_only(payload.get("alerts", [])):
-        return
+        return response
     record = {
         "label": _capture_label,
         "received_at": datetime.now(timezone.utc).isoformat(),
         "payload": payload,
+        # What the engine did with it, including the second opinion, so a run can be scored
+        # against ground truth without replaying the webhook.
+        "response": {k: response.get(k) for k in
+                     ("status", "action", "root_cause", "service", "confidence", "second_opinion",
+                      "rule_root_cause")},
     }
     with open(CAPTURE_PATH, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
+    return response
 
 
 @app.put("/capture/label")

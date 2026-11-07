@@ -114,6 +114,47 @@ def put_label(label: str | None) -> None:
     kubectl("-n", NS, "exec", "deploy/correlation-engine", "--", "python", "-c", code, timeout=60)
 
 
+# -- second opinion ---------------------------------------------------------------------
+
+# Where each fault really is, and a diagnosis that is deliberately wrong for it. A useful
+# verifier should agree with the truth and disagree with the wrong one - the live trials
+# alone cannot show the second half, because the rules were never wrong in them.
+TRUTH = {
+    "db_connection_pool_exhaustion": ("db_connection_pool_exhaustion", "transaction-service"),
+    "high_memory_usage": ("high_memory_usage", "transaction-service"),
+    "db_disk_full": ("db_disk_full", "database"),
+    None: None,                                    # a gateway fault: no rule diagnosis is right
+}
+WRONG = {
+    "db_connection_pool_exhaustion": ("db_disk_full", "database"),
+    "high_memory_usage": ("db_disk_full", "database"),
+    "db_disk_full": ("high_memory_usage", "transaction-service"),
+    None: ("db_connection_pool_exhaustion", "transaction-service"),
+}
+
+
+def ask_scorer(cause: str, service: str, incident_start: float) -> dict:
+    """Query the second-opinion service from inside the cluster; never raises."""
+    body = json.dumps({"root_cause": cause, "service": service, "incident_start": incident_start})
+    try:
+        out = kubectl("-n", NS, "exec", "deploy/loadgen", "--", "curl", "-s", "-m", "20", "-X", "POST",
+                      "-H", "content-type: application/json", "-d", body,
+                      "http://second-opinion.autosre.svc.cluster.local:8000/opinion", timeout=60)
+        return json.loads(out)
+    except Exception as exc:                       # noqa: BLE001 - recorded, not fatal
+        return {"verdict": "unavailable", "reason": f"{type(exc).__name__}: {exc}"}
+
+
+def probe_scorer(label: str | None, injected_at: float, when: str) -> dict:
+    """Ask about the true diagnosis (if there is one) and a wrong one, for the live fault."""
+    start = injected_at + 60                       # alerts fire 30-60s after the fault begins
+    out = {"when": when}
+    if TRUTH[label]:
+        out["truth"] = ask_scorer(*TRUTH[label], start)
+    out["wrong"] = ask_scorer(*WRONG[label], start)
+    return out
+
+
 # -- environment -----------------------------------------------------------------------
 
 def prepare() -> None:
@@ -121,7 +162,7 @@ def prepare() -> None:
     for deploy in ("transaction-service", "api-gateway", "database"):
         kubectl("-n", NS, "set", "env", f"deploy/{deploy}", "CHAOS_ENABLED=true")
     kubectl("-n", NS, "set", "env", "deploy/correlation-engine", f"CAPTURE_PATH={CAPTURE_FILE}")
-    for deploy in (*SERVICES, "correlation-engine"):
+    for deploy in (*SERVICES, "correlation-engine", "second-opinion"):
         kubectl("-n", NS, "rollout", "status", f"deploy/{deploy}", "--timeout=240s", timeout=260)
 
     log("waiting for Prometheus to scrape every AutoSRE target")
@@ -237,6 +278,7 @@ def run_trial(index: int, label: str | None, rng: random.Random, detect_timeout:
         if len(captured()) > before:
             trial["first_incident_s"] = round(time.time() - started, 1)
             log(f"  engine received an incident after {trial['first_incident_s']}s")
+            trial["probes"] = [probe_scorer(label, started, "at first incident")]
             break
     else:
         log("  no incident received before the timeout")
@@ -253,6 +295,9 @@ def run_trial(index: int, label: str | None, rng: random.Random, detect_timeout:
             trial["params"]["topped_up_to_mb"] = extra
             topped_up = True
 
+    if trial["first_incident_s"] is not None:
+        trial["probes"].append(probe_scorer(label, started, "end of hold"))
+        log(f"  scorer: {[(p['when'], p.get('truth', {}).get('verdict'), p['wrong']['verdict']) for p in trial['probes']]}")
     trial["firing_at_end"] = sorted(firing())
     trial["records"] = len(captured()) - before
     log(f"  held; {trial['records']} record(s); firing: {trial['firing_at_end']}")

@@ -109,6 +109,30 @@ base64 the script and pipe it through `base64 -d`.
 Grafana is at `http://<instance-public-ip>:3000/d/autosre-main` — anonymous, read-only,
 reachable only from the IP in the security group.
 
+## The second opinion in the run
+
+`build-images.sh` now also builds `autosre/second-opinion:dev` (scikit-learn, about 2 extra
+minutes on a `t3.large`; the trained model is `second-opinion/models/second_opinion.joblib`, so
+the tarball must include it) and `deploy.sh` waits for it. The engine is configured to call it in
+`shadow` mode: it annotates and counts, and never changes a decision.
+
+Before the trials, the bootstrap asks the scorer one question and writes the reply to
+`results/second_opinion_smoke.txt`. Any JSON verdict, even `no_opinion`, means the image, the model
+and the Prometheus queries work; a connection error means stop and read `second-opinion.log`.
+
+During each trial the harness also probes the scorer (through `deploy/loadgen`, which has `curl`)
+with the true diagnosis and a deliberately wrong one. Results:
+
+| File | What it adds |
+|---|---|
+| `trials.jsonl` | a `probes` list per trial: the verdicts for the true and the wrong claim |
+| `incidents.jsonl` | each record now has a `response` with the engine's decision and the scorer's verdict |
+| `report.md` | a "Second opinion" section: false vetoes, wrong claims caught, abstentions |
+| `second-opinion.log` | the scorer's log, with the reason for every `no_opinion` |
+
+Read the report's three numbers before ever setting `SECOND_OPINION_MODE=gate`. The scorer needs
+about five minutes of Prometheus history for its baseline, which the bootstrap's warm-up covers.
+
 ## Problems this run hit, and the fixes
 
 | Symptom | Cause | Fix |

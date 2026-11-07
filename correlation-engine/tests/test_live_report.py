@@ -194,3 +194,55 @@ def test_resume_runs_only_what_is_missing(tmp_path, monkeypatch):
     assert labels.count("high_memory_usage") == 2                     # the errored one is redone
     assert labels.count(None) == 0                                    # 1 wanted, 1 done
     assert sorted(i for i, _ in ran) == [4, 5, 6, 7, 8]               # numbering continues from 3
+
+
+def so_record(at, label, pairs, verdict, reason="r"):
+    rec = record(at, label, pairs)
+    rec["response"] = {"second_opinion": {"verdict": verdict, "reason": reason}}
+    return rec
+
+
+def test_second_opinion_section_scores_verdicts_and_probes(tmp_path):
+    trials = [trial(1, "db_connection_pool_exhaustion", "2026-01-01T10:00:00+00:00", "2026-01-01T10:00:10+00:00",
+                    probes=[{"when": "at first incident", "truth": {"verdict": "agree"}, "wrong": {"verdict": "disagree"}},
+                            {"when": "end of hold", "truth": {"verdict": "no_opinion"}, "wrong": {"verdict": "agree"}}]),
+              trial(2, "db_disk_full", "2026-01-01T10:20:00+00:00", "2026-01-01T10:20:10+00:00")]
+    recs = [so_record("2026-01-01T10:01:00+00:00", "db_connection_pool_exhaustion", POOL_ALERTS, "agree"),
+            so_record("2026-01-01T10:21:30+00:00", "db_disk_full", [("DBDiskNearFull", "database")], "disagree",
+                      "metrics point at frontend")]
+    write(tmp_path, trials, recs)
+    text = lr.build(tmp_path)
+    assert "## Second opinion" in text
+    assert "on the **2** correct decisions the scorer said: agree 1, disagree 1" in text
+    assert "(**1 of 2**)" in text                                   # one false veto in gate mode
+    assert "**wrong diagnosis** (2 probes): agree 1, disagree 1. Caught (disagreed): **1 of 2**" in text
+    assert "**true diagnosis** (2 probes): agree 1, no_opinion 1" in text
+
+
+def test_no_second_opinion_section_when_the_run_had_none(tmp_path):
+    trials = [trial(1, "db_disk_full", "2026-01-01T10:00:00+00:00", "2026-01-01T10:00:10+00:00")]
+    write(tmp_path, trials, [record("2026-01-01T10:02:00+00:00", "db_disk_full", [("DBDiskNearFull", "database")])])
+    assert "Second opinion" not in lr.build(tmp_path)
+
+
+def test_the_scorer_probe_pairs_a_true_and_a_wrong_diagnosis_for_every_label(monkeypatch):
+    import live_validate as lv
+    calls = []
+    monkeypatch.setattr(lv, "ask_scorer", lambda cause, service, start: calls.append((cause, service, start)) or {"verdict": "agree"})
+    for label in ("db_connection_pool_exhaustion", "high_memory_usage", "db_disk_full"):
+        probe = lv.probe_scorer(label, 1000.0, "now")
+        assert probe["truth"] and probe["wrong"]
+        assert lv.TRUTH[label] != lv.WRONG[label]
+    gateway = lv.probe_scorer(None, 1000.0, "now")
+    assert "truth" not in gateway and gateway["wrong"]
+    assert all(start == 1060.0 for _, _, start in calls)            # alerts fire ~60s after the fault
+
+
+def test_the_scorer_probe_never_raises_when_the_call_fails(monkeypatch):
+    import live_validate as lv
+
+    def boom(*a, **k):
+        raise RuntimeError("exec failed")
+    monkeypatch.setattr(lv, "kubectl", boom)
+    reply = lv.ask_scorer("db_disk_full", "database", 1.0)
+    assert reply["verdict"] == "unavailable" and "exec failed" in reply["reason"]
