@@ -168,3 +168,37 @@ def test_the_shipped_model_loads_and_finds_an_obvious_memory_fault(monkeypatch):
     scores = scoring.service_scores(metrics("transaction-service", "mem", factor=20.0, seed=3), 1_100, 60)
     service, fault, confidence, _ = model.diagnose(scores)
     assert (service, fault) == ("transaction-service", "mem")
+
+
+# ---------------------------------------------------------------- own-data additions
+def test_a_cause_in_the_scorers_vocabulary_is_compared_on_fault_type_too():
+    # a scorer trained on our incidents names our causes directly, so a disk claim can be refuted
+    # by a scorer that finds the right service but a different cause
+    v = op.judge("db_disk_full", "database", "database", "high_memory_usage", 0.9, 0.3,
+                 vocabulary={"db_disk_full", "high_memory_usage"})
+    assert v["verdict"] == "disagree" and "high_memory_usage" in v["reason"]
+    v = op.judge("db_disk_full", "database", "database", "db_disk_full", 0.9, 0.3,
+                 vocabulary={"db_disk_full"})
+    assert v["verdict"] == "agree" and v["basis"] == "service and fault"
+    # without the vocabulary (the RCAEval model) the old service-only behaviour is unchanged
+    assert op.judge("db_disk_full", "database", "database", "mem", 0.9, 0.3)["basis"] == "service only"
+
+
+def test_features_endpoint_returns_every_signal_and_needs_no_model(monkeypatch):
+    from fastapi.testclient import TestClient
+    seen = {}
+
+    def fake(start, kinds, now=None):
+        seen["kinds"] = kinds
+        return {"database": {k: 0.0 for k in kinds}, "frontend": {k: 1.0 for k in kinds}}, None
+
+    monkeypatch.setattr(svc, "model", None)
+    monkeypatch.setattr(svc, "window_scores", fake)
+    with TestClient(svc.app) as client:
+        reply = client.post("/features", json={"incident_start": 1000}).json()
+    assert set(reply["scores"]["database"]) == set(scoring.OWN_KINDS) and "disk" in seen["kinds"]
+    monkeypatch.setattr(svc, "window_scores", lambda *a, **k: (None, "only 2 samples"))
+    with TestClient(svc.app) as client:
+        assert client.post("/features", json={"incident_start": 1000}).json() == {
+            "scores": None, "reason": "only 2 samples"}
+        assert client.post("/features", json={}).status_code == 422

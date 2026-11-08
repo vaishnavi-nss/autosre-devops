@@ -34,7 +34,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
 
 from opinion import judge
 from prometheus import fetch_metrics
-from scoring import service_scores
+from scoring import KINDS, OWN_KINDS, service_scores
 
 SERVICE_NAME = os.getenv("SERVICE_NAME", "second-opinion")
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://monitoring-kube-prometheus-prometheus.monitoring:9090")
@@ -70,24 +70,33 @@ async def lifespan(_app):
 app = FastAPI(title="AutoSRE second opinion", lifespan=lifespan)
 
 
-def opinion_for(cause: str, service: str, incident_start: float, now: float | None = None) -> dict:
-    """Score the incident window and judge the rule engine's diagnosis against it."""
+def window_scores(incident_start: float, kinds, now: float | None = None):
+    """Score the incident window. Returns (scores, None) or (None, reason)."""
     now = now or time.time()
     fault_start = int(incident_start) - LEAD_S
-    frame = fetch_metrics(PROMETHEUS_URL, SERVICES, fault_start - BASELINE_S, now)
+    frame = fetch_metrics(PROMETHEUS_URL, SERVICES, fault_start - BASELINE_S, now, kinds=kinds)
     if frame.empty:
-        return {"verdict": "no_opinion", "reason": "no metrics returned by Prometheus"}
+        return None, "no metrics returned by Prometheus"
     fault_samples = int(((frame.time >= fault_start)).sum())
     if fault_samples < MIN_FAULT_SAMPLES:
-        return {"verdict": "no_opinion", "reason": f"only {fault_samples} samples since the incident began"}
+        return None, f"only {fault_samples} samples since the incident began"
     baseline_samples = int((frame.time < fault_start).sum())
     if baseline_samples < MIN_BASELINE_SAMPLES:
-        return {"verdict": "no_opinion", "reason": f"only {baseline_samples} baseline samples before the incident"}
-    scores = service_scores(frame, fault_start, int(now) - fault_start + 1)
+        return None, f"only {baseline_samples} baseline samples before the incident"
+    scores = service_scores(frame, fault_start, int(now) - fault_start + 1, kinds)
     if len(scores) < 2:
-        return {"verdict": "no_opinion", "reason": f"metrics found for only {len(scores)} service(s)"}
+        return None, f"metrics found for only {len(scores)} service(s)"
+    return scores, None
+
+
+def opinion_for(cause: str, service: str, incident_start: float, now: float | None = None) -> dict:
+    """Score the incident window and judge the rule engine's diagnosis against it."""
+    scores, reason = window_scores(incident_start, getattr(model, "kinds", KINDS), now)
+    if scores is None:
+        return {"verdict": "no_opinion", "reason": reason}
     scorer_service, scorer_fault, confidence, ranking = model.diagnose(scores)
-    result = judge(cause, service, scorer_service, scorer_fault, confidence, MIN_CONFIDENCE)
+    result = judge(cause, service, scorer_service, scorer_fault, confidence, MIN_CONFIDENCE,
+                   vocabulary=set(map(str, model.fault_model.classes_)))
     result["ranking"] = [{"service": s, "score": round(p, 3)} for s, p in ranking]
     return result
 
@@ -109,6 +118,21 @@ def opinion(body: dict):
     opinions_total.labels(service, result["verdict"]).inc()
     log.info("%s on %s: %s (%s)", cause, service, result["verdict"], result.get("reason"))
     return result
+
+
+@app.post("/features")
+def features(body: dict):
+    """The scores the model is given, for every signal we can measure. The live harness records
+    these so a model can be trained on this system's own faults (train_own.py)."""
+    try:
+        start = float(body["incident_start"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"need incident_start: {exc}")
+    try:
+        scores, reason = window_scores(start, OWN_KINDS)
+    except Exception as exc:                      # Prometheus down, bad data, ...
+        scores, reason = None, f"could not score: {exc}"
+    return {"scores": scores} if scores is not None else {"scores": None, "reason": reason}
 
 
 @app.get("/metrics")

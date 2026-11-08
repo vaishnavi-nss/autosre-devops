@@ -135,11 +135,20 @@ WRONG = {
 
 def ask_scorer(cause: str, service: str, incident_start: float) -> dict:
     """Query the second-opinion service from inside the cluster; never raises."""
-    body = json.dumps({"root_cause": cause, "service": service, "incident_start": incident_start})
+    return _scorer_post("opinion", {"root_cause": cause, "service": service, "incident_start": incident_start})
+
+
+def ask_features(incident_start: float) -> dict:
+    """The raw per-service scores for the incident window: training data for a model of our own."""
+    return _scorer_post("features", {"incident_start": incident_start})
+
+
+def _scorer_post(path: str, payload: dict) -> dict:
+    body = json.dumps(payload)
     try:
         out = kubectl("-n", NS, "exec", "deploy/loadgen", "--", "curl", "-s", "-m", "20", "-X", "POST",
                       "-H", "content-type: application/json", "-d", body,
-                      "http://second-opinion.autosre.svc.cluster.local:8000/opinion", timeout=60)
+                      f"http://second-opinion.autosre.svc.cluster.local:8000/{path}", timeout=60)
         return json.loads(out)
     except Exception as exc:                       # noqa: BLE001 - recorded, not fatal
         return {"verdict": "unavailable", "reason": f"{type(exc).__name__}: {exc}"}
@@ -152,6 +161,7 @@ def probe_scorer(label: str | None, injected_at: float, when: str) -> dict:
     if TRUTH[label]:
         out["truth"] = ask_scorer(*TRUTH[label], start)
     out["wrong"] = ask_scorer(*WRONG[label], start)
+    out["features"] = ask_features(start)
     return out
 
 
@@ -307,6 +317,30 @@ def run_trial(index: int, label: str | None, rng: random.Random, detect_timeout:
     return trial
 
 
+def run_collect_trial(index: int, label: str | None, rng: random.Random, settle: int, windows=(150, 270)) -> dict:
+    """Inject a fault and record what the metrics look like, without waiting for alerts.
+
+    The full trial spends most of its ~9 minutes waiting for rate(...[5m]) alerts to clear. To train
+    a scorer only the metric windows are needed, so this injects, samples the scorer's feature table
+    at each of `windows` (seconds since injection), resets, and moves on: about 5 minutes a trial.
+    """
+    log(f"--- collect trial {index}: {label or 'gateway fault (unknown)'}")
+    trial: dict = {"trial": index, "label": label, "contaminated": False, "mode": "collect"}
+    trial["params"] = KINDS[label](rng)
+    trial["injected_at"] = now_iso()
+    started = time.time()
+    trial["probes"] = []
+    for seconds in windows:
+        time.sleep(max(0.0, started + seconds - time.time()))
+        features = ask_features(started + 60)          # same convention as probe_scorer: alerts fire ~60s in
+        trial["probes"].append({"when": f"{seconds}s after injection", "features": features})
+        log(f"  {seconds}s: {'scores recorded' if features.get('scores') else features.get('reason', features)}")
+    reset_cluster()
+    trial["reset_at"] = now_iso()
+    time.sleep(settle)
+    return trial
+
+
 # -- main -------------------------------------------------------------------------------
 
 def main() -> None:
@@ -319,6 +353,10 @@ def main() -> None:
     ap.add_argument("--hold", type=int, default=120, help="seconds to keep the fault after detection")
     ap.add_argument("--deadline-minutes", type=int, default=0,
                     help="stop starting new trials after this long (0 = no limit)")
+    ap.add_argument("--collect", action="store_true",
+                    help="record the scorer's feature tables only (no alerts, ~5 min a trial) to train "
+                         "second-opinion/train_own.py")
+    ap.add_argument("--settle", type=int, default=90, help="--collect: seconds to wait after each reset")
     ap.add_argument("--resume", action="store_true",
                     help="continue a previous run in --out: keep its trials, redo errored ones, "
                          "and run only what is still missing")
@@ -354,7 +392,8 @@ def main() -> None:
                 log(f"deadline reached; stopping after {i - 1} trials")
                 break
             try:
-                trial = run_trial(i, label, rng, args.detect_timeout, args.hold)
+                trial = (run_collect_trial(i, label, rng, args.settle) if args.collect
+                         else run_trial(i, label, rng, args.detect_timeout, args.hold))
             except Exception as exc:                      # keep going: one bad trial is data
                 log(f"  trial {i} errored: {exc}")
                 trial = {"trial": i, "label": label, "error": str(exc), "contaminated": True}
@@ -364,9 +403,11 @@ def main() -> None:
                     log(f"  reset also failed: {reset_exc}")
             trials_file.write(json.dumps(trial) + "\n")
             trials_file.flush()
-            (args.out / "incidents.jsonl").write_text("\n".join(captured()) + "\n", encoding="utf-8")
+            if not args.collect:
+                (args.out / "incidents.jsonl").write_text("\n".join(captured()) + "\n", encoding="utf-8")
 
-    (args.out / "incidents.jsonl").write_text("\n".join(captured()) + "\n", encoding="utf-8")
+    if not args.collect:
+        (args.out / "incidents.jsonl").write_text("\n".join(captured()) + "\n", encoding="utf-8")
     log(f"done in {(time.time() - began) / 60:.0f} minutes; results in {args.out}")
 
 

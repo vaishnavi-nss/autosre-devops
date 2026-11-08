@@ -15,8 +15,12 @@ CAUSE_FAULTS = {"high_memory_usage": {"mem"}}
 
 
 def judge(cause: str, service: str, scorer_service: str, scorer_fault: str,
-          confidence: float, min_confidence: float) -> dict:
-    """verdict is "agree", "disagree" or "no_opinion"."""
+          confidence: float, min_confidence: float, vocabulary=()) -> dict:
+    """verdict is "agree", "disagree" or "no_opinion".
+
+    `vocabulary` is the set of faults the scorer can name. A scorer trained on our own incidents
+    names the rule engine's causes directly, so a cause in its vocabulary is compared on fault
+    type too."""
     base = {"scorer_service": scorer_service, "scorer_fault": scorer_fault,
             "confidence": round(confidence, 3)}
     if confidence < min_confidence:
@@ -26,6 +30,8 @@ def judge(cause: str, service: str, scorer_service: str, scorer_fault: str,
         return {**base, "verdict": "disagree",
                 "reason": f"metrics point at {scorer_service}, rules named {service}"}
     expected = CAUSE_FAULTS.get(cause)
+    if cause in vocabulary:
+        expected = {cause}
     if expected is None:
         return {**base, "verdict": "agree", "basis": "service only",
                 "reason": f"metrics also point at {service}; no matching fault type to compare"}

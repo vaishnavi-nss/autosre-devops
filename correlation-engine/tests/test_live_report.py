@@ -246,3 +246,18 @@ def test_the_scorer_probe_never_raises_when_the_call_fails(monkeypatch):
     monkeypatch.setattr(lv, "kubectl", boom)
     reply = lv.ask_scorer("db_disk_full", "database", 1.0)
     assert reply["verdict"] == "unavailable" and "exec failed" in reply["reason"]
+
+
+def test_a_collect_trial_records_feature_tables_at_each_window_and_resets(monkeypatch):
+    import random
+    import live_validate as lv
+    asked, events = [], []
+    monkeypatch.setattr(lv, "ask_features", lambda start: asked.append(start) or {"scores": {"database": {"disk": 9.0}}})
+    monkeypatch.setattr(lv, "reset_cluster", lambda: events.append("reset"))
+    monkeypatch.setattr(lv.time, "sleep", lambda s: None)
+    monkeypatch.setitem(lv.KINDS, "db_disk_full", lambda rng: events.append("inject") or {"ratio": 0.95})
+    trial = lv.run_collect_trial(3, "db_disk_full", random.Random(0), settle=0, windows=(150, 270))
+    assert events == ["inject", "reset"]
+    assert [p["when"] for p in trial["probes"]] == ["150s after injection", "270s after injection"]
+    assert all(p["features"]["scores"]["database"]["disk"] == 9.0 for p in trial["probes"])
+    assert len(asked) == 2 and not trial["contaminated"] and trial["mode"] == "collect"
