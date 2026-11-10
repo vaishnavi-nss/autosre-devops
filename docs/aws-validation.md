@@ -32,6 +32,9 @@ the numbers, and what they do and do not show.
    tar -czf autosre.tar.gz --exclude=.git --exclude=__pycache__ --exclude=.venv autosre
    ```
 
+   **Convert the shell scripts to LF first** (`sed -i 's/$//' autosre/scripts/*.sh autosre/scripts/aws/*.sh`):
+   a script edited on Windows has CRLF endings, and bash then dies at line 20 of `bootstrap.sh` with
+   `set: pipefail^M: invalid option name` before the bootstrap can fix the other scripts itself.
    Upload `autosre.tar.gz` to the bucket. GNU `tar` reads `C:` in a path as a remote host,
    so use a relative output path on Windows.
 4. **Security group**: one inbound rule, TCP 3000 from *your* IP only (use the "My IP"
