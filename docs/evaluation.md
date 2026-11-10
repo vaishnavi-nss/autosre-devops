@@ -566,7 +566,8 @@ What this does and does not show:
 - It is a held-out estimate from one session, not a live shadow run. The model has not yet been
   deployed and asked about incidents as they happen.
 - Faults were injected back to back, so each one's 30-minute baseline contains earlier faults and the
-  z-scores are attenuated (pool 2-3 in most trials against 19-21 on a clean baseline). The model learned
+  z-scores are attenuated (pool 2-3 in five of the eight pool trials, against 19 in trial 1, the only
+  one with a clean baseline). The model learned
   thresholds on the attenuated values, so a clean baseline should be easier, but that is untested.
 - 29 trials is small; one more session would firm up the unknown-fault figure.
 
