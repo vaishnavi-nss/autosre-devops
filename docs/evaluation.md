@@ -611,6 +611,37 @@ for "how often does it back a true diagnosis" is the live 80%, from 20 probes.
 baseline (reset and settle 30 minutes between trials, or a robust baseline), train on run 3 and run 4
 together (about 41 trials), and score on a third session it has never seen.
 
+### Trying to improve it (run 5): more data, other datasets, earlier windows
+
+Run 4 showed the held-out figure did not carry over live, so the next step was to find out why and to
+use every dataset available. Each result below is held out one trial at a time unless said otherwise.
+
+| Tried | Result |
+|---|---|
+| Train on run 3 only, test on run 4 (a different session) | 86% right service, backs 18 of 18 true claims |
+| Signed-log squash of the scores (tames the 10000 clip) | no change |
+| Add RCAEval cases to the service ranking (40 per system, four-service view, weights 0.3 and 1) | **worse**: 77-82% against 86% across sessions; 81% against 91% on runs 3+4 combined; true claims backed 54 of 58 against 58 of 58. Left out |
+| Windows at 75, 90, 105, 120 s after injection (7 new trials, `live-validation-run5-early/`) | the run 3+4 model scores the same on them as on the 150 s+ windows (86% at every window, 30 of 30 true claims backed), so **"the engine asks too early" is not the explanation** |
+| Train on runs 3, 4 and the early windows together (**47 trials, 115 windows**) | **94.8%** right service, **92.2%** right service and cause; backs 90 of 94 true claims; **2 of 115 wrong claims were also backed** (the first time it endorsed a wrong one) |
+
+The RCAEval benchmark does not help because its systems have 12-100+ services, different metrics and
+no `disk` or `pool` signal; it teaches the ranking to look for patterns ours do not have. The data from
+our own system is what moves the number.
+
+**What is still unexplained: why live disagrees with the stored probes.** The scorer backs the true
+claim at the harness's probe moments and vetoed 4 of 9 of the engine's own calls in the same trials.
+The two paths differ in one input: the harness passes `injection + 60 s` as `incident_start`, the engine
+passes the earliest alert's `startsAt` (`second_opinion.earliest_start`), and the scorer treats
+`incident_start - 60 s` as when the fault began (`LEAD_SECONDS`). `startsAt` depends on each alert's `for:`
+delay, so the scored window starts at a different, alert-dependent time than any training window did.
+That fits the pattern but **has not been tested**. `live_validate.py --collect --start-offsets 30,60,90,120`
+now records the table at several such starts so the next collection can cover the spread and the claim
+can be checked.
+
+The 92% figure is therefore a held-out estimate on injected faults, not a live one; the live result
+(run 4, 80% of true claims backed, 4 of 9 correct decisions vetoed) stands until a new live run says
+otherwise. `models/own.joblib` is retrained on all three datasets. `SECOND_OPINION_MODE` stays `shadow`.
+
 ## Appendix: full output
 
 Regenerate with the commands under "How it was measured". Seed 7, 5000 incidents each.

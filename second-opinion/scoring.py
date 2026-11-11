@@ -104,6 +104,13 @@ def fault_row(scores: dict, service: str, kinds=KINDS):
     return [mine[k] for k in kinds] + [max(v[k] for v in scores.values()) for k in kinds]
 
 
+def squash_scores(scores: dict) -> dict:
+    """Signed log of every score. A robust z of 10000 (a metric that was flat, then moved) and one of 20
+    differ by a factor of 500 but are both 'very hot'; trees split on the raw values and waste their
+    thresholds on the tail. Order and sign are preserved."""
+    return {s: {k: float(np.sign(x) * np.log1p(abs(x))) for k, x in v.items()} for s, v in scores.items()}
+
+
 def _logit(p):
     p = np.clip(p, 1e-4, 1 - 1e-4)
     return np.log(p / (1 - p))
@@ -112,7 +119,7 @@ def _logit(p):
 class Scorer:
     """Ranks services as the root cause, then names the fault, with a calibrated confidence."""
 
-    def __init__(self, seed: int = 0, kinds=KINDS, trees: int = 200, boosts: int = 120, identity=(), service="rf"):
+    def __init__(self, seed: int = 0, kinds=KINDS, trees: int = 200, boosts: int = 120, identity=(), service="rf", squash=False):
         from sklearn.calibration import CalibratedClassifierCV
         from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
         self.seed = seed
@@ -130,26 +137,37 @@ class Scorer:
             self.service_model = RandomForestClassifier(n_estimators=trees, min_samples_leaf=2,
                                                         class_weight="balanced", random_state=seed)
         self.service_kind = service
+        self.squash = squash
         self.fault_model = CalibratedClassifierCV(
             GradientBoostingClassifier(n_estimators=boosts, max_depth=2, learning_rate=0.1, random_state=seed),
             method="sigmoid", cv=3)
         self.scaler = None
 
+    def _scores(self, scores):
+        return squash_scores(scores) if getattr(self, "squash", False) else scores
+
     def fit(self, cases):
-        X, y = [], []
+        """Cases flagged `service_only` (another system's faults, whose names are not ours) teach the
+        service ranking but not the fault model; `weight` scales a case's rows in the ranking."""
+        X, y, w = [], [], []
         for case in cases:
-            names, rows = service_rows(case["scores"], self.kinds, self.identity)
+            names, rows = service_rows(self._scores(case["scores"]), self.kinds, self.identity)
             for name, row in zip(names, rows):
                 X.append(row)
                 y.append(int(name == case["service"]))
-        self.service_model.fit(np.array(X), np.array(y))
+                w.append(float(case.get("weight", 1.0)))
+        if any(x != 1.0 for x in w):
+            self.service_model.fit(np.array(X), np.array(y), sample_weight=np.array(w))
+        else:
+            self.service_model.fit(np.array(X), np.array(y))
+        cases = [c for c in cases if not c.get("service_only")]
         faults = [c["fault"] for c in cases]
         smallest = min(faults.count(f) for f in set(faults))
         if smallest < 3:       # too few examples of some fault to cross-validate a calibration
             from sklearn.ensemble import GradientBoostingClassifier
             self.fault_model = GradientBoostingClassifier(
                 n_estimators=self.size[1], max_depth=2, learning_rate=0.1, random_state=self.seed)
-        self.fault_model.fit(np.array([fault_row(c["scores"], c["service"], self.kinds) for c in cases]), faults)
+        self.fault_model.fit(np.array([fault_row(self._scores(c["scores"]), c["service"], self.kinds) for c in cases]), faults)
         return self
 
     def calibrate(self, cases):
@@ -157,10 +175,11 @@ class Scorer:
         the system being scored (each system held out in turn)."""
         from sklearn.linear_model import LogisticRegression
         raw, ok = [], []
-        for system in sorted({c["system"] for c in cases}):
+        for system in sorted({c["system"] for c in cases if not c.get("service_only")}):
             inner = Scorer(self.seed, self.kinds, *getattr(self, "size", (200, 120)), identity=getattr(self, "identity", ()),
-                           service=getattr(self, "service_kind", "rf")).fit([c for c in cases if c["system"] != system])
-            for c in (c for c in cases if c["system"] == system):
+                           service=getattr(self, "service_kind", "rf"),
+                           squash=getattr(self, "squash", False)).fit([c for c in cases if c["system"] != system])
+            for c in (c for c in cases if c["system"] == system and not c.get("service_only")):
                 service, fault, conf, _ = inner.diagnose(c["scores"], calibrated=False)
                 raw.append(conf)
                 ok.append(service == c["service"] and fault == c["fault"])
@@ -173,6 +192,7 @@ class Scorer:
     def diagnose(self, scores: dict, calibrated: bool = True):
         """(service, fault, confidence, ranking). Raw confidence is P(service) x P(fault)."""
         kinds = getattr(self, "kinds", KINDS)        # models saved before `kinds` existed
+        scores = self._scores(scores)
         names, rows = service_rows(scores, kinds, getattr(self, "identity", ()))
         p = self.service_model.predict_proba(rows)[:, 1]
         best = int(np.argmax(p))

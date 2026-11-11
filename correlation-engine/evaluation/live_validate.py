@@ -317,7 +317,8 @@ def run_trial(index: int, label: str | None, rng: random.Random, detect_timeout:
     return trial
 
 
-def run_collect_trial(index: int, label: str | None, rng: random.Random, settle: int, windows=(150, 270)) -> dict:
+def run_collect_trial(index: int, label: str | None, rng: random.Random, settle: int, windows=(150, 270),
+                      start_offsets=(60,)) -> dict:
     """Inject a fault and record what the metrics look like, without waiting for alerts.
 
     The full trial spends most of its ~9 minutes waiting for rate(...[5m]) alerts to clear. To train
@@ -332,9 +333,15 @@ def run_collect_trial(index: int, label: str | None, rng: random.Random, settle:
     trial["probes"] = []
     for seconds in windows:
         time.sleep(max(0.0, started + seconds - time.time()))
-        features = ask_features(started + 60)          # same convention as probe_scorer: alerts fire ~60s in
-        trial["probes"].append({"when": f"{seconds}s after injection", "features": features})
-        log(f"  {seconds}s: {'scores recorded' if features.get('scores') else features.get('reason', features)}")
+        # The scorer treats incident_start - 60 s as when the fault began. The harness's convention is
+        # injection + 60 s (alerts fire ~60 s in), but the engine passes the earliest alert's startsAt,
+        # which differs per alert type, so the scored window starts earlier or later than in training.
+        # Several offsets record that spread (the default is the harness convention only).
+        for offset in start_offsets:
+            features = ask_features(started + offset)
+            when = f"{seconds}s after injection" + ("" if offset == 60 else f", start+{offset}")
+            trial["probes"].append({"when": when, "features": features})
+            log(f"  {when}: {'scores recorded' if features.get('scores') else features.get('reason', features)}")
     reset_cluster()
     trial["reset_at"] = now_iso()
     time.sleep(settle)
@@ -357,6 +364,12 @@ def main() -> None:
                     help="record the scorer's feature tables only (no alerts, ~5 min a trial) to train "
                          "second-opinion/train_own.py")
     ap.add_argument("--settle", type=int, default=90, help="--collect: seconds to wait after each reset")
+    ap.add_argument("--start-offsets", default="60",
+                    help="--collect: seconds after injection to use as incident_start, comma-separated "
+                         "(e.g. 30,60,90,120 to cover the spread of real alert startsAt values)")
+    ap.add_argument("--windows", default="150,270",
+                    help="--collect: seconds after injection at which to record the feature table. The engine "
+                         "asks the scorer 50-110 s after injection, so include early ones (e.g. 75,90,105,120,150)")
     ap.add_argument("--resume", action="store_true",
                     help="continue a previous run in --out: keep its trials, redo errored ones, "
                          "and run only what is still missing")
@@ -392,7 +405,8 @@ def main() -> None:
                 log(f"deadline reached; stopping after {i - 1} trials")
                 break
             try:
-                trial = (run_collect_trial(i, label, rng, args.settle) if args.collect
+                trial = (run_collect_trial(i, label, rng, args.settle, tuple(int(w) for w in args.windows.split(',')),
+                         tuple(int(o) for o in args.start_offsets.split(','))) if args.collect
                          else run_trial(i, label, rng, args.detect_timeout, args.hold))
             except Exception as exc:                      # keep going: one bad trial is data
                 log(f"  trial {i} errored: {exc}")
