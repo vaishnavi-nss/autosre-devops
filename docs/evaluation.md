@@ -571,9 +571,45 @@ What this does and does not show:
   thresholds on the attenuated values, so a clean baseline should be easier, but that is untested.
 - 29 trials is small; one more session would firm up the unknown-fault figure.
 
-`models/own.joblib` is saved but not wired in: the service still loads the RCAEval model.
-**`SECOND_OPINION_MODE` stays `shadow`.** Next: set `MODEL_PATH=models/own.joblib`, run the normal
-live validation in shadow mode, and enable `gate` only if the live verdicts match the table above.
+`models/own.joblib` is now what the scorer image loads (`MODEL_PATH` in its Dockerfile), in shadow
+mode. The live check below is the test the held-out figures could not be.
+
+### Live check of the own-data scorer (run 4)
+
+Run on AWS on 2026-11-11 with the same harness and the own-data model in `shadow` mode: 14 trials run,
+12 usable (2 excluded because the previous trial's alerts were still firing). Report:
+[`live-validation-run4/report.md`](live-validation-run4/report.md). The rules again made **no wrong
+action** (9 correct actions, 2 correct escalations, 1 miss in 12 first decisions; 0 wrong actions across
+all 40 records).
+
+| | RCAEval model (run 2) | own-data, held out (run 3) | own-data, **live** (run 4) |
+|---|---|---|---|
+| asked about a **true** diagnosis | agree 9 of 26 | agree 46 of 46 | agree **16 of 20**, disagree 2, no opinion 2 |
+| asked about a **wrong** diagnosis | agree 0 of 30 | agree 0 of 58 | agree **0 of 24**, disagree 22, no opinion 2 |
+| on the engine's correct decisions | agree 3, **disagree 8**, no opinion 2 | n/a | agree 4, **disagree 4**, no opinion 1 (of 9) |
+
+Live it is clearly better than the RCAEval model (true claims backed 80% against 35%, false vetoes on
+the engine's decisions 4 of 9 against 8 of 13) and it still never endorsed a wrong claim. It is also
+clearly worse than the held-out figures promised, and **it still does not pass for `gate` mode**: it
+would have withheld 4 of 9 correct actions.
+
+The four false vetoes, from the report: trials 5 and 8 (disk, pool) read as `gateway_fault`, trial 6
+(pool) as a database fault, trial 14 (memory) as pool exhaustion. Trial 1 abstained because the cluster
+had under 12 baseline samples. What explains the gap, in order of confidence:
+
+- **The unknown-fault class absorbs real faults.** It was already the weak class in run 3 (4 of 12
+  right) and two of the four vetoes name it.
+- **The baseline differs from training.** Both runs inject faults back to back, but the live trials
+  ran a different cause order and each trial's 30-minute baseline holds different earlier faults, so the
+  attenuated z-scores the model learned thresholds on do not repeat.
+- **Few trials.** 29 training trials, and some causes had 4-7.
+
+So the held-out number overstated how well the model transfers to a *new session*. The honest figure
+for "how often does it back a true diagnosis" is the live 80%, from 20 probes.
+
+**Decision: `SECOND_OPINION_MODE` stays `shadow`.** To make it gate-worthy: collect on a clean
+baseline (reset and settle 30 minutes between trials, or a robust baseline), train on run 3 and run 4
+together (about 41 trials), and score on a third session it has never seen.
 
 ## Appendix: full output
 
