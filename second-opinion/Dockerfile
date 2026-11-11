@@ -11,6 +11,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py opinion.py prometheus.py scoring.py ./
 # Trained by train.py; see docs/evaluation.md for what it was trained on.
 COPY models/second_opinion.joblib models/second_opinion.joblib
+# Trained on our own injected faults (train_own.py, docs/evaluation.md run 3). Shadow mode only.
+COPY models/own.joblib models/own.joblib
+ENV MODEL_PATH=models/own.joblib
 
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
