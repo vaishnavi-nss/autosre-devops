@@ -642,6 +642,25 @@ The 92% figure is therefore a held-out estimate on injected faults, not a live o
 (run 4, 80% of true claims backed, 4 of 9 correct decisions vetoed) stands until a new live run says
 otherwise. `models/own.joblib` is retrained on all three datasets. `SECOND_OPINION_MODE` stays `shadow`.
 
+### Live check of the retrained scorer (run 7)
+
+The retrained model was run live in shadow mode on a fresh instance (`docs/live-validation-run7/summary.md`).
+Seven trials ran before the deadline (a stuck `APILatencyHigh` alert made each wait 10-25 minutes; one trial
+was excluded because no incident arrived); six are usable.
+
+| | run 4 (run 3 model) | run 7 (retrained) |
+|---|---|---|
+| true claim backed at the probe moments | 16 of 20 | **12 of 12** |
+| wrong claim caught at the probe moments | 22 of 24 | **12 of 12** |
+| first engine decision vetoed (all were correct) | 4 of 9 correct decisions | **3 of 6** |
+
+The probes improved; the engine path did not. The scorer agrees with the true claim every time the harness
+asks, and disagrees with the engine's identical, correct call about half the time (trial 5: three
+consecutive vetoes, "looks like gateway_fault", for a pool-exhaustion incident). The only input that
+differs is the start time passed in, which supports the `startsAt` explanation above, though six trials
+and no controlled test do not prove it. **`SECOND_OPINION_MODE` stays `shadow`.** The next step is the
+`--collect --start-offsets` run, or making the engine pass the same start the scorer was trained on.
+
 ## Appendix: full output
 
 Regenerate with the commands under "How it was measured". Seed 7, 5000 incidents each.
