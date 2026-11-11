@@ -141,8 +141,10 @@ echo "$SO_REPLY" | grep -q '"verdict"' || say "WARNING: second opinion did not a
 
 publish
 say "live validation: $PER_CAUSE per cause + $UNKNOWN unknown, deadline ${DEADLINE_MIN} min"
+COLLECT_FLAG=""
+if [ "$COLLECT" = 1 ]; then COLLECT_FLAG="--collect"; fi
 as_ubuntu "cd $REPO/correlation-engine && python3 evaluation/live_validate.py \
-  --out $RESULTS --per-cause $PER_CAUSE --unknown $UNKNOWN --deadline-minutes $DEADLINE_MIN \n  $([ "$COLLECT" = 1 ] && echo --collect)"
+  --out $RESULTS --per-cause $PER_CAUSE --unknown $UNKNOWN --deadline-minutes $DEADLINE_MIN $COLLECT_FLAG"
 
 say "reports"
 as_ubuntu "cd $REPO/correlation-engine && python3 evaluation/live_report.py --results $RESULTS" || true

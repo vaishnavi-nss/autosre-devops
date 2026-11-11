@@ -534,28 +534,46 @@ would need to record the score vectors it probes with), not to tune the RCAEval 
 crash-looped on start. `tests/test_dockerfile.py` now checks that every module reachable from
 `app.py` is copied into its image, for both services.
 
-### Next step, built and not yet run: a scorer trained on our own incidents
+### A scorer trained on our own incidents (run 3)
 
-The live result says the RCAEval model does not transfer, so the fix is training data from this
-system, not more tuning. What exists now:
+The RCAEval model did not transfer, so the scorer was retrained on this system's own faults.
+`live_validate.py --collect` injects each fault and records the scorer's feature table at 150 s and
+270 s after injection (no alert waiting, 6 min 15 s a trial). The scorer service has a `/features`
+endpoint and two signals RCAEval has no equivalent of, `db_disk_usage_ratio` and
+`db_connection_pool_active`. `second-opinion/train_own.py` trains on those tables.
 
-- `live_validate.py --collect` injects each fault and records the scorer's feature table at 150 s
-  and 270 s after injection, with no alert waiting: about 5 minutes a trial instead of 9, so roughly
-  25-30 trials fit in a lab session. `COLLECT=1 scripts/aws/bootstrap.sh <bucket>` runs it.
-- The scorer service has a `/features` endpoint and can measure two signals RCAEval has no
-  equivalent of, `db_disk_usage_ratio` and `db_connection_pool_active`, which decide two of our
-  three causes. The normal run records the same table next to every probe.
-- `second-opinion/train_own.py <results dir>...` trains on those tables. It holds out a whole trial
-  at a time (both windows of a trial together), reports service and cause accuracy, and the
-  agree/disagree counts on true and wrong claims, then saves `models/own.joblib`. A model trained
-  this way names the rule engine's own causes, so the verdict checks the cause as well as the service.
-  Boosted trees are used for the service ranking: on a small synthetic set (32 windows) a random
-  forest got 26 right in leave-one-trial-out and boosting got all 32, because a forest's bootstrap
-  samples often miss the one positive row.
+Collected on AWS on 2026-11-10: **29 trials, 58 windows, no errored trial** (8 pool, 8 memory,
+7 disk, 6 unknown; one disk trial short of the plan because the lab session ended). Data:
+[`live-validation-run3/trials.jsonl`](live-validation-run3/trials.jsonl) (scores rounded to 2 decimals).
+Every figure below is leave-one-trial-out: both windows of a trial are held out together.
 
-These are tested on synthetic tables only; there is no accuracy figure for our system until a
-collection run has been made. Gate mode stays off until the held-out numbers on real windows show it
-agreeing with true claims, not just rejecting wrong ones.
+| | RCAEval model, live (run 2) | own-data model, held out (run 3) |
+|---|---|---|
+| right service | 62% (16 of 26) | **86%** (50 of 58) |
+| right service and cause | not comparable | **86%** (50 of 58) |
+| asked about a **true** diagnosis | agree 9, disagree 15, no opinion 2 | agree **46**, disagree 0, no opinion 0 |
+| asked about a **wrong** diagnosis | agree 0, disagree 27, no opinion 3 | agree **0**, disagree 53, no opinion 5 |
+
+By fault: pool exhaustion 16 of 16, high memory 16 of 16, disk full 14 of 14, unknown gateway fault
+**4 of 12**. All 8 misses are the unknown fault: the model names it `gateway_fault` but points at
+`database` or `frontend`. Six of the eight have confidence 0.13-0.35; trial 6 is wrong at 0.81-0.85.
+That fault has no rule and so no claim to check, which is why it does not appear in the verdict rows.
+
+What this does and does not show:
+
+- On the three causes the rules act on, the scorer now backs every true claim and no wrong one.
+  That is the property the RCAEval model lacked.
+- It is a held-out estimate from one session, not a live shadow run. The model has not yet been
+  deployed and asked about incidents as they happen.
+- Faults were injected back to back, so each one's 30-minute baseline contains earlier faults and the
+  z-scores are attenuated (pool 2-3 in five of the eight pool trials, against 19 in trial 1, the only
+  one with a clean baseline). The model learned
+  thresholds on the attenuated values, so a clean baseline should be easier, but that is untested.
+- 29 trials is small; one more session would firm up the unknown-fault figure.
+
+`models/own.joblib` is saved but not wired in: the service still loads the RCAEval model.
+**`SECOND_OPINION_MODE` stays `shadow`.** Next: set `MODEL_PATH=models/own.joblib`, run the normal
+live validation in shadow mode, and enable `gate` only if the live verdicts match the table above.
 
 ## Appendix: full output
 

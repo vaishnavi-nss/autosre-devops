@@ -1,0 +1,30 @@
+{
+  "trained_on": [
+    "docs/live-validation-run3"
+  ],
+  "trials": 29,
+  "cases": 58,
+  "leave_one_trial_out": {
+    "cases": 58,
+    "service_accuracy": 0.8620689655172413,
+    "service_and_fault_accuracy": 0.8620689655172413,
+    "verdicts": {
+      "true_claim": {
+        "agree": 46,
+        "disagree": 0,
+        "no_opinion": 0
+      },
+      "wrong_claim": {
+        "agree": 0,
+        "disagree": 53,
+        "no_opinion": 5
+      }
+    }
+  },
+  "faults": [
+    "db_connection_pool_exhaustion",
+    "db_disk_full",
+    "gateway_fault",
+    "high_memory_usage"
+  ]
+}
