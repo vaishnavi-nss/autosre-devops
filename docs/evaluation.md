@@ -760,6 +760,8 @@ every line holds. At the time of writing only one post-fix session exists (run 8
 
 **With run 11 added (3 post-fix sessions, `docs/live-validation-run11/summary.md`)**: 32 judged correct decisions (17 first decisions), **0 vetoes** (95% upper bound 10.7%), 34 of 34 true claims backed, 45 of 46 wrong claims caught, 6 of 6 unknown-cause trials escalated. Sessions, wrong-claim catch rate and unknown-cause criteria are met; **the bar is still not met** because three of run 11's 14 trials were marked contaminated and excluded, leaving 8 judged decisions (3 first decisions) and 6 true-claim probes short, and the veto upper bound just above 10%. Another clean session of about 9 known-cause trials should close the gap. The gate stays off.
 
+**With run 12 added (4 post-fix sessions, `docs/live-validation-run12/summary.md`)**: 43 judged correct decisions (24 first decisions), **0 vetoes** (95% upper bound 8.2%), 48 of 48 true claims backed, 59 of 60 wrong claims caught, 6 of 6 unknown-cause trials escalated. `gate_check.py` reports **READY**: the bar as written is met. Two caveats are recorded with the result: the pooled evidence mixes the scorer deployed before retraining (run 8) with the retrained one (runs 11 and 12; run 9's model is not recorded), and runs 11 and 12 alone, the two sessions known to use the current model, give 22 decisions and an upper bound of 14.9%, which would not meet the bar by themselves. Five trials across those two sessions were marked contaminated and excluded. `SECOND_OPINION_MODE` remains `shadow`; turning the gate on is a separate decision.
+
 ## Appendix: full output
 
 Regenerate with the commands under "How it was measured". Seed 7, 5000 incidents each.
