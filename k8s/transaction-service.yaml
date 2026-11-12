@@ -36,6 +36,8 @@ spec:
               value: "http://database.autosre.svc.cluster.local:8000"
             - name: DB_POOL_MAX
               value: "20"
+            - name: CHAOS_ENABLED
+              value: "false"
           resources:
             # Deliberately low so symptoms can be triggered on demand (brief section 4).
             requests:

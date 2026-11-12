@@ -58,3 +58,6 @@ python -m pytest tests/test_chaos.py -v
 
 # 3. Launch Frontend UI locally
 uvicorn services.frontend.app:app --port 3000
+```
+
+See [ML + Cloud integration validation](docs/ml-cloud-integration-validation.md) for the tested Minikube image, safe synthetic alert procedure, results, and rollback guidance.

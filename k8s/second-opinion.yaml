@@ -26,8 +26,8 @@ spec:
         # Keep this name equal to the service name - the PodRestartsHigh rule
         # turns the `container` label into the `service` label.
         - name: second-opinion
-          image: autosre/second-opinion:dev
-          imagePullPolicy: IfNotPresent
+          image: autosre/second-opinion:ml-integration-e9f736f-20261112-a61f9c2b
+          imagePullPolicy: Never
           ports:
             - name: http
               containerPort: 8000

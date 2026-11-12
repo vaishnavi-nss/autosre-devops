@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "run_id": "autosre-e2e-20261112T113946Z",
+  "date": "2026-11-12",
+  "baseline_commit": "e9f736f",
+  "profile": "minikube",
+  "scenario": "Four synthetic alerts through Alertmanager; no application fault injected",
+  "timestamps": {
+    "starts_at": "2026-11-12T11:39:46.681225+00:00",
+    "scheduled_ends_at": "2026-11-12T11:44:46.681225+00:00",
+    "payload_age_before_request_seconds": 0.001,
+    "powershell_pre_post_age_limit_seconds": 30
+  },
+  "image": {
+    "tag": "autosre/second-opinion:ml-integration-e9f736f-20261112-a61f9c2b",
+    "pull_policy": "Never",
+    "manifest_digest": "sha256:d05e71183379e94906f6f6d72adf60e12f05eb717e1877d2524add453c220665",
+    "config_digest": "sha256:6ae6de9d09a120e6e5c9b9a193c7845d4a76a3f9f31cb79c7e718b02e562c395",
+    "availability": "Local to tested Minikube; not pushed to a registry",
+    "model_path": "models/own.joblib",
+    "own_model_sha256": "fc56866e8d81045fe5805c6504e68f38cb5214511f5984d54ac5684271a8f64b",
+    "reference_model_sha256": "45c34de6fc077b0827479d5a1e16ae5c1961d6a5f441d86411d5aecc84f59450"
+  },
+  "safety": {
+    "auto_remediate": false,
+    "second_opinion_mode": "shadow",
+    "transaction_chaos_enabled": false,
+    "database_chaos_enabled": false,
+    "playbooks_executed": false,
+    "application_fault_injected": false
+  },
+  "observed": {
+    "alertmanager_post_status": 200,
+    "alerts_ingested": 4,
+    "partial_notifications": 0,
+    "firing_notifications": 1,
+    "resolved_notifications": 1,
+    "engine_post_status": 202,
+    "root_cause": "db_connection_pool_exhaustion",
+    "rule_confidence": 1.0,
+    "ml_post_status": 200,
+    "actual_model_inference": true,
+    "ml_verdict": "disagree",
+    "ml_reason": "metrics point at api-gateway, rules named transaction-service",
+    "shadow_continued_to_dispatcher": true,
+    "dispatcher_post_status": 200,
+    "dispatcher_response_body_captured": false,
+    "dry_run_evidence": "HTTP 200, execution disabled, and deployed dispatch code verified to follow the dry-run branch",
+    "separate_direct_dispatcher_confirmation": false
+  },
+  "prometheus": {
+    "ml_application_label": "exported_service",
+    "ml_application_value": "transaction-service",
+    "ml_jobs_counted_separately": ["second-opinion", "correlation-engine"],
+    "counters": {
+      "engine_firing_notifications": {"before": 6, "after": 7},
+      "pool_exhaustion_diagnoses": {"before": 2, "after": 3},
+      "scorer_verdicts": {"before": 1, "after": 2},
+      "engine_verdicts": {"before": 2, "after": 3},
+      "resolved_notifications": {"before": 3, "after": 4},
+      "unmatched_notifications": {"before": 4, "after": 4},
+      "vetoes": {"before": 0, "after": 0}
+    },
+    "confidence_gauge": {"before": 1.0, "after": 1.0},
+    "exporter_counter_deltas": {
+      "alertmanager_notifications_total": 2,
+      "alertmanager_notifications_failed_total": 0
+    }
+  },
+  "log_excerpts": [
+    {"time_utc": "2026-11-12T11:40:17.219990565Z", "service": "correlation-engine", "message": "status=firing alerts=['APILatencyHigh', 'DBPoolNearExhaustion', 'ErrorRateHigh', 'PodRestartsHigh']"},
+    {"time_utc": "2026-11-12T11:40:20.136771610Z", "service": "correlation-engine", "message": "second opinion on db_connection_pool_exhaustion: disagree (metrics point at api-gateway, rules named transaction-service)"},
+    {"time_utc": "2026-11-12T11:40:20.137741857Z", "service": "correlation-engine", "message": "root cause: db_connection_pool_exhaustion; confidence 100%"},
+    {"time_utc": "2026-11-12T11:40:20.120969447Z", "service": "second-opinion", "message": "POST /opinion HTTP/1.1: 200 OK"},
+    {"time_utc": "2026-11-12T11:40:21.974402593Z", "service": "remediation-dispatcher", "message": "POST /dispatch HTTP/1.1: 200 OK"},
+    {"time_utc": "2026-11-12T11:41:17.108484032Z", "service": "correlation-engine", "message": "resolved notification (4 alert(s)); nothing to diagnose"}
+  ],
+  "cleanup": {
+    "exact_alerts_resolved_in_finally": true,
+    "resolution_post_status": 200,
+    "remaining_test_alerts": 0,
+    "autosre_pods_ready": 7,
+    "monitoring_pods_ready": 6,
+    "pod_uids_and_restart_counts_unchanged": true,
+    "deployment_specs_unchanged": true,
+    "autosre_targets_up": 7
+  },
+  "limitations": [
+    "No ML gate-mode validation",
+    "No remediation-execution validation",
+    "No fault-detection-accuracy or model-correctness validation",
+    "Dispatcher response JSON was not captured",
+    "One complete firing notification was observed; atomic batch notification is not guaranteed"
+  ]
+}
