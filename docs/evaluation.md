@@ -694,6 +694,19 @@ Replaying the 13 stored run 7 records through the new estimate: the estimated fa
 time, not the verdicts: the verdicts need the metrics replayed, or a new live run. The gate stays off until a
 live run shows the vetoes gone.
 
+### Live check of the fix (run 8)
+
+A new live run with the fix (`docs/live-validation-run8/summary.md`; 6 usable known-cause trials, pods restarted
+first so no stale alert was firing): **the scorer agreed with all 11 diagnosed engine decisions** (run 7: agree 5,
+disagree 5, no_opinion 3), and with 6 of 6 first decisions (run 7: 2 of 6). The probes were again 12 of 12 true claims
+backed and 12 of 12 wrong claims caught. The estimated fault start was within about ±25 s of the injection on every
+scored record.
+
+Two limits. Run 8 had no stale alert, so on its own it cannot tell the fix from the clean cluster; the fix itself is
+supported by the run 7 replay (start times only), not by a controlled live comparison. And 11 decisions from 6 trials
+is a small sample, with no unknown-cause trial finished to test escalation. **The gate stays off** until a run with a
+stale alert left in place shows the fix alone keeps the verdicts correct, over more than six trials.
+
 ## Appendix: full output
 
 Regenerate with the commands under "How it was measured". Seed 7, 5000 incidents each.
