@@ -174,13 +174,14 @@ async def receive_alerts(payload: dict):
 
 async def _second_opinion(result: dict, firing: list) -> dict:
     """Ask the metric scorer, off the event loop. Never raises: failures are `unavailable`."""
-    started = second_opinion.earliest_start(firing)
-    if started is None:
+    deciding = SIGNATURES.get(result["root_cause"], {}).get("required_symptoms", [])
+    fault_start = second_opinion.estimate_fault_start(firing, deciding)
+    if fault_start is None:
         opinion = {"verdict": "unavailable", "reason": "alerts carry no start time"}
     else:
         opinion = await asyncio.to_thread(
             second_opinion.ask, SECOND_OPINION_URL, result["root_cause"], result["service"],
-            started, SECOND_OPINION_TIMEOUT)
+            fault_start, SECOND_OPINION_TIMEOUT, fault_start)
     second_opinion_verdicts_total.labels(result["service"], opinion["verdict"]).inc()
     log.info("second opinion on %s: %s (%s)", result["root_cause"], opinion["verdict"], opinion.get("reason"))
     return opinion

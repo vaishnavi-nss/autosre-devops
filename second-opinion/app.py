@@ -7,7 +7,9 @@ for memory pressure, what kind). It never acts on anything; the engine decides w
 with the verdict.
 
 Endpoints:
-    POST /opinion   {root_cause, service, incident_start}  ->  verdict
+    POST /opinion   {root_cause, service, incident_start[, fault_start]}  ->  verdict
+                    (`fault_start`, if given, is used as the start of the fault; otherwise it is
+                    `incident_start - LEAD_SECONDS`)
     GET  /health    liveness
     GET  /ready     readiness (model loaded)
     GET  /metrics   Prometheus metrics
@@ -70,10 +72,14 @@ async def lifespan(_app):
 app = FastAPI(title="AutoSRE second opinion", lifespan=lifespan)
 
 
-def window_scores(incident_start: float, kinds, now: float | None = None):
-    """Score the incident window. Returns (scores, None) or (None, reason)."""
+def window_scores(incident_start: float, kinds, now: float | None = None, fault_start: float | None = None):
+    """Score the incident window. Returns (scores, None) or (None, reason).
+
+    `fault_start`, when the caller can estimate it, is used as is. Otherwise the fault is assumed to
+    have begun LEAD_S before `incident_start`.
+    """
     now = now or time.time()
-    fault_start = int(incident_start) - LEAD_S
+    fault_start = int(fault_start) if fault_start is not None else int(incident_start) - LEAD_S
     frame = fetch_metrics(PROMETHEUS_URL, SERVICES, fault_start - BASELINE_S, now, kinds=kinds)
     if frame.empty:
         return None, "no metrics returned by Prometheus"
@@ -89,9 +95,10 @@ def window_scores(incident_start: float, kinds, now: float | None = None):
     return scores, None
 
 
-def opinion_for(cause: str, service: str, incident_start: float, now: float | None = None) -> dict:
+def opinion_for(cause: str, service: str, incident_start: float, now: float | None = None,
+                fault_start: float | None = None) -> dict:
     """Score the incident window and judge the rule engine's diagnosis against it."""
-    scores, reason = window_scores(incident_start, getattr(model, "kinds", KINDS), now)
+    scores, reason = window_scores(incident_start, getattr(model, "kinds", KINDS), now, fault_start)
     if scores is None:
         return {"verdict": "no_opinion", "reason": reason}
     scorer_service, scorer_fault, confidence, ranking = model.diagnose(scores)
@@ -111,7 +118,8 @@ def opinion(body: dict):
     if model is None:
         raise HTTPException(status_code=503, detail="scorer not loaded")
     try:
-        result = opinion_for(cause, service, start)
+        fault = body.get("fault_start")
+        result = opinion_for(cause, service, start, fault_start=None if fault is None else float(fault))
     except Exception as exc:                      # Prometheus down, bad data, ...
         log.warning("opinion failed: %s", exc)
         result = {"verdict": "no_opinion", "reason": f"could not score: {exc}"}
