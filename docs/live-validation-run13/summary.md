@@ -13,7 +13,7 @@ in `s3://autosre-validation-841736140404/results-run13/`.
 - Every contaminated trial was held up by `APILatencyHigh` that did not clear within the quiet limit, often together
   with `ErrorRateHigh` or a database alert. The fault is not left over: faults live in pod memory and the pods are
   replaced between trials. The rate rose as the session got older (1 of the first 4 trials, 8 of the last 12). The
-  likely cause is a cluster that gets slower late in a long session; **this is a hypothesis and was not confirmed**.
+  likely cause given at the time was a cluster that gets slower late in a long session. **Follow-up (run 15 summary):** the idle gateway p95 sits on the 0.5 s alert line because the 200m CPU limits throttle the services; why it worsens with session age is still unshown.
 - No veto of a correct decision. Every probe miss was a `no_opinion`, never a false endorsement and never a
   disagreement with a true claim.
 

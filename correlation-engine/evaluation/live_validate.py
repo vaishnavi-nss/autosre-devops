@@ -171,7 +171,14 @@ def probe_scorer(label: str | None, injected_at: float, when: str) -> dict:
 
 # -- environment -----------------------------------------------------------------------
 
-def prepare() -> None:
+def prepare(cpu_limit: str | None = None) -> None:
+    if cpu_limit:
+        # Run 14 showed the manifests' 200m limits throttle the four services (about 22% of CPU periods), which puts the
+        # idle gateway p95 at 0.5-0.7 s, right on APILatencyHigh's 0.5 s line, so the alert would not clear between
+        # trials. With 1000m the idle p95 was 0.2 s and a 3-trial run had no contaminated trial. This changes the
+        # deployment on the cluster only, never the manifests, and is logged so the run's conditions are on record.
+        kubectl("-n", NS, "set", "resources", *[f"deploy/{s}" for s in SERVICES], f"--limits=cpu={cpu_limit}")
+        log(f"service CPU limit set to {cpu_limit} (the manifests say 200m)")
     log("enabling fault injection and incident capture")
     for deploy in ("transaction-service", "api-gateway", "database"):
         kubectl("-n", NS, "set", "env", f"deploy/{deploy}", "CHAOS_ENABLED=true")
@@ -529,6 +536,9 @@ def main() -> None:
     ap.add_argument("--per-cause", type=int, default=6, help="trials per known cause")
     ap.add_argument("--unknown", type=int, default=4, help="trials with no known cause")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--cpu-limit", default=None,
+                    help="set this CPU limit (e.g. 1000m) on the four services before the run; default leaves the "
+                         "manifests' 200m, which throttles them and leaves the idle p95 near the alert threshold")
     ap.add_argument("--detect-timeout", type=int, default=420, help="seconds to wait for an incident")
     ap.add_argument("--hold", type=int, default=120, help="seconds to keep the fault after detection")
     ap.add_argument("--deadline-minutes", type=int, default=0,
@@ -570,7 +580,7 @@ def main() -> None:
     log(f"plan: {len(plan)} trials to run ({args.per_cause} per cause + {args.unknown} unknown, "
         f"{len(done)} already recorded), seed {args.seed}")
 
-    prepare()
+    prepare(args.cpu_limit)
     if done:
         log("resuming: replacing every pod so no earlier fault is still injected")
         reset_cluster()
