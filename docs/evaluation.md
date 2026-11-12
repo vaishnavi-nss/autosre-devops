@@ -657,9 +657,34 @@ was excluded because no incident arrived); six are usable.
 The probes improved; the engine path did not. The scorer agrees with the true claim every time the harness
 asks, and disagrees with the engine's identical, correct call about half the time (trial 5: three
 consecutive vetoes, "looks like gateway_fault", for a pool-exhaustion incident). The only input that
-differs is the start time passed in, which supports the `startsAt` explanation above, though six trials
-and no controlled test do not prove it. **`SECOND_OPINION_MODE` stays `shadow`.** The next step is the
-`--collect --start-offsets` run, or making the engine pass the same start the scorer was trained on.
+differs is the start time passed in. **`SECOND_OPINION_MODE` stays `shadow`.**
+
+**Checked against the stored incidents: the start time the engine passes is the cause, but the reason is
+a stale alert, not the `for:` delay.** `earliest_start` is the earliest `startsAt` among *all* firing
+alerts in the webhook. In run 7 an `APILatencyHigh` that was still firing from the previous trial
+was in most payloads, so the "incident start" was minutes before the fault. Each record, with
+`startsAt` minus the injection time:
+
+| trial | `startsAt` − injection | verdict |
+|---|---:|---|
+| mem 1 (three records) | -788 s | no_opinion (also too few baseline samples) |
+| pool 4 (three records) | **-737 s** | disagree, disagree, disagree |
+| mem 5, first record | **-98 s** | disagree |
+| mem 5, second record | +71 s | agree |
+| disk 3, first record | +4 s | disagree |
+| disk 3, second record | +69 s | agree |
+| disk 2 | +78 s | agree |
+| mem 6 (two records) | +77 s | agree, agree |
+
+The split is clean: every record whose start fell 69-78 s after the injection (what the model was trained on)
+was backed; every record with a start before the fault, or only 4 s after it, was vetoed. The last one is a
+second effect: `DBDiskNearFull` fires almost at once, so subtracting the fixed 60 s lead puts the window start
+56 s before the fault. Six trials, so this is a pattern in a small sample, but it is consistent across all 13
+records and it does not depend on the model.
+
+Likely fix (not yet made): derive the incident start from the alerts that support the diagnosis (the matched
+signature's symptoms) rather than every firing alert, and give the scorer a per-alert lead instead of one
+fixed `LEAD_SECONDS`. Then re-run live. Until then the gate stays off.
 
 ## Appendix: full output
 
