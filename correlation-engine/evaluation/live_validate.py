@@ -178,6 +178,7 @@ def prepare() -> None:
     kubectl("-n", NS, "set", "env", "deploy/correlation-engine", f"CAPTURE_PATH={CAPTURE_FILE}")
     for deploy in (*SERVICES, "correlation-engine", "second-opinion"):
         kubectl("-n", NS, "rollout", "status", f"deploy/{deploy}", "--timeout=240s", timeout=260)
+    engine_selftest()
 
     log("waiting for Prometheus to scrape every AutoSRE target")
     deadline = time.time() + 600
@@ -189,6 +190,31 @@ def prepare() -> None:
             return
         time.sleep(15)
     raise SystemExit("targets never came up or there is no traffic - is loadgen running?")
+
+
+# One firing alert the engine can parse and no rule matches: a healthy engine answers 202 and records an
+# "unmatched" incident. A broken deploy (run 10: correlate.py out of step with app.py) answers 500 to every
+# webhook, which the trials only show as "no incident received" an hour later.
+SELFTEST_CODE = "\n".join([
+    "import json,urllib.request as u,urllib.error as e",
+    "b=json.dumps({'alerts':[{'status':'firing','labels':{'alertname':'HarnessSelfTest','service':'frontend'}}]})",
+    "r=u.Request('http://127.0.0.1:8000/alerts',data=b.encode(),method='POST',headers={'content-type':'application/json'})",
+    "try:",
+    "    print(u.urlopen(r,timeout=15).status)",
+    "except e.HTTPError as z:",
+    "    print(z.code)",
+])
+
+
+def engine_selftest() -> None:
+    """Abort before any trial if the engine does not accept a webhook, then drop the test record."""
+    out = kubectl("-n", NS, "exec", "deploy/correlation-engine", "--", "python", "-c", SELFTEST_CODE,
+                  timeout=60).strip()
+    kubectl("-n", NS, "exec", "deploy/correlation-engine", "--", "sh", "-c", f": > {CAPTURE_FILE}", timeout=60)
+    if out != "202":
+        raise SystemExit(f"the engine answered {out!r} to a test webhook, not 202: check its log before running trials "
+                         "(kubectl -n autosre logs deploy/correlation-engine)")
+    log("engine accepts webhooks")
 
 
 def wait_quiet(timeout: int = 600) -> bool:
