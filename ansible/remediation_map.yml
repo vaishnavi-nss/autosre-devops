@@ -1,0 +1,30 @@
+---
+# Root cause label -> Ansible playbook (brief section 6).
+#
+# The dispatcher looks up the correlation engine's root_cause label here and
+# runs the matching playbook. Anything absent from this table must escalate to
+# a human rather than guessing a fix.
+remediations:
+  db_connection_pool_exhaustion:
+    playbook: restart_service.yml
+    description: Restart the affected service/pod
+    extra_vars:
+      target_service: transaction-service
+
+  high_memory_usage:
+    playbook: scale_replicas.yml
+    description: Increase replica count
+    extra_vars:
+      target_service: transaction-service
+      replicas: 3
+
+  db_disk_full:
+    playbook: clear_logs.yml
+    description: Clear old log files
+    extra_vars:
+      target_service: database
+
+# Fallback for unmapped root causes.
+default:
+  action: notify_human
+  description: No known remediation - page the on-call engineer.

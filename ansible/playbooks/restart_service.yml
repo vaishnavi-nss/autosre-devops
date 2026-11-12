@@ -1,0 +1,52 @@
+---
+# Remediation for: db_connection_pool_exhaustion
+#
+# Does what `kubectl rollout restart deployment/<target_service>` does - patches
+# a timestamp annotation into the pod template, which makes the Deployment roll
+# its pods. Restarting drops every leaked connection and resets the pool.
+#
+#   ansible-playbook -i ../inventory/localhost.yml restart_service.yml \
+#     -e target_service=transaction-service
+- name: Restart a service by triggering a rolling restart
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    k8s_namespace: autosre
+    target_service: transaction-service
+
+  tasks:
+    - name: Trigger a rolling restart of {{ target_service }}
+      kubernetes.core.k8s:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+        state: patched
+        definition:
+          spec:
+            template:
+              metadata:
+                annotations:
+                  kubectl.kubernetes.io/restartedAt: "{{ '%Y-%m-%dT%H:%M:%SZ' | strftime }}"
+                  autosre.io/restarted-by: correlation-engine
+
+    - name: Wait for the rollout to finish
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+      register: deployment_state
+      until:
+        - deployment_state.resources | length > 0
+        - deployment_state.resources[0].status.readyReplicas | default(0)
+          == deployment_state.resources[0].spec.replicas
+      retries: 30
+      delay: 5
+
+    - name: Report the outcome
+      ansible.builtin.debug:
+        msg: >-
+          Restarted {{ target_service }} in {{ k8s_namespace }};
+          {{ deployment_state.resources[0].status.readyReplicas | default(0) }} replica(s) ready.

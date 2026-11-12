@@ -1,0 +1,94 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: remediation-dispatcher
+  namespace: autosre
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: remediation-dispatcher
+  namespace: autosre
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: remediation-dispatcher
+  namespace: autosre
+subjects:
+  - kind: ServiceAccount
+    name: remediation-dispatcher
+    namespace: autosre
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: remediation-dispatcher
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: remediation-dispatcher
+  namespace: autosre
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: remediation-dispatcher
+  template:
+    metadata:
+      labels:
+        app: remediation-dispatcher
+    spec:
+      serviceAccountName: remediation-dispatcher
+      containers:
+        - name: remediation-dispatcher
+          image: autosre/remediation-dispatcher:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8001
+          env:
+            - name: AUTO_REMEDIATE
+              value: "false"
+            - name: MIN_CONFIDENCE
+              value: "0.75"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: remediation-dispatcher
+  namespace: autosre
+  labels:
+    app.kubernetes.io/part-of: autosre
+spec:
+  type: ClusterIP
+  selector:
+    app: remediation-dispatcher
+  ports:
+    - name: http
+      port: 8001
+      targetPort: http
