@@ -133,8 +133,8 @@ CLOUD = [
               "Status as of 13 Nov 2026.", SUB),
     Paragraph("Where the code is", H2),
     *bullets([
-        "<b>ml-cloud-additions</b> (06e52d4): the PR branch. Adds files only; nothing on main is modified.",
-        "<b>ml-and-cloud-validation</b> (272c185): full history, including files that overlap with main.",
+        "<b>ml-cloud-additions</b>: the PR branch. Adds files only; nothing on main is modified.",
+        "<b>ml-and-cloud-validation</b>: full history, including files that overlap with main.",
         "The pull request is not opened; its base branch must be main.",
     ]),
     Paragraph("Live validation", H2),
