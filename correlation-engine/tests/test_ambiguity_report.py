@@ -59,3 +59,12 @@ def test_pairs_reports_what_was_live_what_the_rule_would_do_and_the_probes(tmp_p
     assert "| live: acted, cause in pair | 1 |" in text and "| live: gate withheld | 1 |" in text
     assert "| on escalates | 2 |" in text
     assert "true cause high_memory_usage: no_opinion" in text and "absent cause: disagree" in text
+
+
+def test_wrong_lists_webhooks_naming_a_cause_other_than_the_label(tmp_path):
+    t = {"trial": 1, "label": "high_memory_usage", "contaminated": False, "label_set_at": "2026-01-01T10:00:00+00:00"}
+    write(tmp_path, [t], [rec("2026-01-01T10:01:00+00:00", "high_memory_usage", MEMORY),
+                          rec("2026-01-01T10:02:00+00:00", "high_memory_usage", DISK)])
+    text = ar.wrong([tmp_path])
+    assert "| 1 | high_memory_usage | db_disk_full | webhook 2 | DBDiskNearFull, ErrorRateHigh |" in text
+    assert text.count("| high_memory_usage | db_disk_full |") == 1

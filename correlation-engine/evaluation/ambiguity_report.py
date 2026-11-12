@@ -2,6 +2,7 @@
 
     python evaluation/ambiguity_report.py cost  d11 d12 d13 d14 d15    # single-fault sessions
     python evaluation/ambiguity_report.py pairs d16 [d17 ...]          # two-fault sessions
+    python evaluation/ambiguity_report.py wrong d11 d12 ...            # where the engine named a cause other than the label
 
 Both replay every recorded incident through the engine's own `correlate()`, once with `escalate_on_ambiguity` off and
 once on. That is exact, not an estimate: the rule is a pure function of the firing alerts.
@@ -72,6 +73,28 @@ def cost(dirs: list[Path]) -> str:
                      + block("Every recorded webhook", rows) + block("First webhook of each trial", first_rows))
 
 
+def wrong(dirs: list[Path]) -> str:
+    """Every webhook where the engine named a cause other than the trial's label, with the alerts that were firing."""
+    seen: Counter = Counter()
+    for d in dirs:
+        trials = [t for t in load_trials(d / "trials.jsonl")
+                  if not t.get("error") and not t.get("contaminated") and t.get("mode") != "pair"]
+        grouped = assign(load_records(d / "incidents.jsonl"), trials)
+        for t in trials:
+            for i, r in enumerate(grouped.get(t["trial"], [])):
+                named = decide(r, False)
+                if named is None or named == t.get("label"):
+                    continue
+                alerts = sorted({a["labels"].get("alertname", "?") for a in firing_only(r["payload"].get("alerts", []))})
+                seen[(str(t.get("label")), named, "first webhook" if i == 0 else f"webhook {i + 1}", ", ".join(alerts))] += 1
+    out = ["# Webhooks where the engine named a cause other than the label", "",
+           "| n | trial label | engine named | when | alerts firing |", "|---:|---|---|---|---|"]
+    out += [f"| {n} | {a} | {b} | {c} | {e} |" for (a, b, c, e), n in seen.most_common()]
+    return "
+".join(out) + "
+"
+
+
 def _t(stamp: str) -> datetime:
     return datetime.fromisoformat(stamp)
 
@@ -130,11 +153,11 @@ def pairs(dirs: list[Path]) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 3 or argv[1] not in ("cost", "pairs"):
+    if len(argv) < 3 or argv[1] not in ("cost", "pairs", "wrong"):
         print(__doc__)
         return 2
     dirs = [Path(a) for a in argv[2:]]
-    print((cost if argv[1] == "cost" else pairs)(dirs))
+    print({"cost": cost, "pairs": pairs, "wrong": wrong}[argv[1]](dirs))
     return 0
 
 
