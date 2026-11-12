@@ -47,11 +47,18 @@ Every engine decision was the correct cause. Scorer verdicts on them, one per we
 - **first decision of each trial** (the one a dispatcher acts on): agree 2, disagree 3, no_opinion 1
 - the 3 of 6 first decisions that would have been vetoed were all correct actions
 
+## Why the engine path vetoes (checked afterwards from `incidents.jsonl`)
+
+The incident start the engine passes is the earliest `startsAt` of all firing alerts, and a stale
+`APILatencyHigh` from the previous trial put it 98-788 s before the injection in 7 of 13 records. All
+records with a start 69-78 s after injection were backed (5); all with a start before the fault or only 4 s
+after it were vetoed (5); the 3 `no_opinion` records are trial 1, which also had too few baseline samples.
+Details and the table are in `docs/evaluation.md`.
+
 ## Reading it
 
 Same pattern as run 4, with the same cause: the scorer is right when asked by the harness
 (`injection + 60 s`) and vetoes about half the correct decisions when asked by the engine
 (`startsAt` of the earliest alert). In trial 5 both calls looked at the same incident, one said agree for
 the true claim and the other disagreed with the rules' identical claim. The model is therefore unlikely to
-be the weak part; the start-time convention is the leading suspect (not yet tested, see `docs/evaluation.md`).
-Six trials is a small sample.
+be the weak part; the start time the engine passes is (see above). Six trials is a small sample.
