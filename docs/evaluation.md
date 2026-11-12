@@ -764,6 +764,8 @@ every line holds. At the time of writing only one post-fix session exists (run 8
 
 With run 13 added (the retrained model `b565d77f` alone, runs 11, 12 and 13): the bar is **NOT met** on that model's own evidence. 34 judged correct decisions (need 40), 20 first decisions, 0 vetoes, 95% upper bound 10.2% (need 10%), 39 of 40 true claims backed, 48 of 50 wrong claims caught, 5 of 5 unknown-cause trials escalated. Nine of run 13's 16 trials were contaminated by an `APILatencyHigh` that did not clear (cause unconfirmed) and were excluded; the shortfall is volume, not scorer errors. See `docs/live-validation-run13/summary.md`.
 
+With run 14 added (the retrained model `b565d77f` alone, runs 11 to 14): the bar **is met** on that model's own evidence. 46 judged correct decisions, 26 first decisions, 0 vetoes, 95% upper bound 7.7%, 50 of 52 true claims backed, 59 of 62 wrong claims caught, 5 of 5 unknown-cause trials escalated. Every probe miss was a `no_opinion`, never a false endorsement. `SECOND_OPINION_MODE` is still `shadow`; enabling the gate is a separate decision. See `docs/live-validation-run14/summary.md`.
+
 ## Appendix: full output
 
 Regenerate with the commands under "How it was measured". Seed 7, 5000 incidents each.
