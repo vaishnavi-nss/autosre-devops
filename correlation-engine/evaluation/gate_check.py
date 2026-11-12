@@ -59,6 +59,9 @@ def gather(dirs: list[Path]) -> dict:
         if not trials:
             continue
         out["sessions"] += 1
+        for t in trials:                      # stale-mode trials written before label_set_at existed
+            if "label_set_at" not in t and t.get("injected_at"):
+                t["label_set_at"] = t["injected_at"]
         grouped = assign(records, trials)
         for t in trials:
             if t.get("error") or t.get("contaminated"):
