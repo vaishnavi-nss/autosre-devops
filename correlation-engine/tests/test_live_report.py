@@ -261,3 +261,48 @@ def test_a_collect_trial_records_feature_tables_at_each_window_and_resets(monkey
     assert [p["when"] for p in trial["probes"]] == ["150s after injection", "270s after injection"]
     assert all(p["features"]["scores"]["database"]["disk"] == 9.0 for p in trial["probes"])
     assert len(asked) == 2 and not trial["contaminated"] and trial["mode"] == "collect"
+
+
+# ---------------------------------------------------------------- stale-alert trial
+def _record(alerts, verdict="agree"):
+    return {"payload": {"alerts": alerts},
+            "response": {"root_cause": "db_disk_full", "second_opinion": {"verdict": verdict}}}
+
+
+def _alert(name, starts_at):
+    return {"status": "firing", "labels": {"alertname": name}, "startsAt": starts_at}
+
+
+def test_ab_probe_sends_the_old_and_the_new_start_for_the_same_incident(monkeypatch):
+    import live_validate as lv
+    from second_opinion import _starts_at
+
+    asked = []
+    monkeypatch.setattr(lv, "ask_scorer", lambda cause, service, start: asked.append(("old", start)) or {"verdict": "disagree"})
+    monkeypatch.setattr(lv, "_scorer_post", lambda path, payload: asked.append((path, payload)) or {"verdict": "agree"})
+    stale = _alert("APILatencyHigh", "2026-11-12T00:00:00Z")
+    deciding = _alert("DBDiskNearFull", "2026-11-12T00:10:00Z")
+    injected = _starts_at(deciding) - 75          # the fault began 75 s before the deciding alert fired
+    out = lv.ab_probe("db_disk_full", _record([stale, deciding]), injected, "at first diagnosis")
+
+    assert out["old_incident_start_minus_injection"] == _starts_at(stale) - injected   # far before the fault
+    assert out["new_fault_start_minus_injection"] == 0                                 # 75 s wound back
+    assert out["old_method"]["verdict"] == "disagree" and out["new_method"]["verdict"] == "agree"
+    assert out["engine_verdict"] == "agree" and out["alerts"] == ["APILatencyHigh", "DBDiskNearFull"]
+    kinds = [a[0] for a in asked]
+    assert kinds == ["old", "opinion", "opinion"]            # old start, new start, new start with a wrong claim
+    new_true, new_wrong = asked[1][1], asked[2][1]
+    assert new_true["fault_start"] == new_true["incident_start"] == new_wrong["fault_start"]
+    assert new_true["root_cause"] == "db_disk_full" and new_wrong["root_cause"] != "db_disk_full"
+
+
+def test_decided_record_ignores_records_that_only_carry_the_stale_alert(monkeypatch):
+    import live_validate as lv
+
+    stale_only = _record([_alert("APILatencyHigh", "2026-11-12T00:00:00Z")])
+    decided = _record([_alert("APILatencyHigh", "2026-11-12T00:00:00Z"), _alert("DBDiskNearFull", "2026-11-12T00:10:00Z")])
+    lines = [json.dumps(stale_only), json.dumps(decided), json.dumps(stale_only)]
+    monkeypatch.setattr(lv, "captured", lambda: lines)
+    assert lv._decided_record("db_disk_full", 0) == decided
+    assert lv._decided_record("db_disk_full", 2) is None      # only the stale-only record is after index 2
+    assert lv._decided_record("high_memory_usage", 0) is None

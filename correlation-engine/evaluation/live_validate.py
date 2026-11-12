@@ -35,6 +35,10 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))     # the engine's dependency-free modules
+from second_opinion import earliest_start, estimate_fault_start  # noqa: E402
+from signatures import SIGNATURES                                # noqa: E402
+
 NS = "autosre"
 MON = "monitoring"
 PROM = f"/api/v1/namespaces/{MON}/services/monitoring-kube-prometheus-prometheus:9090/proxy"
@@ -317,6 +321,119 @@ def run_trial(index: int, label: str | None, rng: random.Random, detect_timeout:
     return trial
 
 
+def ab_probe(label: str, record: dict, injected_at: float, when: str) -> dict:
+    """Ask the scorer about one captured incident twice: with the start the engine used before the fix
+    (earliest `startsAt` of every firing alert) and with the fix (the deciding alert, wound back by its `for:`).
+
+    Also asks the new way about a deliberately wrong diagnosis, so a fix that made the scorer agree with
+    everything would show up. Offsets are seconds relative to the real injection time.
+    """
+    firing_alerts = [a for a in record["payload"].get("alerts", []) if a.get("status") == "firing"]
+    deciding = SIGNATURES[label]["required_symptoms"]
+    old, new = earliest_start(firing_alerts), estimate_fault_start(firing_alerts, deciding)
+    cause, service = TRUTH[label]
+    wrong_cause, wrong_service = WRONG[label]
+    response = record.get("response") or {}
+    engine = response.get("second_opinion") or {}
+    out = {"when": when, "alerts": sorted(a["labels"].get("alertname", "?") for a in firing_alerts),
+           "engine_verdict": engine.get("verdict"), "engine_cause": response.get("root_cause"),
+           "old_incident_start_minus_injection": None if old is None else round(old - injected_at, 1),
+           "new_fault_start_minus_injection": None if new is None else round(new - injected_at, 1)}
+    if old is not None:
+        out["old_method"] = ask_scorer(cause, service, old)
+    if new is not None:
+        out["new_method"] = _scorer_post("opinion", {"root_cause": cause, "service": service,
+                                                     "incident_start": new, "fault_start": new})
+        out["new_method_wrong_claim"] = _scorer_post("opinion", {"root_cause": wrong_cause, "service": wrong_service,
+                                                                "incident_start": new, "fault_start": new})
+    return out
+
+
+def _decided_record(label: str, since: int) -> dict | None:
+    """The newest captured record after index `since` that carries the cause's deciding alert, if any."""
+    deciding = set(SIGNATURES[label]["required_symptoms"])
+    found = None
+    for line in captured()[since:]:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        names = {a.get("labels", {}).get("alertname") for a in record["payload"].get("alerts", [])
+                 if a.get("status") == "firing"}
+        if names & deciding:
+            found = record
+    return found
+
+
+def run_stale_trial(index: int, label: str, rng: random.Random, detect_timeout: int, hold: int,
+                    stale_age: int = 120) -> dict:
+    """A trial where an unrelated alert is already firing when the fault starts.
+
+    Gateway latency is injected first and left on, so `APILatencyHigh` fires and ages for `stale_age` seconds
+    before the real fault. This is what run 7 hit by accident: the engine's incident start came from that
+    older alert. Each incident is then scored with the old and the new start (`ab_probe`).
+    """
+    log(f"--- stale trial {index}: {label}")
+    trial: dict = {"trial": index, "label": label, "contaminated": False, "mode": "stale"}
+    trial["contaminated"] = not wait_quiet()
+    put_label(label)
+    pod_http("api-gateway", "POST", "/chaos/latency?ms=900")
+    began = time.time()
+    while time.time() - began < 420 and "APILatencyHigh" not in firing():
+        time.sleep(15)
+    if "APILatencyHigh" not in firing():
+        trial["error"] = "the stale alert never fired"
+        log("  the stale alert never fired; skipping")
+        reset_cluster()
+        return trial
+    trial["stale_fired_after_s"] = round(time.time() - began, 1)
+    log(f"  stale APILatencyHigh firing after {trial['stale_fired_after_s']}s; letting it age {stale_age}s")
+    time.sleep(stale_age)
+
+    before = len(captured())
+    trial["params"] = KINDS[label](rng)
+    trial["injected_at"] = now_iso()
+    started = time.time()
+    log(f"  injected {trial['params']} on top of the stale alert")
+
+    trial["first_incident_s"] = None
+    trial["probes"] = []
+    while time.time() - started < detect_timeout:
+        time.sleep(10)
+        record = _decided_record(label, before)
+        if record:
+            trial["first_incident_s"] = round(time.time() - started, 1)
+            log(f"  engine diagnosed after {trial['first_incident_s']}s")
+            trial["probes"].append(ab_probe(label, record, started, "at first diagnosis"))
+            break
+    else:
+        log("  no diagnosing incident before the timeout")
+
+    held_until = time.time() + (hold if trial["first_incident_s"] is not None else 30)
+    topped_up = False
+    while time.time() < held_until:
+        time.sleep(15)
+        if label == "high_memory_usage" and not topped_up and memory_ratio() < 0.9:
+            extra = trial["params"]["held_mb"] + max(5, math.ceil((MEMORY_TARGET - memory_ratio()) * MEMORY_LIMIT_MIB))
+            pod_http("transaction-service", "POST", f"/chaos/memory?mb={extra}")
+            trial["params"]["topped_up_to_mb"] = extra
+            topped_up = True
+    if trial["first_incident_s"] is not None:
+        record = _decided_record(label, before)
+        if record:
+            trial["probes"].append(ab_probe(label, record, started, "end of hold"))
+        for p in trial["probes"]:
+            log(f"  {p['when']}: engine={p['engine_verdict']} old={p.get('old_method', {}).get('verdict')} "
+                f"new={p.get('new_method', {}).get('verdict')} "
+                f"new-wrong={p.get('new_method_wrong_claim', {}).get('verdict')} "
+                f"(old start {p['old_incident_start_minus_injection']}s, new {p['new_fault_start_minus_injection']}s)")
+    trial["firing_at_end"] = sorted(firing())
+    trial["records"] = len(captured()) - before
+    reset_cluster()
+    trial["reset_at"] = now_iso()
+    return trial
+
+
 def run_collect_trial(index: int, label: str | None, rng: random.Random, settle: int, windows=(150, 270),
                       start_offsets=(60,)) -> dict:
     """Inject a fault and record what the metrics look like, without waiting for alerts.
@@ -370,6 +487,9 @@ def main() -> None:
     ap.add_argument("--windows", default="150,270",
                     help="--collect: seconds after injection at which to record the feature table. The engine "
                          "asks the scorer 50-110 s after injection, so include early ones (e.g. 75,90,105,120,150)")
+    ap.add_argument("--stale", action="store_true",
+                    help="start each trial with an unrelated alert already firing (gateway latency), and score "
+                         "every incident with both the old and the new fault-start method")
     ap.add_argument("--resume", action="store_true",
                     help="continue a previous run in --out: keep its trials, redo errored ones, "
                          "and run only what is still missing")
@@ -407,6 +527,7 @@ def main() -> None:
             try:
                 trial = (run_collect_trial(i, label, rng, args.settle, tuple(int(w) for w in args.windows.split(',')),
                          tuple(int(o) for o in args.start_offsets.split(','))) if args.collect
+                         else run_stale_trial(i, label, rng, args.detect_timeout, args.hold) if args.stale
                          else run_trial(i, label, rng, args.detect_timeout, args.hold))
             except Exception as exc:                      # keep going: one bad trial is data
                 log(f"  trial {i} errored: {exc}")
