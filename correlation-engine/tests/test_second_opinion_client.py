@@ -10,11 +10,13 @@ import second_opinion as so
 def fake(verdict, reason="because"):
     calls = []
 
-    def ask(url, cause, service, started, timeout):
+    def ask(url, cause, service, started, timeout, fault_start=None):
         calls.append((url, cause, service, started))
+        ask.fault_starts.append(fault_start)
         return {"verdict": verdict, "reason": reason}
 
     ask.calls = calls
+    ask.fault_starts = []
     return ask
 
 
@@ -92,3 +94,49 @@ def test_unmatched_incidents_never_ask(client, sample_payload, monkeypatch):
                                 if a["labels"]["alertname"] != "DBPoolNearExhaustion"]
     assert client.post("/alerts", json=sample_payload).json()["status"] == "unmatched"
     assert ask.calls == []
+
+
+def alert(name, starts_at):
+    return {"labels": {"alertname": name}, "startsAt": starts_at}
+
+
+def test_a_stale_alert_from_an_earlier_incident_does_not_move_the_fault_start():
+    """Run 7: APILatencyHigh still firing from the previous trial put the start 12 minutes early."""
+    stale = alert("APILatencyHigh", "2026-11-11T19:29:00Z")
+    deciding = alert("DBPoolNearExhaustion", "2026-11-11T19:42:20Z")
+    start = so.estimate_fault_start([stale, deciding], ["DBPoolNearExhaustion"])
+    # 19:42:20 minus its 30 s `for:` and a 15 s scrape and evaluation
+    assert start == so._starts_at(deciding) - 30 - 15
+
+
+def test_each_alert_is_wound_back_by_its_own_for_delay():
+    a = alert("DBDiskNearFull", "2026-11-11T19:29:15Z")
+    assert so.estimate_fault_start([a], ["DBDiskNearFull"]) == so._starts_at(a) - 60 - 15
+
+
+def test_without_a_deciding_alert_all_alerts_are_used_and_none_gives_none():
+    a = alert("ErrorRateHigh", "2026-11-11T19:29:15Z")
+    assert so.estimate_fault_start([a], ["DBDiskNearFull"]) == so._starts_at(a) - 75
+    assert so.estimate_fault_start([{}], ["DBDiskNearFull"]) is None
+
+
+def test_engine_sends_the_estimated_fault_start(client, sample_payload, monkeypatch):
+    ask = fake("agree")
+    enable(monkeypatch, "shadow", ask)
+    client.post("/alerts", json=sample_payload)
+    assert ask.fault_starts[0] is not None
+    assert ask.fault_starts[0] == so.estimate_fault_start(
+        [a for a in sample_payload["alerts"] if a.get("status") == "firing"], ["DBPoolNearExhaustion"])
+
+
+def test_for_seconds_match_the_alert_rules():
+    import re
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[2] / "monitoring" / "alert-rules.yaml").read_text(encoding="utf-8")
+    unit = {"s": 1, "m": 60}
+    found = {}
+    for block in re.split(r"-\s+alert:\s*", text)[1:]:
+        name = block.split()[0]
+        amount, kind = re.search(r"for:\s*(\d+)([sm])", block).groups()
+        found[name] = int(amount) * unit[kind]
+    assert found == so.FOR_SECONDS

@@ -202,3 +202,18 @@ def test_features_endpoint_returns_every_signal_and_needs_no_model(monkeypatch):
         assert client.post("/features", json={"incident_start": 1000}).json() == {
             "scores": None, "reason": "only 2 samples"}
         assert client.post("/features", json={}).status_code == 422
+
+
+def test_endpoint_uses_an_explicit_fault_start_instead_of_the_lead(client, monkeypatch):
+    seen = {}
+
+    def fake_fetch(url, services, start, end, kinds=None):
+        seen["start"] = start
+        return metrics("transaction-service", "mem", seed=7)
+    monkeypatch.setattr(svc, "fetch_metrics", fake_fetch)
+    monkeypatch.setattr(svc, "LEAD_S", 60)
+    body = {"root_cause": "high_memory_usage", "service": "transaction-service", "incident_start": 1_500}
+    client.post("/opinion", json={**body, "fault_start": 1_200})
+    assert seen["start"] == 1_200 - svc.BASELINE_S
+    client.post("/opinion", json=body)
+    assert seen["start"] == 1_500 - 60 - svc.BASELINE_S

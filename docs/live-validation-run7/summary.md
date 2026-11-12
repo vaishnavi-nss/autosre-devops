@@ -53,7 +53,9 @@ The incident start the engine passes is the earliest `startsAt` of all firing al
 `APILatencyHigh` from the previous trial put it 98-788 s before the injection in 7 of 13 records. All
 records with a start 69-78 s after injection were backed (5); all with a start before the fault or only 4 s
 after it were vetoed (5); the 3 `no_opinion` records are trial 1, which also had too few baseline samples.
-Details and the table are in `docs/evaluation.md`.
+Details and the table are in `docs/evaluation.md`, with the fix (estimate the start from the deciding
+alert and its `for:` delay): replayed on these 13 records it lands within -8 s to +3 s of the injection.
+Not yet run live.
 
 ## Reading it
 

@@ -682,9 +682,17 @@ second effect: `DBDiskNearFull` fires almost at once, so subtracting the fixed 6
 56 s before the fault. Six trials, so this is a pattern in a small sample, but it is consistent across all 13
 records and it does not depend on the model.
 
-Likely fix (not yet made): derive the incident start from the alerts that support the diagnosis (the matched
-signature's symptoms) rather than every firing alert, and give the scorer a per-alert lead instead of one
-fixed `LEAD_SECONDS`. Then re-run live. Until then the gate stays off.
+**The fix (made, not yet run live).** The engine now estimates when the fault began from the *deciding*
+symptom of the diagnosed cause (`required_symptoms`, e.g. `DBPoolNearExhaustion`), not from every firing alert,
+and winds each alert back by its own `for:` delay plus 15 s for a scrape and an evaluation
+(`correlation-engine/second_opinion.py: estimate_fault_start`; `FOR_SECONDS` is checked against
+`monitoring/alert-rules.yaml` by a test). It sends that as `fault_start`, which the scorer uses as is; without
+it the scorer keeps the old `incident_start - LEAD_SECONDS` rule (`second-opinion/app.py`).
+
+Replaying the 13 stored run 7 records through the new estimate: the estimated fault start is within
+**-8 s to +3 s of the real injection time in every record** (before: -788 s to +78 s). That checks the start
+time, not the verdicts: the verdicts need the metrics replayed, or a new live run. The gate stays off until a
+live run shows the vetoes gone.
 
 ## Appendix: full output
 
