@@ -730,14 +730,14 @@ Small gains from a few more windows. The retrained model has **not** been run li
 previous one, and `eval_session.py` on run 8 now reports in-sample numbers for it. The Docker image must be rebuilt
 to pick it up (`second-opinion/Dockerfile` copies `models/own.joblib`).
 
-### The stale-alert test (run 9, partial: 4 of 6 trials)
+### The stale-alert test (run 9, 6 trials)
 
 With an `APILatencyHigh` deliberately left firing and aged for 120 s before the real fault, the same incident was
-scored with the old and the new start (`docs/live-validation-run9/summary.md`; **4 of 6 trials read**, from the log).
-The old start was 123-132 s before the fault and the scorer disagreed with the true cause in 7 of 8 probes; the new
-start was within -9 s to +12 s, the scorer agreed in 8 of 8 and disagreed with the wrong claim in 8 of 8, and the
-engine agreed in 4 of 4. This is the controlled comparison run 8 lacked, and it supports the fix as the cause of the
-change. It is four trials; the full six, and the bar below, are still to come.
+scored with the old and the new start (`docs/live-validation-run9/summary.md`; 6 trials).
+The old start was 123-132 s before the fault and the scorer disagreed with the true cause in 10 of 12 probes; the new
+start was within -9 s to +12 s, the scorer agreed in 12 of 12 and disagreed with the wrong claim in 12 of 12, and the
+engine agreed in 6 of 6. This is the controlled comparison run 8 lacked, and it supports the fix as the cause of the
+change. Six trials; it is the cause, shown in a controlled way, but not yet the bar below.
 
 ### The bar for gate mode
 
@@ -756,7 +756,7 @@ with the fault-start fix (earlier runs measured a bug):
 
 `python evaluation/gate_check.py <results dirs>` checks a set of runs against this and exits non-zero unless
 every line holds. At the time of writing only one post-fix session exists (run 8: 11 decisions, 6 trials), so
-**the bar is not met and the gate stays off.** Run 9 (the stale-alert test, partly read) would be a second session; it has no unknown-cause trials.
+**the bar is not met and the gate stays off.** With runs 8 and 9 (`gate_check.py`, 2 post-fix sessions): 21 judged correct decisions (11 first decisions), **0 vetoes** (95% upper bound 15.5%), 22 of 22 true claims backed, 24 of 24 wrong claims caught, 1 of 1 unknown-cause trial escalated. What is missing is volume: a third session, 40 decisions, 40 probes of each kind, and 5 unknown-cause trials. A session of about 14 trials (3 per cause, 5 unknown) would meet all of those if it stays clean.
 
 ## Appendix: full output
 

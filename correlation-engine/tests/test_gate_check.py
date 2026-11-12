@@ -69,3 +69,12 @@ def test_main_exits_nonzero_when_not_ready(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["gate_check", str(d)])
     assert gc.main() == 1
     assert "NOT READY" in capsys.readouterr().out
+
+
+def test_stale_mode_trials_without_label_set_at_are_still_attributed(tmp_path):
+    d = make_session(tmp_path, "s0", 3)
+    trials = [json.loads(l) for l in (d / "trials.jsonl").read_text(encoding="utf-8").splitlines()]
+    for t in trials:
+        t["injected_at"] = t.pop("label_set_at")
+    (d / "trials.jsonl").write_text("\n".join(json.dumps(t) for t in trials), encoding="utf-8")
+    assert len(gc.gather([d])["decisions"]) == 6        # 3 trials, 2 diagnosed records each

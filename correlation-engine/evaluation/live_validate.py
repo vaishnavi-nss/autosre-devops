@@ -377,6 +377,7 @@ def run_stale_trial(index: int, label: str, rng: random.Random, detect_timeout: 
     trial: dict = {"trial": index, "label": label, "contaminated": False, "mode": "stale"}
     trial["contaminated"] = not wait_quiet()
     put_label(label)
+    trial["label_set_at"] = now_iso()
     pod_http("api-gateway", "POST", "/chaos/latency?ms=900")
     began = time.time()
     while time.time() - began < 420 and "APILatencyHigh" not in firing():
