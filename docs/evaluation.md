@@ -708,14 +708,36 @@ supported by the run 7 replay (start times only), not by a controlled live compa
 is a small sample, with no unknown-cause trial finished to test escalation. **The gate stays off** until a run with a
 stale alert left in place shows the fix alone keeps the verdicts correct, over more than six trials.
 
-### The stale-alert test (run 9, partial)
+### Out-of-session check, and retraining on run 8
+
+The model that was live in runs 7-9 (trained on runs 3, 4 and 5-early: 47 trials) was scored on the feature tables
+of run 8, a session it never saw (`second-opinion/eval_session.py`, `docs/live-validation-run8/trials.jsonl`: 6
+trials, 12 windows). **All 12 had the right service and the right fault** (the gateway fault too, at confidence
+0.43), 10 of 10 true claims were backed, and 12 of 12 wrong claims were caught. This is a stricter test than the
+leave-one-trial-out figures, which hold out one trial from sessions the model trained on, but it is one session and
+12 windows.
+
+The model was then retrained on all four sessions (**53 trials, 127 windows**; `models/own.joblib`):
+
+| held out one trial at a time | before (47 trials, 115 windows) | after (53 trials, 127 windows) |
+|---|---|---|
+| right service | 94.8% | 95.3% |
+| right service and fault | 92.2% | 93.7% |
+| true claims backed | 90 of 94 | 100 of 104 |
+| wrong claims endorsed | 2 of 115 | 2 of 127 |
+
+Small gains from a few more windows. The retrained model has **not** been run live: the cluster in runs 7-9 used the
+previous one, and `eval_session.py` on run 8 now reports in-sample numbers for it. The Docker image must be rebuilt
+to pick it up (`second-opinion/Dockerfile` copies `models/own.joblib`).
+
+### The stale-alert test (run 9, partial: 4 of 6 trials)
 
 With an `APILatencyHigh` deliberately left firing and aged for 120 s before the real fault, the same incident was
-scored with the old and the new start (`docs/live-validation-run9/summary.md`; **3 of 6 trials read**, from the log).
-The old start was 123-132 s before the fault and the scorer disagreed with the true cause in 5 of 6 probes; the new
-start was within -9 s to +12 s, the scorer agreed in 6 of 6 and disagreed with the wrong claim in 6 of 6, and the
-engine agreed in 3 of 3. This is the controlled comparison run 8 lacked, and it supports the fix as the cause of the
-change. It is three trials; the full six, and the bar below, are still to come.
+scored with the old and the new start (`docs/live-validation-run9/summary.md`; **4 of 6 trials read**, from the log).
+The old start was 123-132 s before the fault and the scorer disagreed with the true cause in 7 of 8 probes; the new
+start was within -9 s to +12 s, the scorer agreed in 8 of 8 and disagreed with the wrong claim in 8 of 8, and the
+engine agreed in 4 of 4. This is the controlled comparison run 8 lacked, and it supports the fix as the cause of the
+change. It is four trials; the full six, and the bar below, are still to come.
 
 ### The bar for gate mode
 
