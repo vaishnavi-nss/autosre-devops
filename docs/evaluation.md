@@ -708,6 +708,15 @@ supported by the run 7 replay (start times only), not by a controlled live compa
 is a small sample, with no unknown-cause trial finished to test escalation. **The gate stays off** until a run with a
 stale alert left in place shows the fix alone keeps the verdicts correct, over more than six trials.
 
+### The stale-alert test (run 9, partial)
+
+With an `APILatencyHigh` deliberately left firing and aged for 120 s before the real fault, the same incident was
+scored with the old and the new start (`docs/live-validation-run9/summary.md`; **3 of 6 trials read**, from the log).
+The old start was 123-132 s before the fault and the scorer disagreed with the true cause in 5 of 6 probes; the new
+start was within -9 s to +12 s, the scorer agreed in 6 of 6 and disagreed with the wrong claim in 6 of 6, and the
+engine agreed in 3 of 3. This is the controlled comparison run 8 lacked, and it supports the fix as the cause of the
+change. It is three trials; the full six, and the bar below, are still to come.
+
 ### The bar for gate mode
 
 `SECOND_OPINION_MODE=gate` would let the scorer withhold the rules' action when it disagrees. Written down
@@ -725,7 +734,7 @@ with the fault-start fix (earlier runs measured a bug):
 
 `python evaluation/gate_check.py <results dirs>` checks a set of runs against this and exits non-zero unless
 every line holds. At the time of writing only one post-fix session exists (run 8: 11 decisions, 6 trials), so
-**the bar is not met and the gate stays off.** Run 9 (the stale-alert test) adds a second session once read.
+**the bar is not met and the gate stays off.** Run 9 (the stale-alert test, partly read) would be a second session; it has no unknown-cause trials.
 
 ## Appendix: full output
 
