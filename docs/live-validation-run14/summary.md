@@ -49,7 +49,7 @@ still `shadow`; the bar says the scorer is ready to gate, and turning it on is a
 3. **The unknown-cause evidence is from run 11 only** (5 of 5 escalated). Runs 12 to 14 ran none.
 4. **Contamination remains the weak point of the harness.** Counted trials were 11 of 14 (run 11), 7 of 9 (run 12),
    7 of 16 (run 13) and 6 of 7 (run 14): 31 of 46 overall, so 15 trials of lab time produced nothing. The cause is
-   still unconfirmed.
+   the 200m CPU limits putting the idle p95 on the alert line; see `docs/live-validation-run15/summary.md`.
 5. **Fault coverage.** Four causes, a small cluster, synthetic faults. The bar measures whether the scorer vetoes
    correct diagnoses in that setting, not in production.
 

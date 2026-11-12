@@ -766,6 +766,8 @@ With run 13 added (the retrained model `b565d77f` alone, runs 11, 12 and 13): th
 
 With run 14 added (the retrained model `b565d77f` alone, runs 11 to 14): the bar **is met** on that model's own evidence. 46 judged correct decisions, 26 first decisions, 0 vetoes, 95% upper bound 7.7%, 50 of 52 true claims backed, 59 of 62 wrong claims caught, 5 of 5 unknown-cause trials escalated. Every probe miss was a `no_opinion`, never a false endorsement. `SECOND_OPINION_MODE` is still `shadow`; enabling the gate is a separate decision. See `docs/live-validation-run14/summary.md`.
 
+Why trials were lost (follow-up to runs 13 and 14): the healthy cluster's gateway p95 sits at 0.45-0.77 s, on the `APILatencyHigh` 0.5 s line, because the services' 200m CPU limits throttle them (about 22% of CPU periods). With the limits raised to 1000m on the live cluster the idle p95 fell to about 0.2 s and a 3-trial run (run 15) had no contaminated trial. The evidence for the gate was gathered under the 200m limits. See `docs/live-validation-run15/summary.md`.
+
 ## Appendix: full output
 
 Regenerate with the commands under "How it was measured". Seed 7, 5000 incidents each.
