@@ -306,3 +306,17 @@ def test_decided_record_ignores_records_that_only_carry_the_stale_alert(monkeypa
     assert lv._decided_record("db_disk_full", 0) == decided
     assert lv._decided_record("db_disk_full", 2) is None      # only the stale-only record is after index 2
     assert lv._decided_record("high_memory_usage", 0) is None
+
+
+def test_engine_selftest_code_compiles_and_aborts_on_a_non_202(monkeypatch):
+    import live_validate as lv
+    calls = []
+    answers = iter(["500", ""])
+    monkeypatch.setattr(lv, "kubectl", lambda *a, **k: calls.append(a) or next(answers))
+    import pytest
+    with pytest.raises(SystemExit, match="500"):
+        lv.engine_selftest()
+    compile(calls[0][-1], "<pod-code>", "exec")
+    assert any(": > " in c[-1] for c in calls[1:])          # the test record is removed either way
+    monkeypatch.setattr(lv, "kubectl", lambda *a, **k: "202")
+    lv.engine_selftest()                                     # healthy: no exception
