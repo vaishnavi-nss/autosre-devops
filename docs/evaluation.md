@@ -756,7 +756,9 @@ with the fault-start fix (earlier runs measured a bug):
 
 `python evaluation/gate_check.py <results dirs>` checks a set of runs against this and exits non-zero unless
 every line holds. At the time of writing only one post-fix session exists (run 8: 11 decisions, 6 trials), so
-**the bar is not met and the gate stays off.** With runs 8 and 9 (`gate_check.py`, 2 post-fix sessions): 21 judged correct decisions (11 first decisions), **0 vetoes** (95% upper bound 15.5%), 22 of 22 true claims backed, 24 of 24 wrong claims caught, 1 of 1 unknown-cause trial escalated. What is missing is volume: a third session, 40 decisions, 40 probes of each kind, and 5 unknown-cause trials. A session of about 14 trials (3 per cause, 5 unknown) would meet all of those if it stays clean.
+**the bar is not met and the gate stays off.** With runs 8 and 9 (`gate_check.py`, 2 post-fix sessions): 21 judged correct decisions (11 first decisions), **0 vetoes** (95% upper bound 15.5%), 22 of 22 true claims backed, 24 of 24 wrong claims caught, 1 of 1 unknown-cause trial escalated. What was missing then was volume: a third session, 40 decisions, 40 probes of each kind, and 5 unknown-cause trials.
+
+**With run 11 added (3 post-fix sessions, `docs/live-validation-run11/summary.md`)**: 32 judged correct decisions (17 first decisions), **0 vetoes** (95% upper bound 10.7%), 34 of 34 true claims backed, 45 of 46 wrong claims caught, 6 of 6 unknown-cause trials escalated. Sessions, wrong-claim catch rate and unknown-cause criteria are met; **the bar is still not met** because three of run 11's 14 trials were marked contaminated and excluded, leaving 8 judged decisions (3 first decisions) and 6 true-claim probes short, and the veto upper bound just above 10%. Another clean session of about 9 known-cause trials should close the gap. The gate stays off.
 
 ## Appendix: full output
 
