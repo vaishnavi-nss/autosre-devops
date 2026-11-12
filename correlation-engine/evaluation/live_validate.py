@@ -217,18 +217,28 @@ def engine_selftest() -> None:
     log("engine accepts webhooks")
 
 
-def wait_quiet(timeout: int = 600) -> bool:
-    """Wait until no symptom alert is firing, so trials cannot bleed together."""
+STILL_FIRING: list[str] = []      # what was still firing when the last wait_quiet() gave up
+
+
+def wait_quiet(timeout: int = 900) -> bool:
+    """Wait until no symptom alert is firing, so trials cannot bleed together.
+
+    On a timeout the alerts still firing are left in STILL_FIRING, so a trial marked contaminated says why
+    (runs 11 and 12 lost five trials this way with no reason recorded; the limit was 600 s).
+    """
     deadline = time.time() + timeout
     clear = 0
+    active: set = set()
     while time.time() < deadline:
         active = firing()
         clear = clear + 1 if not active else 0
         if clear >= 2:
             time.sleep(75)            # let Alertmanager flush the resolved notification
+            STILL_FIRING.clear()
             return True
         log(f"  waiting for quiet; still firing: {sorted(active)}")
         time.sleep(20)
+    STILL_FIRING[:] = sorted(active)
     return False
 
 
@@ -295,6 +305,21 @@ KINDS = {
 }
 
 
+def quiet_or_reset() -> bool:
+    """wait_quiet(), and if an alert will not clear, replace the pods once and wait again.
+
+    In run 13 `APILatencyHigh` stayed firing past the 10-minute limit before 6 of the first 11 trials, more as the
+    session got older (2 of 9 in run 12). A leftover fault is not the cause: faults live in pod memory and the pods
+    were already replaced. The likely cause is a cluster that is slower late in a long session, which a second
+    replacement may not cure; if it does not, the trial is still marked contaminated, with what was firing.
+    """
+    if wait_quiet():
+        return True
+    log(f"  not quiet after the wait ({', '.join(STILL_FIRING) or 'nothing recorded'}); replacing the pods once more")
+    reset_cluster()
+    return wait_quiet()
+
+
 # -- one trial --------------------------------------------------------------------------
 
 def run_trial(index: int, label: str | None, rng: random.Random, detect_timeout: int, hold: int) -> dict:
@@ -302,7 +327,9 @@ def run_trial(index: int, label: str | None, rng: random.Random, detect_timeout:
     log(f"--- trial {index}: {name}")
     trial: dict = {"trial": index, "label": label, "contaminated": False}
 
-    trial["contaminated"] = not wait_quiet()
+    trial["contaminated"] = not quiet_or_reset()
+    if trial["contaminated"]:
+        trial["still_firing"] = list(STILL_FIRING)
     before = len(captured())
     put_label(label)
     trial["label_set_at"] = now_iso()
@@ -401,7 +428,9 @@ def run_stale_trial(index: int, label: str, rng: random.Random, detect_timeout: 
     """
     log(f"--- stale trial {index}: {label}")
     trial: dict = {"trial": index, "label": label, "contaminated": False, "mode": "stale"}
-    trial["contaminated"] = not wait_quiet()
+    trial["contaminated"] = not quiet_or_reset()
+    if trial["contaminated"]:
+        trial["still_firing"] = list(STILL_FIRING)
     put_label(label)
     trial["label_set_at"] = now_iso()
     pod_http("api-gateway", "POST", "/chaos/latency?ms=900")
