@@ -44,6 +44,8 @@ CAPTURE_PATH = os.getenv("CAPTURE_PATH")  # unset = capture disabled
 SECOND_OPINION_URL = os.getenv("SECOND_OPINION_URL")          # unset = no second opinion
 SECOND_OPINION_MODE = os.getenv("SECOND_OPINION_MODE", "shadow")   # shadow | gate
 SECOND_OPINION_TIMEOUT = float(os.getenv("SECOND_OPINION_TIMEOUT", "4"))
+# Escalate rather than act when the deciding symptoms of two or more causes fire together. Off by default.
+ESCALATE_ON_AMBIGUITY = os.getenv("ESCALATE_ON_AMBIGUITY", "false").lower() in ("1", "true", "yes")
 
 # Ground truth for incidents captured from now on. Module state on purpose: this
 # is experiment tooling for one operator, not part of the decision path.
@@ -129,10 +131,10 @@ async def receive_alerts(payload: dict):
         [a.get("labels", {}).get("alertname") for a in firing],
     )
 
-    result = correlate(firing)
+    result = correlate(firing, ESCALATE_ON_AMBIGUITY)
 
     if result is None:
-        reason = why_unmatched(firing)
+        reason = why_unmatched(firing, ESCALATE_ON_AMBIGUITY)
         unmatched_incidents_total.labels(SERVICE_NAME).inc()
         log.warning("no root cause, escalating to a human: %s", reason)
         return _capture(payload, {

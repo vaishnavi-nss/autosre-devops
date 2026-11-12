@@ -251,11 +251,12 @@ simulator back, so this comparison is only meaningful once repeated on captured 
 ## Recommendations
 
 1. **Treat two simultaneous deciding symptoms as ambiguity and escalate.** All remaining
-   wrong actions come from exactly this. It is *not* implemented because the simulator
-   creates confounders by exactly this mechanism, so adding the rule would show zero wrong
-   actions by construction - a number that proves nothing. It is a sound safety rule on its
-   own merits; the cost is more escalations when two real faults coincide. Decide as a
-   team.
+   wrong actions come from exactly this. It is implemented but **off by default**
+   (`ESCALATE_ON_AMBIGUITY=true` turns it on; `correlate(..., escalate_on_ambiguity=True)`), and the
+   simulator cannot validate it: it creates confounders by exactly this mechanism, so the rule
+   would show zero wrong actions by construction - a number that proves nothing. It is a sound
+   safety rule on its own merits; the cost is more escalations when two real faults coincide.
+   Switching it on is the team's decision.
 2. **Measure the real deeper-fault rate** before relying on the fail-safe finding.
 3. **Set the dispatcher's confidence gate with the caveat above.** 0.75 is a sanity floor,
    not a safeguard.
@@ -706,6 +707,25 @@ Two limits. Run 8 had no stale alert, so on its own it cannot tell the fix from 
 supported by the run 7 replay (start times only), not by a controlled live comparison. And 11 decisions from 6 trials
 is a small sample, with no unknown-cause trial finished to test escalation. **The gate stays off** until a run with a
 stale alert left in place shows the fix alone keeps the verdicts correct, over more than six trials.
+
+### The bar for gate mode
+
+`SECOND_OPINION_MODE=gate` would let the scorer withhold the rules' action when it disagrees. Written down
+before looking at more data, so the bar cannot move to fit the result. All of it must hold, on runs made
+with the fault-start fix (earlier runs measured a bug):
+
+| criterion | why this number |
+|---|---|
+| at least 3 separate live sessions | one session can share a lucky or unlucky cluster state |
+| at least 40 judged correct decisions, 20 of them the first diagnosis of a trial | with 0 vetoes in 40, the 95% upper bound on the veto rate is about 9%; in 11 it is about 26% |
+| 0 vetoes of a correct decision, upper bound at most 10% | a false veto withholds a correct fix; the scorer is only worth gating on if it almost never does |
+| at least 40 probes, 95% of true claims backed | it must agree with what is true |
+| at least 40 probes, 95% of deliberately wrong claims caught | it must disagree with what is false, otherwise it adds nothing |
+| at least 5 unknown-cause trials, all escalated | the gate must not turn an escalation into an action; the engine decides that, so this checks the pipeline end to end |
+
+`python evaluation/gate_check.py <results dirs>` checks a set of runs against this and exits non-zero unless
+every line holds. At the time of writing only one post-fix session exists (run 8: 11 decisions, 6 trials), so
+**the bar is not met and the gate stays off.** Run 9 (the stale-alert test) adds a second session once read.
 
 ## Appendix: full output
 

@@ -116,11 +116,31 @@ def match_signature(service: str, alerts: list[dict]) -> str | None:
     return min(candidates, key=lambda c: (-confidence(c, alerts), c))
 
 
-def why_unmatched(alerts: list[dict]) -> str:
+def ambiguous_causes(alerts: list[dict]) -> list[str]:
+    """Every known cause whose deciding symptom fired on the service that owns it.
+
+    One entry is normal. Two or more means two faults at once, or one fault and a coincidence: the engine
+    would name only the deepest, and the other may be the real one.
+    """
+    fired = {
+        (a.get("labels", {}).get("service"), a.get("labels", {}).get("alertname"))
+        for a in firing_only(alerts)
+    }
+    return sorted(
+        cause
+        for cause, spec in SIGNATURES.items()
+        if all((spec["owner"], symptom) in fired for symptom in spec["required_symptoms"])
+    )
+
+
+def why_unmatched(alerts: list[dict], escalate_on_ambiguity: bool = False) -> str:
     """A one-line reason for returning None, for logs and the webhook response."""
     firing = firing_only(alerts)
     if not firing:
         return "no firing alerts in this incident"
+    causes = ambiguous_causes(firing)
+    if escalate_on_ambiguity and len(causes) > 1:
+        return f"the deciding symptoms of {len(causes)} causes fired together ({', '.join(causes)})"
     service = deepest_alerting_service(firing)
     if service is None:
         return "no alert carries a service label that is part of the dependency chain"
@@ -149,8 +169,12 @@ def explain(result: dict) -> str:
     )
 
 
-def correlate(alerts: list[dict]) -> dict | None:
+def correlate(alerts: list[dict], escalate_on_ambiguity: bool = False) -> dict | None:
     """Run steps 2-5 over one incident's alerts.
+
+    With `escalate_on_ambiguity`, an incident in which the deciding symptoms of two or more causes fired
+    returns None instead of the deepest one. Off by default: it is a safety rule, not a measured gain (see
+    "Recommendations" in docs/evaluation.md), and it escalates more when two real faults coincide.
 
     Returns a dict with the keys the dispatcher depends on -
     `root_cause`, `service`, `confidence`, `playbook` - plus `matched_symptoms`,
@@ -158,6 +182,9 @@ def correlate(alerts: list[dict]) -> dict | None:
     no root cause can be named, which the dispatcher treats as "escalate".
     """
     firing = firing_only(alerts)
+
+    if escalate_on_ambiguity and len(ambiguous_causes(firing)) > 1:
+        return None
 
     service = deepest_alerting_service(firing)       # steps 2-3
     if service is None:

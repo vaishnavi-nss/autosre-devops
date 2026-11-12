@@ -262,3 +262,35 @@ def test_match_signature_returns_none_for_a_service_with_no_signatures():
 
 def test_alert_names_extracts_labels():
     assert alert_names(incident(*POOL)) == [name for name, _ in POOL]
+
+
+# ---------------------------------------------------------------- ambiguity (opt-in safety rule)
+TWO_FAULTS = incident(("DBDiskNearFull", "database"), ("ContainerMemoryHigh", "transaction-service"),
+                      ("APILatencyHigh", "api-gateway"))
+
+
+def test_default_behaviour_is_unchanged_two_deciding_symptoms_pick_the_deepest():
+    from correlate import ambiguous_causes
+    result = correlate(TWO_FAULTS)
+    assert result is not None and result["root_cause"] == "db_disk_full"
+    assert ambiguous_causes(TWO_FAULTS) == ["db_disk_full", "high_memory_usage"]
+
+
+def test_with_the_rule_on_two_deciding_symptoms_escalate():
+    assert correlate(TWO_FAULTS, escalate_on_ambiguity=True) is None
+    reason = why_unmatched(TWO_FAULTS, escalate_on_ambiguity=True)
+    assert "2 causes" in reason and "db_disk_full" in reason and "high_memory_usage" in reason
+
+
+def test_the_rule_does_not_touch_ordinary_incidents():
+    for symptoms in ([("DBDiskNearFull", "database"), ("ErrorRateHigh", "transaction-service"),
+                      ("APILatencyHigh", "api-gateway")],
+                     [("ContainerMemoryHigh", "transaction-service"), ("APILatencyHigh", "api-gateway")]):
+        assert correlate(incident(*symptoms), escalate_on_ambiguity=True) == correlate(incident(*symptoms))
+
+
+def test_a_deciding_symptom_on_the_wrong_service_is_not_counted():
+    # DBDiskNearFull is only evidence when the database exports it
+    alerts = incident(("DBDiskNearFull", "frontend"), ("ContainerMemoryHigh", "transaction-service"))
+    from correlate import ambiguous_causes
+    assert ambiguous_causes(alerts) == ["high_memory_usage"]

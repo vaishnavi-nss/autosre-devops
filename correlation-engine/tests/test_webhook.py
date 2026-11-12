@@ -193,3 +193,16 @@ def test_capture_records_what_the_engine_decided_not_just_what_it_received(clien
     client.post("/alerts", json=sample_payload)
     last = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])
     assert last["response"]["status"] == "unmatched" and last["response"]["action"] == "escalate_to_human"
+
+
+def test_engine_escalates_two_simultaneous_faults_only_when_the_rule_is_on(client, monkeypatch):
+    import app as engine
+    alerts = [{"status": "firing", "labels": {"alertname": n, "service": s}}
+              for n, s in (("DBDiskNearFull", "database"), ("ContainerMemoryHigh", "transaction-service"))]
+    payload = {"alerts": alerts}
+    monkeypatch.setattr(engine, "ESCALATE_ON_AMBIGUITY", False)
+    assert client.post("/alerts", json=payload).json()["root_cause"] == "db_disk_full"
+    monkeypatch.setattr(engine, "ESCALATE_ON_AMBIGUITY", True)
+    body = client.post("/alerts", json=payload).json()
+    assert body["status"] == "unmatched" and body["action"] == "escalate_to_human"
+    assert "together" in body["reason"]

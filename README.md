@@ -178,6 +178,7 @@ Adapted from section 7 of the brief. Owners are for the team to assign.
 | 2 | **Metrics** — install kube-prometheus-stack, confirm scraping, build Grafana dashboards | ⬜ | TBD |
 | 3 | **Fault injection** — trigger each symptom, confirm Alertmanager fires | ⬜ | TBD |
 | 4 | **Correlation engine** — algorithm steps 2–5 in `correlate.py` | ✅ done; tested on simulated incidents and live-validated on a real Prometheus → Alertmanager pipeline (17 injected-fault trials, 0 wrong actions) | ML |
+| 4b | **Second opinion** — a metric scorer that checks the engine's diagnosis (`second-opinion/`) | ✅ built, trained on this system's own injected faults and run live in `shadow` mode; **not enabled as a gate** — the written bar is not met yet (see *The bar for gate mode* in `docs/evaluation.md`) | ML |
 | 5 | **Remediation** — dispatcher that runs the mapped playbook; finish `clear_logs.yml` | ⬜ | TBD |
 | 6 | **End-to-end demo** — run the worked example live, show the dip and recovery | ⬜ | TBD |
 
