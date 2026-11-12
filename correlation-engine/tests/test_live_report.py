@@ -178,7 +178,7 @@ def test_resume_runs_only_what_is_missing(tmp_path, monkeypatch):
     (tmp_path / "trials.jsonl").write_text("\n".join(json.dumps(t) for t in trials) + "\n", encoding="utf-8")
 
     ran = []
-    monkeypatch.setattr(lv, "prepare", lambda cpu_limit=None: None)
+    monkeypatch.setattr(lv, "prepare", lambda cpu_limit=None, engine_env=None: None)
     monkeypatch.setattr(lv, "reset_cluster", lambda: None)
     monkeypatch.setattr(lv, "captured", lambda: [])
     monkeypatch.setattr(lv, "run_trial",

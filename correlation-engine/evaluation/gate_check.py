@@ -64,8 +64,8 @@ def gather(dirs: list[Path]) -> dict:
                 t["label_set_at"] = t["injected_at"]
         grouped = assign(records, trials)
         for t in trials:
-            if t.get("error") or t.get("contaminated"):
-                continue
+            if t.get("error") or t.get("contaminated") or t.get("mode") == "pair":
+                continue                      # pair trials have two real faults: not evidence for the gate
             out["trials"] += 1
             label = t.get("label")
             diagnosed = [r for r in grouped.get(t["trial"], []) if (r.get("response") or {}).get("root_cause")]
