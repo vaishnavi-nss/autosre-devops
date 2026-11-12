@@ -1,9 +1,21 @@
 ﻿import os
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from fastapi.responses import HTMLResponse
 
 app = FastAPI(title="frontend")
+@app.get("/metrics")
+async def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "service": "frontend"}
+
+@app.get("/ready")
+async def ready():
+    return {"status": "ready", "service": "frontend"}
 
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://api-gateway.autosre.svc.cluster.local:8000")
 

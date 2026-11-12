@@ -27,6 +27,7 @@ dataset for evaluation/evaluate.py --replay. Off by default.
 """
 
 import asyncio
+import httpx
 import json
 import logging
 import os
@@ -46,7 +47,10 @@ SECOND_OPINION_MODE = os.getenv("SECOND_OPINION_MODE", "shadow")   # shadow | ga
 SECOND_OPINION_TIMEOUT = float(os.getenv("SECOND_OPINION_TIMEOUT", "4"))
 # Escalate rather than act when the deciding symptoms of two or more causes fire together. Off by default.
 ESCALATE_ON_AMBIGUITY = os.getenv("ESCALATE_ON_AMBIGUITY", "false").lower() in ("1", "true", "yes")
-
+# Remediation dispatcher configuration
+DISPATCHER_URL = os.getenv("DISPATCHER_URL")
+DISPATCHER_ENABLED = os.getenv("DISPATCHER_ENABLED", "false").lower() == "true"
+DISPATCHER_TIMEOUT = float(os.getenv("DISPATCHER_TIMEOUT", "5"))
 # Ground truth for incidents captured from now on. Module state on purpose: this
 # is experiment tooling for one operator, not part of the decision path.
 _capture_label: str | None = None
@@ -168,9 +172,13 @@ async def receive_alerts(payload: dict):
     root_causes_identified_total.labels(SERVICE_NAME, result["root_cause"]).inc()
     last_confidence.labels(SERVICE_NAME).set(result["confidence"])
     log.info("root cause: %s (%s)", result["root_cause"], result["explanation"])
+    remediation = await _dispatch_remediation(result)
+
     response = {"status": "correlated", "received_alerts": len(firing), **result}
     if opinion is not None:
         response["second_opinion"] = opinion
+    if remediation is not None:
+        response["remediation"] = remediation
     return _capture(payload, response)
 
 
@@ -187,6 +195,30 @@ async def _second_opinion(result: dict, firing: list) -> dict:
     second_opinion_verdicts_total.labels(result["service"], opinion["verdict"]).inc()
     log.info("second opinion on %s: %s (%s)", result["root_cause"], opinion["verdict"], opinion.get("reason"))
     return opinion
+
+
+async def _dispatch_remediation(result: dict) -> dict | None:
+    """Send an approved diagnosis to the dispatcher; never block correlation."""
+    if not DISPATCHER_ENABLED:
+        return {"status": "disabled", "reason": "Dispatcher integration is disabled"}
+
+    if not DISPATCHER_URL:
+        return {"status": "unavailable", "reason": "DISPATCHER_URL is not configured"}
+
+    try:
+        async with httpx.AsyncClient(timeout=DISPATCHER_TIMEOUT) as client:
+            response = await client.post(
+                DISPATCHER_URL,
+                json={
+                    "root_cause": result["root_cause"],
+                    "confidence": result["confidence"],
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as exc:
+        log.error("Remediation dispatcher unavailable: %s", exc)
+        return {"status": "unavailable", "reason": str(exc)}
 
 
 def _capture(payload: dict, response: dict) -> dict:

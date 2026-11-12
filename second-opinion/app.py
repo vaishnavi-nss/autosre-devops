@@ -32,7 +32,7 @@ from pathlib import Path
 
 import joblib
 from fastapi import FastAPI, HTTPException, Response
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, generate_latest
 
 from opinion import judge
 from prometheus import fetch_metrics
@@ -53,8 +53,13 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("second-opinion")
 
-opinions_total = Counter("second_opinion_verdicts_total", "Verdicts returned.", ["service", "verdict"])
-
+REGISTRY = CollectorRegistry()
+opinions_total = Counter(
+    "second_opinion_verdicts_total",
+    "Verdicts returned.",
+    ["service", "verdict"],
+    registry=REGISTRY,
+)
 model = None
 
 
@@ -145,7 +150,7 @@ def features(body: dict):
 
 @app.get("/metrics")
 def metrics():
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/health")

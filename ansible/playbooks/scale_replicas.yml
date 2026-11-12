@@ -11,7 +11,7 @@
   gather_facts: false
 
   vars:
-    namespace: autosre
+    k8s_namespace: autosre
     target_service: transaction-service
     replicas: 3
 
@@ -21,11 +21,11 @@
         api_version: apps/v1
         kind: Deployment
         name: "{{ target_service }}"
-        namespace: "{{ namespace }}"
+        namespace: "{{ k8s_namespace }}"
         replicas: "{{ replicas | int }}"
         wait: true
         wait_timeout: 120
 
     - name: Report the outcome
       ansible.builtin.debug:
-        msg: "Scaled {{ target_service }} in {{ namespace }} to {{ replicas }} replica(s)."
+        msg: "Scaled {{ target_service }} in {{ k8s_namespace }} to {{ replicas }} replica(s)."

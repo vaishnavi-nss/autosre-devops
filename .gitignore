@@ -10,3 +10,6 @@ ENV/
 .env
 .DS_Store
 *.swp
+.venv/
+.venv312/
+/remediation-dispatcher/collections/

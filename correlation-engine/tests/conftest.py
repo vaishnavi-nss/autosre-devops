@@ -1,8 +1,4 @@
-"""Shared pytest fixtures.
-
-The engine's modules sit at the root of correlation-engine/ rather than in an
-installed package, so put that directory on sys.path before importing them.
-"""
+"""Shared pytest fixtures."""
 
 import json
 import sys
@@ -12,9 +8,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 ENGINE_DIR = Path(__file__).resolve().parents[1]
+
+# Ensure the correlation-engine app is imported, not second-opinion's app.
+sys.modules.pop("app", None)
 sys.path.insert(0, str(ENGINE_DIR))
 
-from app import app  # noqa: E402  (import must follow the sys.path change)
+from app import app  # noqa: E402
 
 
 @pytest.fixture

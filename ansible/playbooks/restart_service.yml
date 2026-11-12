@@ -12,7 +12,7 @@
   gather_facts: false
 
   vars:
-    namespace: autosre
+    k8s_namespace: autosre
     target_service: transaction-service
 
   tasks:
@@ -21,7 +21,7 @@
         api_version: apps/v1
         kind: Deployment
         name: "{{ target_service }}"
-        namespace: "{{ namespace }}"
+        namespace: "{{ k8s_namespace }}"
         state: patched
         definition:
           spec:
@@ -36,7 +36,7 @@
         api_version: apps/v1
         kind: Deployment
         name: "{{ target_service }}"
-        namespace: "{{ namespace }}"
+        namespace: "{{ k8s_namespace }}"
       register: deployment_state
       until:
         - deployment_state.resources | length > 0
@@ -48,5 +48,5 @@
     - name: Report the outcome
       ansible.builtin.debug:
         msg: >-
-          Restarted {{ target_service }} in {{ namespace }};
+          Restarted {{ target_service }} in {{ k8s_namespace }};
           {{ deployment_state.resources[0].status.readyReplicas | default(0) }} replica(s) ready.

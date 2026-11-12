@@ -25,7 +25,7 @@ spec:
         - name: correlation-engine
           image: autosre/correlation-engine:dev
           # Images are built straight into minikube's Docker daemon, never pulled.
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           ports:
             - name: http
               containerPort: 8000
@@ -39,6 +39,12 @@ spec:
               value: http://second-opinion.autosre.svc.cluster.local:8000
             - name: SECOND_OPINION_MODE
               value: shadow
+            - name: DISPATCHER_URL
+              value: http://remediation-dispatcher.autosre.svc.cluster.local:8001/dispatch
+            - name: DISPATCHER_ENABLED
+              value: "true"
+            - name: DISPATCHER_TIMEOUT
+              value: "5"
           resources:
             # Deliberately low so symptoms can be triggered on demand (brief section 4).
             requests:

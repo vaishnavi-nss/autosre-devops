@@ -1,9 +1,11 @@
+
 """Tests for the second-opinion service: scoring, the verdict, and the HTTP endpoint.
 
 Prometheus is faked with synthetic metrics, and the scorer is a small model trained on
 synthetic cases, so none of this needs the RCAEval data or a cluster.
 """
 
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -14,7 +16,15 @@ import pytest
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
-import app as svc          # noqa: E402
+# Load second-opinion's app under a unique module name.
+# This prevents conflicts with correlation-engine's app.py.
+spec = importlib.util.spec_from_file_location(
+    "second_opinion_app", HERE / "app.py"
+)
+svc = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = svc
+spec.loader.exec_module(svc)
+
 import opinion as op       # noqa: E402
 import prometheus as prom  # noqa: E402
 import scoring             # noqa: E402
@@ -42,8 +52,12 @@ def synthetic_cases():
         service = CHAIN[i % 4]
         kind, fault = (("mem", "mem") if i % 2 else ("latency", "delay"))
         frame = metrics(service, kind, 6.0, seed=i)
-        cases.append({"system": system, "service": service, "fault": fault,
-                      "scores": scoring.service_scores(frame, 1_100, 60)})
+        cases.append({
+            "system": system,
+            "service": service,
+            "fault": fault,
+            "scores": scoring.service_scores(frame, 1_100, 60),
+        })
     return cases
 
 
@@ -72,6 +86,7 @@ def test_scorer_names_the_faulty_service_and_fault(scorer):
 
 
 # ---------------------------------------------------------------- verdicts
+
 def test_service_and_fault_agreeing_on_memory_pressure_is_agreement():
     v = op.judge("high_memory_usage", "transaction-service", "transaction-service", "mem", 0.8, 0.5)
     assert v["verdict"] == "agree" and v["basis"] == "service and fault"
@@ -99,6 +114,7 @@ def test_low_confidence_abstains_rather_than_voting():
 
 
 # ---------------------------------------------------------------- endpoint
+
 @pytest.fixture
 def client(scorer, monkeypatch):
     from fastapi.testclient import TestClient
@@ -114,26 +130,37 @@ def serve(monkeypatch, frame):
 
 def test_endpoint_agrees_when_metrics_point_where_the_rules_did(client, monkeypatch):
     serve(monkeypatch, metrics("transaction-service", "mem", seed=7))
-    body = client.post("/opinion", json={"root_cause": "high_memory_usage", "service": "transaction-service",
-                                         "incident_start": 1_100}).json()
+    body = client.post("/opinion", json={
+        "root_cause": "high_memory_usage",
+        "service": "transaction-service",
+        "incident_start": 1_100,
+    }).json()
     assert body["verdict"] == "agree"
     assert body["ranking"][0]["service"] == "transaction-service"
 
 
 def test_endpoint_disagrees_when_metrics_point_elsewhere(client, monkeypatch):
     serve(monkeypatch, metrics("database", "mem", seed=7))
-    body = client.post("/opinion", json={"root_cause": "high_memory_usage", "service": "transaction-service",
-                                         "incident_start": 1_100}).json()
+    body = client.post("/opinion", json={
+        "root_cause": "high_memory_usage",
+        "service": "transaction-service",
+        "incident_start": 1_100,
+    }).json()
     assert body["verdict"] == "disagree"
 
 
 def test_endpoint_abstains_when_prometheus_has_nothing_or_fails(client, monkeypatch):
     serve(monkeypatch, pd.DataFrame(columns=["time"]))
-    ask = {"root_cause": "db_disk_full", "service": "database", "incident_start": 1_100}
+    ask = {
+        "root_cause": "db_disk_full",
+        "service": "database",
+        "incident_start": 1_100,
+    }
     assert client.post("/opinion", json=ask).json()["verdict"] == "no_opinion"
 
     def boom(*a, **k):
         raise RuntimeError("prometheus unreachable")
+
     monkeypatch.setattr(svc, "fetch_metrics", boom)
     assert client.post("/opinion", json=ask).json()["verdict"] == "no_opinion"
 
@@ -142,17 +169,24 @@ def test_endpoint_rejects_malformed_requests_and_reports_not_ready_without_a_mod
     assert client.post("/opinion", json={"service": "database"}).status_code == 422
     monkeypatch.setattr(svc, "model", None)
     assert client.get("/ready").status_code == 503
-    assert client.post("/opinion", json={"root_cause": "x", "service": "y", "incident_start": 1}).status_code == 503
+    assert client.post("/opinion", json={
+        "root_cause": "x",
+        "service": "y",
+        "incident_start": 1,
+    }).status_code == 503
 
 
 def test_prometheus_client_builds_the_frame_the_scorer_expects(monkeypatch):
     def fake(base, query, start, end, step, timeout):
         if "memory_working_set" in query:
-            return [{"metric": {"container": "database"}, "values": [[1000, "5"], [1015, "6"]]},
-                    {"metric": {"container": "loadgen"}, "values": [[1000, "1"]]}]
+            return [
+                {"metric": {"container": "database"}, "values": [[1000, "5"], [1015, "6"]]},
+                {"metric": {"container": "loadgen"}, "values": [[1000, "1"]]},
+            ]
         if "http_request_duration" in query:
             return [{"metric": {"service": "database"}, "values": [[1000, "0.1"], [1015, "NaN"]]}]
         return []
+
     monkeypatch.setattr(prom, "_get", fake)
     frame = prom.fetch_metrics("http://p", CHAIN, 0, 2000)
     assert set(frame.columns) == {"time", "database_mem", "database_latency"}
@@ -171,16 +205,20 @@ def test_the_shipped_model_loads_and_finds_an_obvious_memory_fault(monkeypatch):
 
 
 # ---------------------------------------------------------------- own-data additions
+
 def test_a_cause_in_the_scorers_vocabulary_is_compared_on_fault_type_too():
-    # a scorer trained on our incidents names our causes directly, so a disk claim can be refuted
-    # by a scorer that finds the right service but a different cause
-    v = op.judge("db_disk_full", "database", "database", "high_memory_usage", 0.9, 0.3,
-                 vocabulary={"db_disk_full", "high_memory_usage"})
+    v = op.judge(
+        "db_disk_full", "database", "database", "high_memory_usage", 0.9, 0.3,
+        vocabulary={"db_disk_full", "high_memory_usage"},
+    )
     assert v["verdict"] == "disagree" and "high_memory_usage" in v["reason"]
-    v = op.judge("db_disk_full", "database", "database", "db_disk_full", 0.9, 0.3,
-                 vocabulary={"db_disk_full"})
+
+    v = op.judge(
+        "db_disk_full", "database", "database", "db_disk_full", 0.9, 0.3,
+        vocabulary={"db_disk_full"},
+    )
     assert v["verdict"] == "agree" and v["basis"] == "service and fault"
-    # without the vocabulary (the RCAEval model) the old service-only behaviour is unchanged
+
     assert op.judge("db_disk_full", "database", "database", "mem", 0.9, 0.3)["basis"] == "service only"
 
 
@@ -190,17 +228,23 @@ def test_features_endpoint_returns_every_signal_and_needs_no_model(monkeypatch):
 
     def fake(start, kinds, now=None):
         seen["kinds"] = kinds
-        return {"database": {k: 0.0 for k in kinds}, "frontend": {k: 1.0 for k in kinds}}, None
+        return {
+            "database": {k: 0.0 for k in kinds},
+            "frontend": {k: 1.0 for k in kinds},
+        }, None
 
     monkeypatch.setattr(svc, "model", None)
     monkeypatch.setattr(svc, "window_scores", fake)
     with TestClient(svc.app) as client:
         reply = client.post("/features", json={"incident_start": 1000}).json()
+
     assert set(reply["scores"]["database"]) == set(scoring.OWN_KINDS) and "disk" in seen["kinds"]
+
     monkeypatch.setattr(svc, "window_scores", lambda *a, **k: (None, "only 2 samples"))
     with TestClient(svc.app) as client:
         assert client.post("/features", json={"incident_start": 1000}).json() == {
-            "scores": None, "reason": "only 2 samples"}
+            "scores": None, "reason": "only 2 samples"
+        }
         assert client.post("/features", json={}).status_code == 422
 
 

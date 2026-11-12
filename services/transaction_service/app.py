@@ -33,6 +33,11 @@ DB_POOL_ACTIVE = get_or_create_gauge(
     "Active DB connections in pool", 
     ["service"]
 )
+DB_POOL_MAX = get_or_create_gauge(
+    "db_connection_pool_max",
+    "Maximum DB connections in pool",
+    ["service"]
+)
 HTTP_REQUESTS_TOTAL = get_or_create_counter(
     "http_requests_total", 
     "Total requests", 
@@ -45,6 +50,7 @@ HTTP_LATENCY = get_or_create_histogram(
 )
 
 DB_POOL_ACTIVE.labels(service="transaction-service").set(2)
+DB_POOL_MAX.labels(service="transaction-service").set(10)
 
 chaos_state = {
     "error_rate": 0.0,
@@ -139,4 +145,5 @@ def chaos_reset():
     chaos_state["latency_seconds"] = 0.0
     chaos_state["memory_leak"].clear()
     DB_POOL_ACTIVE.labels(service="transaction-service").set(2)
+    DB_POOL_MAX.labels(service="transaction-service").set(10)
     return {"status": "chaos reset"}
