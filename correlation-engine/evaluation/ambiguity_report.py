@@ -90,9 +90,7 @@ def wrong(dirs: list[Path]) -> str:
     out = ["# Webhooks where the engine named a cause other than the label", "",
            "| n | trial label | engine named | when | alerts firing |", "|---:|---|---|---|---|"]
     out += [f"| {n} | {a} | {b} | {c} | {e} |" for (a, b, c, e), n in seen.most_common()]
-    return "
-".join(out) + "
-"
+    return "\n".join(out) + "\n"
 
 
 def _t(stamp: str) -> datetime:
