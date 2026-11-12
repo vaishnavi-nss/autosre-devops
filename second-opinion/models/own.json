@@ -2,23 +2,24 @@
   "trained_on": [
     "docs/live-validation-run3",
     "docs/live-validation-run4",
-    "docs/live-validation-run5-early"
+    "docs/live-validation-run5-early",
+    "docs/live-validation-run8"
   ],
-  "trials": 47,
-  "cases": 115,
+  "trials": 53,
+  "cases": 127,
   "leave_one_trial_out": {
-    "cases": 115,
-    "service_accuracy": 0.9478260869565217,
-    "service_and_fault_accuracy": 0.9217391304347826,
+    "cases": 127,
+    "service_accuracy": 0.952755905511811,
+    "service_and_fault_accuracy": 0.937007874015748,
     "verdicts": {
       "true_claim": {
-        "agree": 90,
+        "agree": 100,
         "disagree": 4,
         "no_opinion": 0
       },
       "wrong_claim": {
         "agree": 2,
-        "disagree": 113,
+        "disagree": 125,
         "no_opinion": 0
       }
     }
