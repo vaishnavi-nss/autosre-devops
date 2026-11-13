@@ -159,14 +159,26 @@ def test_the_fault_is_stopped_even_when_the_trial_blows_up(monkeypatch):
     assert "stop" in calls
 
 
-def test_pool_exhaustion_is_a_client_surge_that_touches_no_deployment(monkeypatch):
+def test_pool_exhaustion_is_a_direct_client_surge_that_touches_no_deployment(monkeypatch):
     calls: list[tuple] = []
     monkeypatch.setattr(rv.lv, "kubectl", lambda *a, **k: calls.append(a) or "")
     state: dict = {}
     rv._pool_start(state)
-    assert any("run" in c and rv.LOAD_POD in c for c in calls)                    # a real client pod
-    assert not [c for c in calls if "set" in c or "scale" in c or "database" in c]   # no deployment is changed
-    script = [c for c in calls if "run" in c][0][-1]
-    assert f"-lt {rv.BURST_LOOPS}" in script and rv.BURST_LOOPS >= 100
+    run = [c for c in calls if "run" in c][0]
+    assert rv.LOAD_POD in run and "-Z" in run                                    # one real client pod, parallel
+    assert run[run.index("--parallel-max") + 1] == str(rv.BURST_CONCURRENCY) and rv.BURST_CONCURRENCY >= 100
+    assert "transaction-service" in run[-1] and "/transactions" in run[-1]        # straight at the service with the pool
+    assert not [c for c in calls if "set" in c or "scale" in c]                  # no deployment is changed
     rv._pool_stop(state)
     assert any("delete" in c and "pod" in c and rv.LOAD_POD in c for c in calls)
+
+
+def test_the_crash_uses_a_signal_the_init_process_honours(monkeypatch):
+    sent: list[str] = []
+    monkeypatch.setattr(rv, "exec_python", lambda deploy, code: sent.append(code) or "")
+    state: dict = {}
+    rv._crash_tick(10, state)
+    assert sent == []                                                            # not due yet
+    rv._crash_tick(31, state)
+    rv._crash_tick(35, state)                                                    # same interval: no second kill
+    assert len(sent) == 1 and "SIGTERM" in sent[0] and "SIGKILL" not in sent[0]
