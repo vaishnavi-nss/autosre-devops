@@ -25,10 +25,11 @@ would name a cause that is not in the pair; **there were none in either run.**
 ## 1. The ambiguity rule
 
 **Cost, on real single-fault incidents (no lab time).** The engine's `correlate()` was replayed over every recorded
-webhook of runs 11-15 (195 webhooks, counted trials only) with the rule off and on
+webhook of runs 11-15 (130 webhooks from the counted trials) with the rule off and on
 (`evaluation/ambiguity_report.py cost`). **The rule changed nothing**: no correct action became an escalation and no
-wrong action was removed; the same on the 34 first webhooks of each trial (28 correct, 1 missed, 5 escalated either
-way). On single faults the rule is free.
+wrong action was removed (51 correct, 0 wrong, 73 missed, 6 escalated either way); the same on the 34 first webhooks
+of each trial (28 correct, 1 missed, 5 escalated either way). On single faults the rule is free. (An earlier version of
+this report said 195 webhooks and 21 wrong ones; that was a bug in the report, corrected below.)
 
 **Benefit, on two real faults.**
 
@@ -77,9 +78,14 @@ whichever fault is dominant. It is a backstop beside the rule, not a substitute.
 - Small samples: 15 pair trials, 3 pairs, synthetic faults on a small cluster, 1000m limits (not the 200m behind the
   gate evidence). `SECOND_OPINION_MODE` is `shadow` and the rule is off in the cluster, as found.
 
-## Also found
+## A correction to the analysis, not a finding about the harness
 
-The 21 single-fault webhooks (runs 11-15) where the engine named a cause other than the trial's label are all later
-webhooks, never the first, each showing exactly one deciding symptom of the cause it named
-(`ambiguity_report.py wrong`). The rule cannot act on them. They look like alerts leaking in from a neighbouring trial,
-which is a harness-isolation issue, not an ambiguity one.
+The first version of `ambiguity_report.py` dropped contaminated trials *before* assigning recorded incidents to trials.
+Each contaminated trial's incidents then went to the counted trial in front of it, which showed up as 65 extra
+webhooks and **21 "wrong" ones** (for example a contaminated memory trial's `ContainerMemoryHigh` credited to the disk
+trial before it). I read those as alerts leaking in from a neighbouring trial; that was wrong. The leak view showed
+every one began 13-40 minutes *after* the trial's injection, which is when the neighbouring trial ran.
+With the assignment fixed (all trials first, then filter; `_session()` in the script, with a test), **no webhook in
+runs 11-15 names a cause other than its trial's label** (`ambiguity_report.py wrong` and `leaks` are empty). There is
+no harness-isolation problem in this data and nothing to fix there. `gate_check.py` was never affected: it assigns
+over every trial and filters afterwards.

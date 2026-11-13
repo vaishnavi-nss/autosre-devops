@@ -114,7 +114,7 @@ ML = [
     Paragraph("6. Still open", H2),
     *bullets([
         "Decide whether to turn the gate on (shadow today), and ESCALATE_ON_AMBIGUITY (off). Both were run on and off live "
-        "with two real faults (runs 16, 17): the rule costs nothing on 195 real single-fault webhooks and escalates every "
+        "with two real faults (runs 16, 17): the rule costs nothing on 130 real single-fault webhooks and escalates every "
         "two-fault incident (0 of 6 trials acted, against 9 of 9 with it off); the gate alone does not stop action on the "
         "dominant fault (the scorer misses the second fault), so it is a backstop. No wrong action in either.",
         "A session at the higher CPU limit, if the result is to be relied on for a differently sized cluster. "
