@@ -68,3 +68,30 @@ def test_wrong_lists_webhooks_naming_a_cause_other_than_the_label(tmp_path):
     text = ar.wrong([tmp_path])
     assert "| 1 | high_memory_usage | db_disk_full | webhook 2 | DBDiskNearFull, ErrorRateHigh |" in text
     assert text.count("| high_memory_usage | db_disk_full |") == 1
+
+
+def test_leaks_separates_a_leftover_alert_from_one_that_arose_during_the_trial(tmp_path):
+    def alert_rec(at, label, name, svc, starts):
+        r = rec(at, label, [(name, svc)])
+        r["payload"]["alerts"][0]["startsAt"] = starts
+        return r
+
+    t1 = {"trial": 1, "label": "db_disk_full", "contaminated": False, "label_set_at": "2026-01-01T10:00:00+00:00",
+          "injected_at": "2026-01-01T10:00:05+00:00"}
+    t2 = {"trial": 2, "label": "db_disk_full", "contaminated": False, "label_set_at": "2026-01-01T10:20:00+00:00",
+          "injected_at": "2026-01-01T10:20:05+00:00"}
+    t3 = {"trial": 3, "label": "db_disk_full", "contaminated": False, "label_set_at": "2026-01-01T10:40:00+00:00",
+          "injected_at": "2026-01-01T10:40:05+00:00"}
+    t0 = {"trial": 0, "label": "high_memory_usage", "contaminated": True, "label_set_at": "2026-01-01T09:40:00+00:00",
+          "injected_at": "2026-01-01T09:40:05+00:00"}
+    recs = [alert_rec("2026-01-01T10:22:00+00:00", "db_disk_full", "ContainerMemoryHigh", "transaction-service",
+                      "2026-01-01T10:10:00Z"),          # trial 2: memory alert began before its injection: leftover
+            alert_rec("2026-01-01T10:42:00+00:00", "db_disk_full", "ContainerMemoryHigh", "transaction-service",
+                      "2026-01-01T10:41:00Z"),          # trial 3: began after its injection: arose during it
+            rec("2026-01-01T10:02:00+00:00", "db_disk_full", DISK)]   # trial 1: correct, ignored
+    write(tmp_path, [t0, t1, t2, t3], recs)
+    text = ar.leaks([tmp_path])
+    assert "| before this trial's injection (leftover) | same cause as the previous trial | 1 |" not in text
+    assert "| before this trial's injection (leftover) | not the previous trial's cause | 1 |" in text
+    assert "| after it (arose during the trial) | not the previous trial's cause | 1 |" in text
+    assert "| 2 | db_disk_full | high_memory_usage | 1 | before this trial's injection (leftover) | 605 |" in text
