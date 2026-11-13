@@ -213,10 +213,11 @@ def report(dirs: list[Path]) -> str:
             rows.append([str(t["trial_id"]), t["real_fault"], "yes" if t.get("fault_effective") else "NO",
                          "yes" if r["both_identified"] else "no", "yes" if r["only_one"] else "no",
                          ", ".join(r["wrong_cause_named"]) or "-", ", ".join(r["second_unresolved"]) or "-",
+                         ", ".join(sorted({d["rule_prediction"] for d in (t.get("decisions") or []) if d.get("rule_prediction")})) or "none (escalated)",
                          ", ".join(r["actions"]) or "-", str(r["live_escalated"]), str(sum(r["rule_on_would_escalate"])),
                          str(r["webhooks"])])
         out += table(["Trial", "Faults", "Both effective", "Both named", "Only one named", "Wrong cause named",
-                      "Unresolved fault", "Actions (playbooks)", "Live escalations", "Rule-on would escalate", "Webhooks"], rows)
+                      "Unresolved fault", "Causes named", "Actions (playbooks)", "Live escalations", "Rule-on would escalate", "Webhooks"], rows)
     else:
         out.append("(no two-fault trials)")
 

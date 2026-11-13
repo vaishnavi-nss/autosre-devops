@@ -494,6 +494,13 @@ def run_healthy(index: int, minutes: int) -> dict:
 
 # -- driver ----------------------------------------------------------------------------------------------------
 
+# Two-fault trials: the second real fault starts after the engine has reacted to the first. The memory + database pair
+# is two real failures at once of which only one is among the engine's known causes.
+PAIR_PLANS = {"pair": ("memory_pressure", "pool_exhaustion"),
+              "pair_mem_db": ("memory_pressure", "db_outage"),
+              "pair_mem_cpu": ("memory_pressure", "cpu_pressure")}
+
+
 def parse_plan(text: str) -> list[tuple[str, int]]:
     out = []
     for part in text.split(","):
@@ -536,9 +543,9 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     faults = build_faults()
     plan = parse_plan(args.plan)
-    unknown = [n for n, _ in plan if n not in faults and n not in ("healthy", "pair")]
+    unknown = [n for n, _ in plan if n not in faults and n != "healthy" and n not in PAIR_PLANS]
     if unknown:
-        raise SystemExit(f"unknown plan entries: {unknown}; faults are {sorted(faults)}, healthy, pair")
+        raise SystemExit(f"unknown plan entries: {unknown}; faults are {sorted(faults)}, healthy, {sorted(PAIR_PLANS)}")
 
     conditions = prepare_real()
     conditions["plan"] = args.plan
@@ -555,9 +562,9 @@ def main() -> None:
                 try:
                     if name == "healthy":
                         trial = run_healthy(index, count)
-                    elif name == "pair":
-                        trial = run_fault_trial(index, [faults["memory_pressure"], faults["pool_exhaustion"]],
-                                                args.detect_timeout, args.hold)
+                    elif name in PAIR_PLANS:
+                        first, second = PAIR_PLANS[name]
+                        trial = run_fault_trial(index, [faults[first], faults[second]], args.detect_timeout, args.hold)
                     else:
                         trial = run_fault_trial(index, [faults[name]], args.detect_timeout, args.hold)
                 except Exception as exc:                        # noqa: BLE001 - one bad trial is data
