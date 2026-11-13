@@ -14,10 +14,11 @@ Real faults (the mechanism, then what the pipeline can see):
 
   memory_pressure   a real process inside the transaction-service container holds memory until the container is ~93%
                     of its limit (cAdvisor sees it)                        known cause: high_memory_usage
-  pool_exhaustion   a real client pod floods the frontend with concurrent requests, so real requests pile up in the
-                    transaction service's connection pool                 known cause: db_connection_pool_exhaustion
+  pool_exhaustion   a real client pod keeps 150 concurrent requests on the transaction service, so real calls to the
+                    database pile up in its connection pool               known cause: db_connection_pool_exhaustion
   db_outage         the database deployment is scaled to zero             no known cause: expect escalation
-  pod_crash         PID 1 of the transaction-service container is killed repeatedly (a real crash loop)
+  pod_crash         PID 1 (uvicorn) of the transaction-service container is sent SIGTERM repeatedly: the container
+                    really stops and the kubelet restarts it (a real restart loop)
                                                                           no known cause: expect escalation
   cpu_pressure      busy-loop processes inside the api-gateway container  no known cause: expect escalation
   network_partition a NetworkPolicy denies traffic into the database      no known cause: expect escalation
@@ -179,19 +180,20 @@ def _memory_effect() -> float | None:
     return lv.memory_ratio()
 
 
-BURST_LOOPS = 100
+BURST_CONCURRENCY = 150
+BURST_URL = "http://transaction-service.autosre.svc.cluster.local:8000/transactions"
 
 
 def _pool_start(state: dict) -> None:
-    # A real surge of client traffic: a separate pod runs BURST_LOOPS concurrent request loops against the frontend, so
-    # real requests pile up inside the 200m-limited services and the transaction service's pool fills. Nothing about the
-    # database or any limit is changed. (Cutting the database's CPU to make it slow was tried first; the pod could not
-    # even start, so it is not a usable fault.)
-    state["loops"] = BURST_LOOPS
-    loop = "(while true; do curl -s -m 10 -o /dev/null http://frontend.autosre.svc.cluster.local:8000/; done) &"
-    script = f"i=0; while [ $i -lt {BURST_LOOPS} ]; do " + loop + " i=$((i+1)); done; wait"
+    # A real surge of clients hitting the transaction service directly: one curl pod keeps BURST_CONCURRENCY requests in
+    # flight at once, so real calls to the database pile up inside the service's connection pool. Nothing about the
+    # database or any limit is changed. Two earlier designs failed and are not used: cutting the database's CPU (the pod
+    # could not start), and flooding the frontend (the front services saturated first and the pool peaked at 0.65).
+    state["concurrency"] = BURST_CONCURRENCY
     lv.kubectl("-n", NS, "run", LOAD_POD, "--restart=Never", "--image=curlimages/curl:8.11.1",
-               "--image-pull-policy=IfNotPresent", "--labels=app=real-burst", "--", "sh", "-c", script)
+               "--image-pull-policy=IfNotPresent", "--labels=app=real-burst", "--", "curl", "-s", "-Z",
+               "--parallel-max", str(BURST_CONCURRENCY), "--max-time", "10", "-o", "/dev/null",
+               BURST_URL + "?n=[1-500000]")
 
 
 def _pool_stop(state: dict) -> None:
@@ -217,14 +219,16 @@ def _outage_effect() -> float | None:
 
 
 def _crash_tick(elapsed: float, state: dict) -> None:
-    # one real kill of PID 1 about every 50 s; the kubelet restarts the container each time
-    due = int(elapsed // 50)
+    # About every 30 s, send SIGTERM to PID 1 (uvicorn) so the container really stops and the kubelet restarts it.
+    # SIGKILL was tried first and did nothing: a container's init ignores SIGKILL sent from inside its own namespace, but
+    # SIGTERM reaches uvicorn's handler and it exits.
+    due = int(elapsed // 30)
     if due > state.get("kills", 0):
         state["kills"] = due
         try:
-            exec_python("transaction-service", "import os, signal; os.kill(1, signal.SIGKILL)")
+            exec_python("transaction-service", "import os, signal; os.kill(1, signal.SIGTERM)")
         except RuntimeError:
-            pass                                            # the connection drops as the container dies: expected
+            pass                                            # the connection drops as the container exits: expected
 
 
 def _crash_effect() -> float | None:
