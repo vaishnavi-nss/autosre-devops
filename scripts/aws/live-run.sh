@@ -54,8 +54,15 @@ sleep 240
 mkdir -p "$HOME_DIR/results/$RUN" && chown ubuntu:ubuntu "$HOME_DIR/results/$RUN"
 setsid nohup bash -c "while true; do aws s3 sync $HOME_DIR/results/$RUN s3://$BUCKET/results-$RUN --only-show-errors; \
   aws s3 cp $HOME_DIR/$RUN.log s3://$BUCKET/results-$RUN/$RUN.log --only-show-errors; sleep 45; done" >/dev/null 2>&1 </dev/null &
-sudo -u ubuntu -H -g docker bash -c "cd $HOME_DIR/autosre/correlation-engine && setsid nohup python3 evaluation/live_validate.py \
-  --out $HOME_DIR/results/$RUN --per-cause $PER_CAUSE --unknown $UNKNOWN --deadline-minutes $DEADLINE $* \
-  > $HOME_DIR/$RUN.log 2>&1 < /dev/null &"
+# HARNESS=real_aws_validate.py runs the REAL-failure driver instead (no chaos endpoints), with PLAN="healthy:15,memory_pressure:3".
+if [ "${HARNESS:-live_validate.py}" = "real_aws_validate.py" ]; then
+  sudo -u ubuntu -H -g docker bash -c "cd $HOME_DIR/autosre/correlation-engine && setsid nohup python3 evaluation/real_aws_validate.py \
+    --out $HOME_DIR/results/$RUN --plan '${PLAN:?set PLAN, e.g. healthy:15,memory_pressure:3}' --deadline-minutes $DEADLINE $* \
+    > $HOME_DIR/$RUN.log 2>&1 < /dev/null &"
+else
+  sudo -u ubuntu -H -g docker bash -c "cd $HOME_DIR/autosre/correlation-engine && setsid nohup python3 evaluation/live_validate.py \
+    --out $HOME_DIR/results/$RUN --per-cause $PER_CAUSE --unknown $UNKNOWN --deadline-minutes $DEADLINE $* \
+    > $HOME_DIR/$RUN.log 2>&1 < /dev/null &"
+fi
 sleep 5
 st "$RUN: harness started on $COMMIT (model $MODEL): $(pgrep -af 'live_validat[e]' | head -1 | cut -c1-60)"
