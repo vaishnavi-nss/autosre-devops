@@ -95,3 +95,14 @@ def test_leaks_separates_a_leftover_alert_from_one_that_arose_during_the_trial(t
     assert "| before this trial's injection (leftover) | not the previous trial's cause | 1 |" in text
     assert "| after it (arose during the trial) | not the previous trial's cause | 1 |" in text
     assert "| 2 | db_disk_full | high_memory_usage | 1 | before this trial's injection (leftover) | 605 |" in text
+
+
+def test_a_contaminated_trials_records_are_not_credited_to_the_trial_before_it(tmp_path):
+    ok = {"trial": 1, "label": "db_disk_full", "contaminated": False, "label_set_at": "2026-01-01T10:00:00+00:00",
+          "injected_at": "2026-01-01T10:00:05+00:00"}
+    bad = {"trial": 2, "label": "high_memory_usage", "contaminated": True, "label_set_at": "2026-01-01T10:20:00+00:00",
+           "injected_at": "2026-01-01T10:20:05+00:00"}
+    write(tmp_path, [ok, bad], [rec("2026-01-01T10:02:00+00:00", "db_disk_full", DISK),
+                                rec("2026-01-01T10:22:00+00:00", "high_memory_usage", MEMORY)])
+    assert "| 1 | high_memory_usage |" not in ar.wrong([tmp_path])
+    assert "(1 incidents)" in ar.cost([tmp_path]).split("First webhook")[0]

@@ -45,12 +45,24 @@ def outcome(cause: str | None, label: str | None) -> str:
     return "correct" if cause == label else "wrong"
 
 
+def _session(d: Path) -> tuple[list[dict], list[dict], dict]:
+    """(every trial, the trials that count as single-fault evidence, records grouped by trial number).
+
+    Records are assigned over EVERY trial, including contaminated, errored and pair ones, and only then filtered.
+    Dropping a trial first hands its records to the trial before it: the first version of this report did that and
+    credited a contaminated memory trial's alerts to the disk trial in front of it, which looked like 21 'wrong'
+    webhooks."""
+    everything = sorted(load_trials(d / "trials.jsonl"), key=lambda t: t["trial"])
+    grouped = assign(load_records(d / "incidents.jsonl"), everything)
+    counted = [t for t in everything
+               if not t.get("error") and not t.get("contaminated") and t.get("mode") != "pair"]
+    return everything, counted, grouped
+
+
 def cost(dirs: list[Path]) -> str:
     rows, first_rows = [], []
     for d in dirs:
-        trials = [t for t in load_trials(d / "trials.jsonl")
-                  if not t.get("error") and not t.get("contaminated") and t.get("mode") != "pair"]
-        grouped = assign(load_records(d / "incidents.jsonl"), trials)
+        _, trials, grouped = _session(d)
         for t in trials:
             for i, r in enumerate(grouped.get(t["trial"], [])):
                 if not firing_only(r["payload"].get("alerts", [])):
@@ -79,9 +91,7 @@ def wrong(dirs: list[Path]) -> str:
     """Every webhook where the engine named a cause other than the trial's label, with the alerts that were firing."""
     seen: Counter = Counter()
     for d in dirs:
-        trials = [t for t in load_trials(d / "trials.jsonl")
-                  if not t.get("error") and not t.get("contaminated") and t.get("mode") != "pair"]
-        grouped = assign(load_records(d / "incidents.jsonl"), trials)
+        _, trials, grouped = _session(d)
         for t in trials:
             for i, r in enumerate(grouped.get(t["trial"], [])):
                 named = decide(r, False)
@@ -106,10 +116,7 @@ def leaks(dirs: list[Path]) -> str:
     rows: Counter = Counter()
     detail: list[str] = []
     for d in dirs:
-        all_trials = sorted((t for t in load_trials(d / "trials.jsonl") if t.get("mode") != "pair"),
-                            key=lambda t: t["trial"])
-        counted = [t for t in all_trials if not t.get("error") and not t.get("contaminated")]
-        grouped = assign(load_records(d / "incidents.jsonl"), counted)
+        all_trials, counted, grouped = _session(d)
         for t in counted:
             previous = next((p for p in reversed(all_trials) if p["trial"] < t["trial"]), None)
             injected = _t(t.get("injected_at") or t["label_set_at"])
