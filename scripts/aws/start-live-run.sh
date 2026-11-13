@@ -26,7 +26,8 @@ for _ in $(seq 1 60); do
 done
 if [ "$S" != running ] || [ "$P" != Online ]; then say "gave up: $S / ssm ${P:-none}"; exit 1; fi
 sleep 30
-CMD="curl -fsS $RAW -o /tmp/live-run.sh && RUN=$RUN PER_CAUSE=$PER_CAUSE UNKNOWN=$UNKNOWN DEADLINE=$DEADLINE setsid nohup bash /tmp/live-run.sh $EXTRA >/tmp/live-run.out 2>&1 < /dev/null &"
+HARNESS="${HARNESS:-live_validate.py}"; PLAN="${PLAN:-}"      # HARNESS=real_aws_validate.py PLAN=healthy:15,memory_pressure:3
+CMD="curl -fsS $RAW -o /tmp/live-run.sh && RUN=$RUN PER_CAUSE=$PER_CAUSE UNKNOWN=$UNKNOWN DEADLINE=$DEADLINE HARNESS=$HARNESS PLAN=$PLAN setsid nohup bash /tmp/live-run.sh $EXTRA >/tmp/live-run.out 2>&1 < /dev/null &"
 ID=$(aws ssm send-command --instance-ids "$INSTANCE" --document-name AWS-RunShellScript \
        --parameters "commands=[\"$CMD\"]" --query Command.CommandId --output text)
 say "$RUN launch command sent ($ID); watch progress in the parameter autosre-prep"
