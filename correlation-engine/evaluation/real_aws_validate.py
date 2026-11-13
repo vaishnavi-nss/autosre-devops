@@ -179,9 +179,18 @@ def _memory_effect() -> float | None:
     return lv.memory_ratio()
 
 
+def deploy_cpu_request(deploy: str) -> str:
+    out = lv.kubectl("-n", NS, "get", f"deploy/{deploy}", "-o",
+                     "jsonpath={.spec.template.spec.containers[0].resources.requests.cpu}").strip()
+    return out or "50m"
+
+
 def _pool_start(state: dict) -> None:
+    # Kubernetes rejects a limit below the request (the first attempt, limit 10m against a 50m request, was refused
+    # and no fault was applied), so lower both. Remembered so the stop puts exactly the original values back.
     state["db_cpu"] = deploy_cpu_limit("database")
-    lv.kubectl("-n", NS, "set", "resources", "deploy/database", "--limits=cpu=10m")
+    state["db_req"] = deploy_cpu_request("database")
+    lv.kubectl("-n", NS, "set", "resources", "deploy/database", "--requests=cpu=5m", "--limits=cpu=10m")
     rollout("database")
     loop = "(while true; do curl -s -m 10 -o /dev/null http://frontend.autosre.svc.cluster.local:8000/; done) &"
     script = "i=0; while [ $i -lt 40 ]; do " + loop + " i=$((i+1)); done; wait"
@@ -191,8 +200,10 @@ def _pool_start(state: dict) -> None:
 
 def _pool_stop(state: dict) -> None:
     lv.kubectl("-n", NS, "delete", "pod", LOAD_POD, "--ignore-not-found", "--wait=false", check=False)
-    lv.kubectl("-n", NS, "set", "resources", "deploy/database", f"--limits=cpu={state.get('db_cpu', '200m')}")
-    rollout("database")
+    if "db_cpu" in state:                                   # only if the start got as far as changing it
+        lv.kubectl("-n", NS, "set", "resources", "deploy/database", f"--requests=cpu={state['db_req']}",
+                   f"--limits=cpu={state['db_cpu']}")
+        rollout("database")
 
 
 def _pool_effect() -> float | None:

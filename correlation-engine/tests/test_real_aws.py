@@ -157,3 +157,27 @@ def test_the_fault_is_stopped_even_when_the_trial_blows_up(monkeypatch):
     except RuntimeError:
         pass
     assert "stop" in calls
+
+
+def test_pool_exhaustion_lowers_the_request_with_the_limit_and_restores_both(monkeypatch):
+    calls: list[tuple] = []
+
+    def fake(*args, **kwargs):
+        calls.append(args)
+        if "get" in args and "jsonpath={.spec.template.spec.containers[0].resources.limits.cpu}" in args:
+            return "200m"
+        if "get" in args and "jsonpath={.spec.template.spec.containers[0].resources.requests.cpu}" in args:
+            return "50m"
+        return ""
+
+    monkeypatch.setattr(rv.lv, "kubectl", fake)
+    state: dict = {}
+    rv._pool_start(state)
+    set_calls = [c for c in calls if "set" in c and "resources" in c]
+    assert set_calls[0][-2:] == ("--requests=cpu=5m", "--limits=cpu=10m")        # request below limit: accepted
+    rv._pool_stop(state)
+    set_calls = [c for c in calls if "set" in c and "resources" in c]
+    assert set_calls[-1][-2:] == ("--requests=cpu=50m", "--limits=cpu=200m")     # the originals are put back
+    calls.clear()
+    rv._pool_stop({})                                                            # start never got that far
+    assert not [c for c in calls if "set" in c and "resources" in c]
