@@ -502,7 +502,8 @@ def run_healthy(index: int, minutes: int) -> dict:
 # is two real failures at once of which only one is among the engine's known causes.
 PAIR_PLANS = {"pair": ("memory_pressure", "pool_exhaustion"),
               "pair_mem_db": ("memory_pressure", "db_outage"),
-              "pair_mem_cpu": ("memory_pressure", "cpu_pressure")}
+              "pair_mem_cpu": ("memory_pressure", "cpu_pressure"),
+              "pair_mem_net": ("memory_pressure", "network_partition")}
 
 
 def parse_plan(text: str) -> list[tuple[str, int]]:
