@@ -14,8 +14,8 @@ Real faults (the mechanism, then what the pipeline can see):
 
   memory_pressure   a real process inside the transaction-service container holds memory until the container is ~93%
                     of its limit (cAdvisor sees it)                        known cause: high_memory_usage
-  pool_exhaustion   the database's CPU limit is cut and a real client pod floods the frontend, so real requests pile
-                    up in the transaction service's pool                  known cause: db_connection_pool_exhaustion
+  pool_exhaustion   a real client pod floods the frontend with concurrent requests, so real requests pile up in the
+                    transaction service's connection pool                 known cause: db_connection_pool_exhaustion
   db_outage         the database deployment is scaled to zero             no known cause: expect escalation
   pod_crash         PID 1 of the transaction-service container is killed repeatedly (a real crash loop)
                                                                           no known cause: expect escalation
@@ -179,31 +179,23 @@ def _memory_effect() -> float | None:
     return lv.memory_ratio()
 
 
-def deploy_cpu_request(deploy: str) -> str:
-    out = lv.kubectl("-n", NS, "get", f"deploy/{deploy}", "-o",
-                     "jsonpath={.spec.template.spec.containers[0].resources.requests.cpu}").strip()
-    return out or "50m"
+BURST_LOOPS = 100
 
 
 def _pool_start(state: dict) -> None:
-    # Kubernetes rejects a limit below the request (the first attempt, limit 10m against a 50m request, was refused
-    # and no fault was applied), so lower both. Remembered so the stop puts exactly the original values back.
-    state["db_cpu"] = deploy_cpu_limit("database")
-    state["db_req"] = deploy_cpu_request("database")
-    lv.kubectl("-n", NS, "set", "resources", "deploy/database", "--requests=cpu=5m", "--limits=cpu=10m")
-    rollout("database")
+    # A real surge of client traffic: a separate pod runs BURST_LOOPS concurrent request loops against the frontend, so
+    # real requests pile up inside the 200m-limited services and the transaction service's pool fills. Nothing about the
+    # database or any limit is changed. (Cutting the database's CPU to make it slow was tried first; the pod could not
+    # even start, so it is not a usable fault.)
+    state["loops"] = BURST_LOOPS
     loop = "(while true; do curl -s -m 10 -o /dev/null http://frontend.autosre.svc.cluster.local:8000/; done) &"
-    script = "i=0; while [ $i -lt 40 ]; do " + loop + " i=$((i+1)); done; wait"
+    script = f"i=0; while [ $i -lt {BURST_LOOPS} ]; do " + loop + " i=$((i+1)); done; wait"
     lv.kubectl("-n", NS, "run", LOAD_POD, "--restart=Never", "--image=curlimages/curl:8.11.1",
                "--image-pull-policy=IfNotPresent", "--labels=app=real-burst", "--", "sh", "-c", script)
 
 
 def _pool_stop(state: dict) -> None:
     lv.kubectl("-n", NS, "delete", "pod", LOAD_POD, "--ignore-not-found", "--wait=false", check=False)
-    if "db_cpu" in state:                                   # only if the start got as far as changing it
-        lv.kubectl("-n", NS, "set", "resources", "deploy/database", f"--requests=cpu={state['db_req']}",
-                   f"--limits=cpu={state['db_cpu']}")
-        rollout("database")
 
 
 def _pool_effect() -> float | None:
@@ -285,7 +277,7 @@ def build_faults() -> dict[str, Fault]:
     return {
         "memory_pressure": Fault("memory_pressure", "transaction-service container", "high_memory_usage",
                                  _memory_start, _memory_stop, _memory_effect, 0.90, "memory working set / limit"),
-        "pool_exhaustion": Fault("pool_exhaustion", "database CPU + client load on the transaction-service pool",
+        "pool_exhaustion": Fault("pool_exhaustion", "client load surge on the transaction-service pool",
                                  "db_connection_pool_exhaustion", lambda: _pool_start(pool_state),
                                  lambda: _pool_stop(pool_state), _pool_effect, 0.90, "pool active / max", state=pool_state),
         "db_outage": Fault("db_outage", "database deployment", None, _outage_start, _outage_stop, _outage_effect,

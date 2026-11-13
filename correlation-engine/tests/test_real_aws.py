@@ -159,25 +159,14 @@ def test_the_fault_is_stopped_even_when_the_trial_blows_up(monkeypatch):
     assert "stop" in calls
 
 
-def test_pool_exhaustion_lowers_the_request_with_the_limit_and_restores_both(monkeypatch):
+def test_pool_exhaustion_is_a_client_surge_that_touches_no_deployment(monkeypatch):
     calls: list[tuple] = []
-
-    def fake(*args, **kwargs):
-        calls.append(args)
-        if "get" in args and "jsonpath={.spec.template.spec.containers[0].resources.limits.cpu}" in args:
-            return "200m"
-        if "get" in args and "jsonpath={.spec.template.spec.containers[0].resources.requests.cpu}" in args:
-            return "50m"
-        return ""
-
-    monkeypatch.setattr(rv.lv, "kubectl", fake)
+    monkeypatch.setattr(rv.lv, "kubectl", lambda *a, **k: calls.append(a) or "")
     state: dict = {}
     rv._pool_start(state)
-    set_calls = [c for c in calls if "set" in c and "resources" in c]
-    assert set_calls[0][-2:] == ("--requests=cpu=5m", "--limits=cpu=10m")        # request below limit: accepted
+    assert any("run" in c and rv.LOAD_POD in c for c in calls)                    # a real client pod
+    assert not [c for c in calls if "set" in c or "scale" in c or "database" in c]   # no deployment is changed
+    script = [c for c in calls if "run" in c][0][-1]
+    assert f"-lt {rv.BURST_LOOPS}" in script and rv.BURST_LOOPS >= 100
     rv._pool_stop(state)
-    set_calls = [c for c in calls if "set" in c and "resources" in c]
-    assert set_calls[-1][-2:] == ("--requests=cpu=50m", "--limits=cpu=200m")     # the originals are put back
-    calls.clear()
-    rv._pool_stop({})                                                            # start never got that far
-    assert not [c for c in calls if "set" in c and "resources" in c]
+    assert any("delete" in c and "pod" in c and rv.LOAD_POD in c for c in calls)
