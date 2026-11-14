@@ -171,11 +171,22 @@ def probe_scorer(label: str | None, injected_at: float, when: str) -> dict:
 
 # -- environment -----------------------------------------------------------------------
 
-def prepare() -> None:
+def prepare(cpu_limit: str | None = None, engine_env: list[str] | None = None) -> None:
+    if cpu_limit:
+        # Run 14 showed the manifests' 200m limits throttle the four services (about 22% of CPU periods), which puts the
+        # idle gateway p95 at 0.5-0.7 s, right on APILatencyHigh's 0.5 s line, so the alert would not clear between
+        # trials. With 1000m the idle p95 was 0.2 s and a 3-trial run had no contaminated trial. This changes the
+        # deployment on the cluster only, never the manifests, and is logged so the run's conditions are on record.
+        kubectl("-n", NS, "set", "resources", *[f"deploy/{s}" for s in SERVICES], f"--limits=cpu={cpu_limit}")
+        log(f"service CPU limit set to {cpu_limit} (the manifests say 200m)")
     log("enabling fault injection and incident capture")
     for deploy in ("transaction-service", "api-gateway", "database"):
         kubectl("-n", NS, "set", "env", f"deploy/{deploy}", "CHAOS_ENABLED=true")
-    kubectl("-n", NS, "set", "env", "deploy/correlation-engine", f"CAPTURE_PATH={CAPTURE_FILE}")
+    # Engine settings for this run (e.g. SECOND_OPINION_MODE=gate, ESCALATE_ON_AMBIGUITY=true), applied in the same
+    # call as the capture path so the engine restarts once. main() puts the engine back to shadow when the run ends.
+    kubectl("-n", NS, "set", "env", "deploy/correlation-engine", f"CAPTURE_PATH={CAPTURE_FILE}", *(engine_env or []))
+    if engine_env:
+        log(f"engine settings for this run: {', '.join(engine_env)}")
     for deploy in (*SERVICES, "correlation-engine", "second-opinion"):
         kubectl("-n", NS, "rollout", "status", f"deploy/{deploy}", "--timeout=240s", timeout=260)
     engine_selftest()
@@ -217,18 +228,28 @@ def engine_selftest() -> None:
     log("engine accepts webhooks")
 
 
-def wait_quiet(timeout: int = 600) -> bool:
-    """Wait until no symptom alert is firing, so trials cannot bleed together."""
+STILL_FIRING: list[str] = []      # what was still firing when the last wait_quiet() gave up
+
+
+def wait_quiet(timeout: int = 900) -> bool:
+    """Wait until no symptom alert is firing, so trials cannot bleed together.
+
+    On a timeout the alerts still firing are left in STILL_FIRING, so a trial marked contaminated says why
+    (runs 11 and 12 lost five trials this way with no reason recorded; the limit was 600 s).
+    """
     deadline = time.time() + timeout
     clear = 0
+    active: set = set()
     while time.time() < deadline:
         active = firing()
         clear = clear + 1 if not active else 0
         if clear >= 2:
             time.sleep(75)            # let Alertmanager flush the resolved notification
+            STILL_FIRING.clear()
             return True
         log(f"  waiting for quiet; still firing: {sorted(active)}")
         time.sleep(20)
+    STILL_FIRING[:] = sorted(active)
     return False
 
 
@@ -295,6 +316,21 @@ KINDS = {
 }
 
 
+def quiet_or_reset() -> bool:
+    """wait_quiet(), and if an alert will not clear, replace the pods once and wait again.
+
+    In run 13 `APILatencyHigh` stayed firing past the 10-minute limit before 6 of the first 11 trials, more as the
+    session got older (2 of 9 in run 12). A leftover fault is not the cause: faults live in pod memory and the pods
+    were already replaced. The likely cause is a cluster that is slower late in a long session, which a second
+    replacement may not cure; if it does not, the trial is still marked contaminated, with what was firing.
+    """
+    if wait_quiet():
+        return True
+    log(f"  not quiet after the wait ({', '.join(STILL_FIRING) or 'nothing recorded'}); replacing the pods once more")
+    reset_cluster()
+    return wait_quiet()
+
+
 # -- one trial --------------------------------------------------------------------------
 
 def run_trial(index: int, label: str | None, rng: random.Random, detect_timeout: int, hold: int) -> dict:
@@ -302,7 +338,9 @@ def run_trial(index: int, label: str | None, rng: random.Random, detect_timeout:
     log(f"--- trial {index}: {name}")
     trial: dict = {"trial": index, "label": label, "contaminated": False}
 
-    trial["contaminated"] = not wait_quiet()
+    trial["contaminated"] = not quiet_or_reset()
+    if trial["contaminated"]:
+        trial["still_firing"] = list(STILL_FIRING)
     before = len(captured())
     put_label(label)
     trial["label_set_at"] = now_iso()
@@ -342,6 +380,76 @@ def run_trial(index: int, label: str | None, rng: random.Random, detect_timeout:
     trial["records"] = len(captured()) - before
     log(f"  held; {trial['records']} record(s); firing: {trial['firing_at_end']}")
 
+    reset_cluster()
+    trial["reset_at"] = now_iso()
+    return trial
+
+
+# -- two faults at once ----------------------------------------------------------------
+
+PAIRS = [("db_disk_full", "high_memory_usage"),
+         ("db_disk_full", "db_connection_pool_exhaustion"),
+         ("high_memory_usage", "db_connection_pool_exhaustion")]
+
+
+def probe_pair(pair: tuple[str, str], injected_at: float, when: str) -> dict:
+    """Ask the scorer about each cause that really is present, and about the one cause that is not."""
+    start = injected_at + 60
+    absent = [c for c in TRUTH if c and c not in pair][0]
+    return {"when": when,
+            "truth": {c: ask_scorer(*TRUTH[c], start) for c in pair},
+            "wrong": ask_scorer(*TRUTH[absent], start),
+            "absent": absent,
+            "features": ask_features(start)}
+
+
+def run_pair_trial(index: int, pair: tuple[str, str], rng: random.Random, detect_timeout: int, hold: int) -> dict:
+    """Inject two known faults together. Both are real, so any single diagnosis is incomplete: this measures what the
+    engine does with that (act on one, or escalate), and whether the scorer sees the second fault. Not gate evidence:
+    gate_check.py skips these trials."""
+    a, b = pair
+    log(f"--- pair trial {index}: {a} + {b}")
+    trial: dict = {"trial": index, "label": f"{a} + {b}", "pair": list(pair), "mode": "pair", "contaminated": False}
+    trial["contaminated"] = not quiet_or_reset()
+    if trial["contaminated"]:
+        trial["still_firing"] = list(STILL_FIRING)
+    before = len(captured())
+    put_label(None)                                 # the engine only accepts one known cause or null; the pair is here
+    trial["label_set_at"] = now_iso()
+    trial["params"] = {a: KINDS[a](rng), b: KINDS[b](rng)}
+    trial["injected_at"] = now_iso()
+    started = time.time()
+    log(f"  injected {trial['params']}")
+
+    trial["first_incident_s"] = None
+    while time.time() - started < detect_timeout:
+        time.sleep(10)
+        if len(captured()) > before:
+            trial["first_incident_s"] = round(time.time() - started, 1)
+            log(f"  engine received an incident after {trial['first_incident_s']}s")
+            trial["probes"] = [probe_pair(pair, started, "at first incident")]
+            break
+    else:
+        log("  no incident received before the timeout")
+
+    held_until = time.time() + (hold if trial["first_incident_s"] is not None else 30)
+    topped_up = False
+    while time.time() < held_until:
+        time.sleep(15)
+        if "high_memory_usage" in pair and not topped_up and memory_ratio() < 0.9:
+            held = trial["params"]["high_memory_usage"]["held_mb"]
+            extra = held + max(5, math.ceil((MEMORY_TARGET - memory_ratio()) * MEMORY_LIMIT_MIB))
+            pod_http("transaction-service", "POST", f"/chaos/memory?mb={extra}")
+            trial["params"]["high_memory_usage"]["topped_up_to_mb"] = extra
+            topped_up = True
+
+    if trial["first_incident_s"] is not None:
+        trial["probes"].append(probe_pair(pair, started, "end of hold"))
+        log("  scorer: " + str([(p["when"], {c: v.get("verdict") for c, v in p["truth"].items()},
+                                 p["wrong"].get("verdict")) for p in trial["probes"]]))
+    trial["firing_at_end"] = sorted(firing())
+    trial["records"] = len(captured()) - before
+    log(f"  held; {trial['records']} record(s); firing: {trial['firing_at_end']}")
     reset_cluster()
     trial["reset_at"] = now_iso()
     return trial
@@ -401,7 +509,9 @@ def run_stale_trial(index: int, label: str, rng: random.Random, detect_timeout: 
     """
     log(f"--- stale trial {index}: {label}")
     trial: dict = {"trial": index, "label": label, "contaminated": False, "mode": "stale"}
-    trial["contaminated"] = not wait_quiet()
+    trial["contaminated"] = not quiet_or_reset()
+    if trial["contaminated"]:
+        trial["still_firing"] = list(STILL_FIRING)
     put_label(label)
     trial["label_set_at"] = now_iso()
     pod_http("api-gateway", "POST", "/chaos/latency?ms=900")
@@ -500,6 +610,16 @@ def main() -> None:
     ap.add_argument("--per-cause", type=int, default=6, help="trials per known cause")
     ap.add_argument("--unknown", type=int, default=4, help="trials with no known cause")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--cpu-limit", default=None,
+                    help="set this CPU limit (e.g. 1000m) on the four services before the run; default leaves the "
+                         "manifests' 200m, which throttles them and leaves the idle p95 near the alert threshold")
+    ap.add_argument("--pairs", type=int, default=0,
+                    help="repetitions of each two-fault pair (disk+memory, disk+pool, memory+pool); the faults are "
+                         "injected together. Not gate evidence; read with ambiguity_report.py")
+    ap.add_argument("--engine-env", action="append", default=[], metavar="KEY=VALUE",
+                    help="set this environment variable on the correlation engine for the run, e.g. "
+                         "SECOND_OPINION_MODE=gate or ESCALATE_ON_AMBIGUITY=true (repeatable). The engine is put "
+                         "back to shadow with the ambiguity rule off when the run ends")
     ap.add_argument("--detect-timeout", type=int, default=420, help="seconds to wait for an incident")
     ap.add_argument("--hold", type=int, default=120, help="seconds to keep the fault after detection")
     ap.add_argument("--deadline-minutes", type=int, default=0,
@@ -532,45 +652,62 @@ def main() -> None:
     have = Counter(t["label"] for t in done if "error" not in t and not t.get("contaminated"))
     first_index = max((t["trial"] for t in done), default=0) + 1
 
-    plan: list[str | None] = []
+    plan: list = []
     for label in KINDS:
         wanted = args.unknown if label is None else args.per_cause
         plan += [label] * max(0, wanted - have[label])
+    for pair in PAIRS:
+        plan += [pair] * args.pairs
     # Different seed per resume so a redo does not replay identical random choices.
     random.Random(args.seed + first_index).shuffle(plan)
-    log(f"plan: {len(plan)} trials to run ({args.per_cause} per cause + {args.unknown} unknown, "
-        f"{len(done)} already recorded), seed {args.seed}")
+    log(f"plan: {len(plan)} trials to run ({args.per_cause} per cause + {args.unknown} unknown + "
+        f"{args.pairs} x {len(PAIRS)} pairs, {len(done)} already recorded), seed {args.seed}")
+    (args.out / "conditions.json").write_text(json.dumps(
+        {"cpu_limit": args.cpu_limit, "engine_env": args.engine_env, "pairs": args.pairs,
+         "started": now_iso()}, indent=1), encoding="utf-8")
 
-    prepare()
-    if done:
-        log("resuming: replacing every pod so no earlier fault is still injected")
-        reset_cluster()
-    began = time.time()
-    with open(trials_path, "a" if done else "w", encoding="utf-8") as trials_file:
-        for i, label in enumerate(plan, first_index):
-            if args.deadline_minutes and (time.time() - began) / 60 > args.deadline_minutes:
-                log(f"deadline reached; stopping after {i - 1} trials")
-                break
-            try:
-                trial = (run_collect_trial(i, label, rng, args.settle, tuple(int(w) for w in args.windows.split(',')),
-                         tuple(int(o) for o in args.start_offsets.split(','))) if args.collect
-                         else run_stale_trial(i, label, rng, args.detect_timeout, args.hold) if args.stale
-                         else run_trial(i, label, rng, args.detect_timeout, args.hold))
-            except Exception as exc:                      # keep going: one bad trial is data
-                log(f"  trial {i} errored: {exc}")
-                trial = {"trial": i, "label": label, "error": str(exc), "contaminated": True}
+    try:
+        prepare(args.cpu_limit, args.engine_env)
+        if done:
+            log("resuming: replacing every pod so no earlier fault is still injected")
+            reset_cluster()
+        began = time.time()
+        with open(trials_path, "a" if done else "w", encoding="utf-8") as trials_file:
+            for i, label in enumerate(plan, first_index):
+                if args.deadline_minutes and (time.time() - began) / 60 > args.deadline_minutes:
+                    log(f"deadline reached; stopping after {i - 1} trials")
+                    break
                 try:
-                    reset_cluster()
-                except Exception as reset_exc:
-                    log(f"  reset also failed: {reset_exc}")
-            trials_file.write(json.dumps(trial) + "\n")
-            trials_file.flush()
-            if not args.collect:
-                (args.out / "incidents.jsonl").write_text("\n".join(captured()) + "\n", encoding="utf-8")
+                    trial = (run_collect_trial(i, label, rng, args.settle, tuple(int(w) for w in args.windows.split(',')),
+                             tuple(int(o) for o in args.start_offsets.split(','))) if args.collect
+                             else run_pair_trial(i, label, rng, args.detect_timeout, args.hold)
+                             if isinstance(label, tuple)
+                             else run_stale_trial(i, label, rng, args.detect_timeout, args.hold) if args.stale
+                             else run_trial(i, label, rng, args.detect_timeout, args.hold))
+                except Exception as exc:                      # keep going: one bad trial is data
+                    log(f"  trial {i} errored: {exc}")
+                    trial = {"trial": i, "label": " + ".join(label) if isinstance(label, tuple) else label,
+                             "error": str(exc), "contaminated": True}
+                    try:
+                        reset_cluster()
+                    except Exception as reset_exc:
+                        log(f"  reset also failed: {reset_exc}")
+                trials_file.write(json.dumps(trial) + "\n")
+                trials_file.flush()
+                if not args.collect:
+                    (args.out / "incidents.jsonl").write_text("\n".join(captured()) + "\n", encoding="utf-8")
 
-    if not args.collect:
-        (args.out / "incidents.jsonl").write_text("\n".join(captured()) + "\n", encoding="utf-8")
-    log(f"done in {(time.time() - began) / 60:.0f} minutes; results in {args.out}")
+        if not args.collect:
+            (args.out / "incidents.jsonl").write_text("\n".join(captured()) + "\n", encoding="utf-8")
+        log(f"done in {(time.time() - began) / 60:.0f} minutes; results in {args.out}")
+    finally:
+        if args.engine_env:               # a gate or ambiguity setting must not outlive the run that asked for it
+            try:
+                kubectl("-n", NS, "set", "env", "deploy/correlation-engine", "SECOND_OPINION_MODE=shadow",
+                        "ESCALATE_ON_AMBIGUITY-")
+                log("engine put back to shadow with the ambiguity rule off")
+            except Exception as exc:       # noqa: BLE001
+                log(f"COULD NOT restore the engine to shadow ({exc}); do it by hand")
 
 
 if __name__ == "__main__":

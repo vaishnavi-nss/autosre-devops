@@ -30,3 +30,11 @@ figures come from the log lines, not from the report script.
 So with a stale alert deliberately left firing, the old start vetoes the correct diagnosis and the new one does
 not. That is the controlled comparison run 8 could not give. Six trials is a small sample, but the pattern is the one run 7's
 records showed and it held in every trial. No unknown-cause trial was run in this session.
+
+## Which scorer model made these verdicts
+
+The pre-retrain model: `second-opinion/models/own.joblib` trained on runs 3, 4 and 5-early (47 trials, 115 windows). It was
+the model live in runs 7 to 9; the retrain on run 8 (53 trials, 127 windows, the `b565d77f` model used from run 11) was
+committed as `84e3ec2` at 03:33 UTC on 2026-11-12, two minutes after this session finished at 03:31 UTC, and was not
+run live until run 11. Source: `docs/evaluation.md`, "Out-of-session check, and retraining on run 8", and the commit times.
+The instance was not inspected for the loaded model hash, so this is from the repository record, not a log line.

@@ -32,7 +32,8 @@ the numbers, and what they do and do not show.
    tar -czf autosre.tar.gz --exclude=.git --exclude=__pycache__ --exclude=.venv autosre
    ```
 
-   **Convert the shell scripts to LF first** (`sed -i 's/$//' autosre/scripts/*.sh autosre/scripts/aws/*.sh`):
+   **Convert the shell scripts to LF first** (`sed -i 's/
+$//' autosre/scripts/*.sh autosre/scripts/aws/*.sh`):
    a script edited on Windows has CRLF endings, and bash then dies at line 20 of `bootstrap.sh` with
    `set: pipefail^M: invalid option name` before the bootstrap can fix the other scripts itself.
    Upload `autosre.tar.gz` to the bucket. GNU `tar` reads `C:` in a path as a remote host,
@@ -164,6 +165,24 @@ orchestrator again with `--resume`. It keeps the completed trials, redoes errore
 every pod so no earlier fault lingers, and numbers new trials after the existing ones. Stop the
 old orchestrator *between* trials (right after a record lands in `results/trials.jsonl`), and
 use a `15[0]`-style regex in `pkill -f` so the pattern does not match its own command line.
+
+## Running a live session from the branch
+
+`scripts/aws/live-run.sh` does the whole thing on the instance (run it as root, for example through SSM):
+
+```bash
+RUN=run11 PER_CAUSE=3 UNKNOWN=5 DEADLINE=150 bash live-run.sh            # add --stale for the stale-alert mode
+```
+
+It copies the **whole** `correlation-engine/` and `second-opinion/` directories from the branch, rebuilds both
+images, replaces every pod, and starts the harness with results syncing to `s3://<bucket>/results-$RUN`. Do not copy
+individual files: in run 10 only `app.py` was updated on the instance, `correlate.py` was not, and the engine
+answered HTTP 500 to all 1,392 webhooks (`TypeError: correlate() takes 1 positional argument but 2 were given`), so
+all 11 trials recorded nothing. The harness now also posts a test webhook before the first trial and stops if the
+engine does not answer 202.
+
+If a trial says "no incident received before the timeout" every time, read the engine log first:
+`kubectl -n autosre logs deploy/correlation-engine | grep -E "Error|500"`.
 
 ## Cleaning up
 
