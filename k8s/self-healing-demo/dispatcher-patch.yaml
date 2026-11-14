@@ -1,0 +1,9 @@
+# Controlled local test only. The base deployment remains dry-run.
+spec:
+  template:
+    spec:
+      containers:
+        - name: remediation-dispatcher
+          env:
+            - name: AUTO_REMEDIATE
+              value: "true"

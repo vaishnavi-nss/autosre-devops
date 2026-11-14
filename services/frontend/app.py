@@ -1,8 +1,12 @@
 ﻿import os
+from typing import Any, Literal
+
 import httpx
 from fastapi import FastAPI, Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from fastapi.responses import HTMLResponse
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, StrictBool, ValidationError
 
 app = FastAPI(title="frontend")
 @app.get("/metrics")
@@ -18,6 +22,54 @@ async def ready():
     return {"status": "ready", "service": "frontend"}
 
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://api-gateway.autosre.svc.cluster.local:8000")
+REMEDIATION_URL = os.getenv("REMEDIATION_URL", "http://remediation-dispatcher.autosre.svc.cluster.local:8001")
+
+
+class RecordedJob(BaseModel):
+    id: str
+    root_cause: str
+    service: str
+    requested_at: float = Field(ge=0, allow_inf_nan=False, strict=True)
+    status: Literal["accepted", "running", "succeeded", "failed", "not_needed"]
+    confidence: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False, strict=True)
+    playbook: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class DispatcherSettings(BaseModel):
+    auto_remediate: StrictBool
+    min_confidence: float = Field(ge=0, le=1, allow_inf_nan=False, strict=True)
+    cooldown_seconds: int = Field(ge=0, strict=True)
+
+
+class RecordedCooldown(BaseModel):
+    active: StrictBool
+    remaining_seconds: int = Field(ge=0, strict=True)
+    operator_review_required: StrictBool
+
+
+class RemediationTelemetry(BaseModel):
+    status: Literal["ok", "empty"]
+    remediation: RecordedJob | None
+    settings: DispatcherSettings
+    cooldown: RecordedCooldown
+
+
+@app.get("/api/remediation")
+async def remediation_endpoint():
+    """Same-origin, read-only history proxy; never dispatches or probes transactions."""
+    headers = {"Cache-Control": "no-store"}
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(f"{REMEDIATION_URL.rstrip('/')}/remediations/latest")
+            response.raise_for_status()
+            telemetry = RemediationTelemetry.model_validate(response.json())
+        if (telemetry.status == "empty") != (telemetry.remediation is None):
+            raise ValueError("Inconsistent remediation snapshot")
+        return JSONResponse(telemetry.model_dump(), headers=headers)
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, ValidationError):
+        return JSONResponse({"status": "unavailable", "remediation": None, "settings": None, "cooldown": None},
+                            status_code=503, headers=headers)
 
 @app.get("/api/poll")
 async def poll_endpoint():
@@ -369,8 +421,8 @@ async def serve_dashboard():
               <div class="card-header-bar">
                 <span class="card-title">Incident Resolution</span>
               </div>
-              <div class="card-val" style="color: var(--status-ok); font-size: 1.45rem;">Autonomous</div>
-              <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem;">SRE self-healing active</p>
+              <div id="dash-remediation-status" class="card-val" style="color: var(--status-ok); font-size: 1.45rem;">Loading history</div>
+              <p id="dash-remediation-mode" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem;">Checking remediation settings</p>
             </div>
           </div>
 
@@ -408,7 +460,7 @@ async def serve_dashboard():
             <div style="display: flex; justify-content: space-between; align-items: center;">
               <div>
                 <h3 style="font-size: 0.95rem; font-weight: 700; color: var(--navy-deep); margin-bottom: 0.25rem;">Live Incident Triage Dispatcher</h3>
-                <p id="dash-incident-desc" style="font-size: 0.85rem; color: var(--text-secondary);">Prometheus telemetry nominal. Cluster running baseline load.</p>
+                <p id="dash-incident-desc" style="font-size: 0.85rem; color: var(--text-secondary);">Loading recorded remediation history; transaction health is shown separately.</p>
               </div>
               <button class="nav-btn" style="background: var(--navy-deep); color: #ffffff;">Open Live Telemetry &rarr;</button>
             </div>
@@ -473,15 +525,10 @@ async def serve_dashboard():
                   Alertmanager webhook consumer utilizing topological depth traversal and signature weighting.
                 </p>
                 <div class="placeholder-box">
-                  <div style="font-size: 0.72rem; font-weight: 600; color: var(--navy-mid);">Contract #3 Output Payload:</div>
-                  <div class="code-snippet">
-                    {<br>
-                    &nbsp;&nbsp;"root_cause": "awaiting_telemetry",<br>
-                    &nbsp;&nbsp;"service": "none",<br>
-                    &nbsp;&nbsp;"confidence": 0.0,<br>
-                    &nbsp;&nbsp;"playbook": "standby"<br>
-                    }
-                  </div>
+                  <div style="font-size: 0.72rem; font-weight: 600; color: var(--navy-mid);">Latest recorded diagnosis:</div>
+                  <pre id="correlation-payload" class="code-snippet" style="white-space: pre-wrap; overflow-wrap: anywhere;">Loading recorded diagnosis</pre>
+                  <p id="confidence-note" style="font-size: 0.75rem; margin-top: 0.5rem;">Rule confidence: checking recorded value</p>
+                  <p id="job-requested-at" style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.5rem;">Recorded request time pending</p>
                 </div>
               </div>
 
@@ -497,12 +544,18 @@ async def serve_dashboard():
                 <div class="placeholder-box">
                   <div style="display: flex; justify-content: space-between; align-items: center;">
                     <span style="font-size: 0.75rem; color: var(--text-secondary); font-weight: 600;">Cooldown Protection:</span>
-                    <span style="font-size: 0.75rem; font-family: 'JetBrains Mono', monospace; color: var(--status-ok); font-weight: 700;">ENGAGED (10m)</span>
+                    <span id="remediation-cooldown" style="font-size: 0.75rem; font-family: 'JetBrains Mono', monospace; color: var(--status-ok); font-weight: 700;">Checking</span>
                   </div>
                   <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem;">
                     <span style="font-size: 0.75rem; color: var(--text-secondary); font-weight: 600;">Confidence Threshold:</span>
-                    <span style="font-size: 0.75rem; font-family: 'JetBrains Mono', monospace; color: var(--navy-mid); font-weight: 700;">&ge; 0.75</span>
+                    <span id="remediation-threshold" style="font-size: 0.75rem; font-family: 'JetBrains Mono', monospace; color: var(--navy-mid); font-weight: 700;">Checking</span>
                   </div>
+                  <div style="font-size: 0.75rem; margin-top: 0.75rem;">
+                    Recorded job: <span id="remediation-job-status">Loading history</span>
+                    <div id="remediation-job-id" style="font-family: 'JetBrains Mono', monospace; overflow-wrap: anywhere; margin-top: 0.35rem;"></div>
+                  </div>
+                  <p style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.75rem;">Recorded recovery evidence (historical, not current service health):</p>
+                  <pre id="recovery-evidence" class="code-snippet" style="white-space: pre-wrap; overflow-wrap: anywhere;">Loading history</pre>
                 </div>
               </div>
 
@@ -537,7 +590,6 @@ async def serve_dashboard():
           const dashBadge = document.getElementById('dash-badge');
           const dashLatency = document.getElementById('dash-latency');
           const dashRatio = document.getElementById('dash-ratio');
-          const incidentDesc = document.getElementById('dash-incident-desc');
           
           totalAttempts++;
           
@@ -560,14 +612,6 @@ async def serve_dashboard():
             dashLatency.innerText = latency + ' ms';
             dashRatio.innerText = Math.round((successfulAttempts / totalAttempts) * 100) + ' %';
 
-            if (!isOk) {
-              incidentDesc.innerText = 'CRITICAL ALERT: HTTP ' + data.status + ' banking service degradation detected. Self-healing triggered.';
-              incidentDesc.style.color = 'var(--status-err)';
-            } else {
-              incidentDesc.innerText = 'Prometheus telemetry nominal. Continuous synthetic load flowing through core.';
-              incidentDesc.style.color = 'var(--text-secondary)';
-            }
-
             const row = `<tr><td>${new Date().toLocaleTimeString()}</td><td><strong style="color: ${isOk ? 'var(--status-ok)' : 'var(--status-err)'}">${data.status}</strong></td><td>${latency} ms</td></tr>`;
             rows.insertAdjacentHTML('afterbegin', row);
             if (rows.children.length > 8) rows.removeChild(rows.lastChild);
@@ -581,7 +625,61 @@ async def serve_dashboard():
           }
         }
 
+        function renderRemediation(data) {
+          const available = data.status === 'ok' || data.status === 'empty';
+          const job = available ? data.remediation : null;
+          const text = (id, value) => { document.getElementById(id).textContent = value; };
+          const missing = available ? 'No remediation recorded' : 'Telemetry unavailable';
+          text('dash-remediation-status', job ? 'Last: ' + job.status : missing);
+          text('remediation-job-status', job ? job.status : missing);
+          text('remediation-job-id', job ? job.id : '');
+          text('correlation-payload', job ? JSON.stringify({
+            root_cause: job.root_cause, service: job.service,
+            confidence: job.confidence, playbook: job.playbook
+          }, null, 2) : missing);
+          text('confidence-note', 'Rule confidence: ' + (job && job.confidence != null ? String(job.confidence) : 'Not recorded'));
+          const requested = job ? new Date(job.requested_at * 1000) : null;
+          text('job-requested-at', requested && !Number.isNaN(requested.getTime())
+            ? 'Requested: ' + requested.toLocaleString() : 'No recorded request time');
+          const details = job ? job.details : {};
+          const proof = {};
+          for (const key of ['previous_generation', 'generation', 'previous_instance', 'recovery', 'reason']) {
+            if (Object.prototype.hasOwnProperty.call(details, key)) proof[key] = details[key];
+          }
+          text('recovery-evidence', Object.keys(proof).length ? JSON.stringify(proof, null, 2)
+            : (available ? 'No recovery evidence recorded' : 'Telemetry unavailable'));
+          text('dash-incident-desc', job
+            ? 'Latest recorded remediation: ' + job.status + ' for ' + job.service + '. Current transaction health is shown separately.'
+            : missing + '. Current transaction health is shown separately.');
+          if (available) {
+            text('dash-remediation-mode', data.settings.auto_remediate ? 'Automatic remediation enabled' : 'Dry-run mode');
+            text('remediation-threshold', '\u2265 ' + data.settings.min_confidence);
+            text('remediation-cooldown', data.cooldown.operator_review_required ? 'Operator review required'
+              : data.cooldown.active ? 'Active (' + data.cooldown.remaining_seconds + 's remaining)'
+              : 'Configured (' + data.settings.cooldown_seconds + 's); inactive');
+          } else {
+            for (const id of ['dash-remediation-mode', 'remediation-threshold', 'remediation-cooldown']) text(id, 'Unavailable');
+          }
+        }
+
+        async function pollRemediation() {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 4000);
+          try {
+            const response = await fetch('/api/remediation', {cache: 'no-store', signal: controller.signal});
+            if (!response.ok) throw new Error('Telemetry unavailable');
+            renderRemediation(await response.json());
+          } catch (error) {
+            renderRemediation({status: 'unavailable'});
+          } finally {
+            clearTimeout(timer);
+            // Schedule after completion so slow backends cannot overlap polls.
+            setTimeout(pollRemediation, 5000);
+          }
+        }
+
         setInterval(pollStatus, 1500);
+        pollRemediation();
       </script>
     </body>
     </html>

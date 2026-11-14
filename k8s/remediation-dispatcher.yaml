@@ -12,8 +12,9 @@ metadata:
   namespace: autosre
 rules:
   - apiGroups: ["apps"]
-    resources: ["deployments", "deployments/scale"]
-    verbs: ["get", "list", "patch", "update"]
+    resources: ["deployments"]
+    resourceNames: ["transaction-service"]
+    verbs: ["get", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -36,6 +37,8 @@ metadata:
   namespace: autosre
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: remediation-dispatcher
@@ -47,8 +50,8 @@ spec:
       serviceAccountName: remediation-dispatcher
       containers:
         - name: remediation-dispatcher
-          image: autosre/remediation-dispatcher:dev
-          imagePullPolicy: IfNotPresent
+          image: autosre/remediation-dispatcher:self-healing-v2
+          imagePullPolicy: Never
           ports:
             - name: http
               containerPort: 8001
@@ -57,6 +60,11 @@ spec:
               value: "false"
             - name: MIN_CONFIDENCE
               value: "0.75"
+            - name: REMEDIATION_DB
+              value: /data/remediation.sqlite3
+          volumeMounts:
+            - name: state
+              mountPath: /data
           resources:
             requests:
               cpu: 50m
@@ -76,6 +84,21 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 5
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: remediation-state
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: remediation-state
+  namespace: autosre
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
 ---
 apiVersion: v1
 kind: Service

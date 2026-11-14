@@ -1,22 +1,25 @@
 ---
-# Remediation for: db_connection_pool_exhaustion
-#
-# Does what `kubectl rollout restart deployment/<target_service>` does - patches
-# a timestamp annotation into the pod template, which makes the Deployment roll
-# its pods. Restarting drops every leaked connection and resets the pool.
-#
-#   ansible-playbook -i ../inventory/localhost.yml restart_service.yml \
-#     -e target_service=transaction-service
-- name: Restart a service by triggering a rolling restart
+- name: Restart only the approved transaction service and wait for its new rollout
   hosts: localhost
   gather_facts: false
-
   vars:
     k8s_namespace: autosre
     target_service: transaction-service
-
+  module_defaults:
+    group/kubernetes.core.k8s:
+      host: https://kubernetes.default.svc
+      api_key: "{{ lookup('ansible.builtin.file', '/var/run/secrets/kubernetes.io/serviceaccount/token') }}"
+      ca_cert: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      validate_certs: true
   tasks:
-    - name: Trigger a rolling restart of {{ target_service }}
+    - name: Enforce the reviewed scope and unique operation identity
+      ansible.builtin.assert:
+        that:
+          - k8s_namespace == 'autosre'
+          - target_service == 'transaction-service'
+          - remediation_id is defined
+          - remediation_id | length == 36
+    - name: Trigger an identifiable rolling restart
       kubernetes.core.k8s:
         api_version: apps/v1
         kind: Deployment
@@ -28,10 +31,10 @@
             template:
               metadata:
                 annotations:
-                  kubectl.kubernetes.io/restartedAt: "{{ '%Y-%m-%dT%H:%M:%SZ' | strftime }}"
-                  autosre.io/restarted-by: correlation-engine
-
-    - name: Wait for the rollout to finish
+                  autosre.io/remediation-id: "{{ remediation_id }}"
+                  autosre.io/restarted-by: remediation-dispatcher
+      register: restart_patch
+    - name: Wait for this generation and removal of old replicas
       kubernetes.core.k8s_info:
         api_version: apps/v1
         kind: Deployment
@@ -39,14 +42,14 @@
         namespace: "{{ k8s_namespace }}"
       register: deployment_state
       until:
-        - deployment_state.resources | length > 0
-        - deployment_state.resources[0].status.readyReplicas | default(0)
-          == deployment_state.resources[0].spec.replicas
-      retries: 30
-      delay: 5
-
-    - name: Report the outcome
+        - deployment_state.resources | length == 1
+        - deployment_state.resources[0].status.observedGeneration | default(0) >= restart_patch.result.metadata.generation
+        - deployment_state.resources[0].status.updatedReplicas | default(0) == deployment_state.resources[0].spec.replicas
+        - deployment_state.resources[0].status.replicas | default(0) == deployment_state.resources[0].spec.replicas
+        - deployment_state.resources[0].status.readyReplicas | default(0) == deployment_state.resources[0].spec.replicas
+        - deployment_state.resources[0].status.availableReplicas | default(0) == deployment_state.resources[0].spec.replicas
+      retries: 45
+      delay: 3
+    - name: Record the completed generation
       ansible.builtin.debug:
-        msg: >-
-          Restarted {{ target_service }} in {{ k8s_namespace }};
-          {{ deployment_state.resources[0].status.readyReplicas | default(0) }} replica(s) ready.
+        msg: "Operation {{ remediation_id }} completed generation {{ restart_patch.result.metadata.generation }}; application recovery is checked by dispatcher."

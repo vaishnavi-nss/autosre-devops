@@ -2,14 +2,16 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    ANSIBLE_COLLECTIONS_PATH=/app/collections
+    ANSIBLE_COLLECTIONS_PATH=/app/collections \
+    ANSIBLE_CONFIG=/app/ansible/ansible.cfg \
+    ANSIBLE_STDOUT_CALLBACK=default
 
 WORKDIR /app
 
 COPY remediation-dispatcher/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt ansible-core==2.21.6
 
-COPY remediation-dispatcher/app.py ./app.py
+COPY remediation-dispatcher/app.py remediation-dispatcher/state.py ./
 COPY remediation-dispatcher/collections/ ./collections/
 COPY ansible/ ./ansible/
 

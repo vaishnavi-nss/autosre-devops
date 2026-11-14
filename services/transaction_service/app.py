@@ -3,7 +3,7 @@ import time
 import random
 import httpx
 from fastapi import FastAPI, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 
 # 1. Instantiate app first
@@ -49,8 +49,10 @@ HTTP_LATENCY = get_or_create_histogram(
     ["service"]
 )
 
-DB_POOL_ACTIVE.labels(service="transaction-service").set(2)
-DB_POOL_MAX.labels(service="transaction-service").set(10)
+POOL_MAX = int(os.getenv("DB_POOL_MAX", "20"))
+pool_active = 2
+DB_POOL_ACTIVE.labels(service="transaction-service").set(pool_active)
+DB_POOL_MAX.labels(service="transaction-service").set(POOL_MAX)
 
 chaos_state = {
     "error_rate": 0.0,
@@ -59,7 +61,7 @@ chaos_state = {
 }
 
 class PoolChaosRequest(BaseModel):
-    active_connections: int
+    active_connections: int = Field(ge=0)
 
 class ErrorChaosRequest(BaseModel):
     rate: float
@@ -81,6 +83,10 @@ def health():
 @app.post("/transaction")
 async def execute_transaction():
     start_time = time.time()
+    if pool_active >= POOL_MAX:
+        HTTP_REQUESTS_TOTAL.labels(service="transaction-service", method="POST", status="503").inc()
+        HTTP_LATENCY.labels(service="transaction-service").observe(time.time() - start_time)
+        raise HTTPException(status_code=503, detail="Database connection pool exhausted")
     
     if chaos_state["latency_seconds"] > 0:
         time.sleep(chaos_state["latency_seconds"])
@@ -107,11 +113,23 @@ async def execute_transaction():
     return {"status": "success", "service": "transaction-service"}
 
 # Chaos Endpoints
+@app.get("/recovery")
+def recovery():
+    return {"service": "transaction-service", "instance": os.getenv("HOSTNAME", "local"),
+            "pool_active": pool_active, "pool_max": POOL_MAX,
+            "pool_utilization": pool_active / POOL_MAX, "pool_exhausted": pool_active >= POOL_MAX}
+
+
 @app.post("/chaos/pool")
 def chaos_pool(req: PoolChaosRequest):
+    global pool_active
     # Dynamic check so monkeypatch works without re-importing
-    if not (os.getenv("CHAOS_ENABLED", "false").lower() == "true"):
+    if not (os.getenv("CHAOS_ENABLED", "false").lower() == "true"
+            or os.getenv("POOL_FAULT_ENABLED", "false").lower() == "true"):
         raise HTTPException(status_code=404, detail="Chaos disabled")
+    if req.active_connections > POOL_MAX:
+        raise HTTPException(status_code=422, detail="Cannot exceed configured pool capacity")
+    pool_active = req.active_connections
     DB_POOL_ACTIVE.labels(service="transaction-service").set(req.active_connections)
     return {"status": "pool set", "value": req.active_connections}
 
@@ -139,11 +157,13 @@ def chaos_memory(req: MemoryChaosRequest):
 
 @app.post("/chaos/reset")
 def chaos_reset():
+    global pool_active
     if not (os.getenv("CHAOS_ENABLED", "false").lower() == "true"):
         raise HTTPException(status_code=404, detail="Chaos disabled")
     chaos_state["error_rate"] = 0.0
     chaos_state["latency_seconds"] = 0.0
     chaos_state["memory_leak"].clear()
-    DB_POOL_ACTIVE.labels(service="transaction-service").set(2)
-    DB_POOL_MAX.labels(service="transaction-service").set(10)
+    pool_active = 2
+    DB_POOL_ACTIVE.labels(service="transaction-service").set(pool_active)
+    DB_POOL_MAX.labels(service="transaction-service").set(POOL_MAX)
     return {"status": "chaos reset"}

@@ -23,9 +23,9 @@ spec:
         # Keep this name equal to the service name - the PodRestartsHigh rule
         # turns the `container` label into the `service` label.
         - name: transaction-service
-          image: autosre/transaction-service:dev
+          image: autosre/transaction-service:self-healing-v1
           # Images are built straight into minikube's Docker daemon, never pulled.
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           ports:
             - name: http
               containerPort: 8000
@@ -37,6 +37,8 @@ spec:
             - name: DB_POOL_MAX
               value: "20"
             - name: CHAOS_ENABLED
+              value: "false"
+            - name: POOL_FAULT_ENABLED
               value: "false"
           resources:
             # Deliberately low so symptoms can be triggered on demand (brief section 4).

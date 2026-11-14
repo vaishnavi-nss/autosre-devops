@@ -1,0 +1,9 @@
+# Only the bounded pool hook; all other chaos remains disabled.
+spec:
+  template:
+    spec:
+      containers:
+        - name: transaction-service
+          env:
+            - name: POOL_FAULT_ENABLED
+              value: "true"
