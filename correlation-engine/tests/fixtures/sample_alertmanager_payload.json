@@ -1,0 +1,74 @@
+{
+  "_comment": "The end-to-end scenario from brief section 3c, as a real Alertmanager v4 webhook payload. Symptoms fire across api-gateway and transaction-service; the deepest alerting service is transaction-service, and DBPoolNearExhaustion is the deciding symptom for db_connection_pool_exhaustion.",
+  "version": "4",
+  "groupKey": "{}/{namespace=\"autosre\"}:{namespace=\"autosre\"}",
+  "truncatedAlerts": 0,
+  "status": "firing",
+  "receiver": "autosre-correlation",
+  "groupLabels": { "namespace": "autosre" },
+  "commonLabels": { "namespace": "autosre", "severity": "warning" },
+  "commonAnnotations": {},
+  "externalURL": "http://alertmanager.monitoring.svc.cluster.local:9093",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "APILatencyHigh",
+        "service": "api-gateway",
+        "namespace": "autosre",
+        "severity": "warning"
+      },
+      "annotations": {
+        "summary": "p95 latency above 500ms on api-gateway"
+      },
+      "startsAt": "2026-09-17T09:14:02.000Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "fingerprint": "a1b2c3d4e5f60001"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "ErrorRateHigh",
+        "service": "transaction-service",
+        "namespace": "autosre",
+        "severity": "warning"
+      },
+      "annotations": {
+        "summary": "5xx error ratio above 5% on transaction-service"
+      },
+      "startsAt": "2026-09-17T09:14:07.000Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "fingerprint": "a1b2c3d4e5f60002"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "PodRestartsHigh",
+        "service": "transaction-service",
+        "namespace": "autosre",
+        "severity": "warning"
+      },
+      "annotations": {
+        "summary": "transaction-service restarted more than twice in 5 minutes"
+      },
+      "startsAt": "2026-09-17T09:14:19.000Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "fingerprint": "a1b2c3d4e5f60003"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "DBPoolNearExhaustion",
+        "service": "transaction-service",
+        "namespace": "autosre",
+        "severity": "critical"
+      },
+      "annotations": {
+        "summary": "database connection pool above 90% utilisation on transaction-service"
+      },
+      "startsAt": "2026-09-17T09:14:11.000Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "fingerprint": "a1b2c3d4e5f60004"
+    }
+  ]
+}

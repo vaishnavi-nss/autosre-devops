@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-11-12T12:47:27.646266Z",
+  "job": {
+    "id": "e99510a7-f501-46ea-ba59-b2edc6520de0",
+    "root_cause": "db_connection_pool_exhaustion",
+    "service": "transaction-service",
+    "requested_at": 1794487759.4196293,
+    "status": "succeeded",
+    "details": {
+      "previous_generation": 8,
+      "generation": 9,
+      "previous_instance": "transaction-service-7f457dcf64-mg9jb",
+      "recovery": {
+        "service": "transaction-service",
+        "instance": "transaction-service-68677c54b8-xrf7t",
+        "pool_active": 2,
+        "pool_max": 20,
+        "pool_utilization": 0.1,
+        "pool_exhausted": false
+      },
+      "playbook": "restart_service.yml"
+    }
+  },
+  "ansible": {
+    "return_code": 0,
+    "ok_tasks": 4,
+    "changed_tasks": 1,
+    "unreachable": 0,
+    "failed_tasks": 0
+  },
+  "traffic": {
+    "failed_transactions": 411,
+    "recovered_transaction_status": 200
+  },
+  "cooldown": {
+    "status": "cooldown",
+    "root_cause": "db_connection_pool_exhaustion",
+    "service": "transaction-service",
+    "job_id": "e99510a7-f501-46ea-ba59-b2edc6520de0",
+    "retry_after_seconds": 577,
+    "reason": "Previous attempt reserved this root-cause/service pair"
+  },
+  "actual_alerts_observed": [
+    "DBPoolNearExhaustion",
+    "ErrorRateHigh"
+  ],
+  "synthetic_alerts_submitted": false,
+  "manual_restart_used_for_recovery": false,
+  "emergency_pool_reset_used": false,
+  "ml": {
+    "mode": "shadow",
+    "model": "models/own.joblib",
+    "calls_observed": 2,
+    "verdict": "disagree",
+    "reason": "metrics look like high_memory_usage, not db_connection_pool_exhaustion"
+  },
+  "prometheus_outcomes": {
+    "remediation_success_total": 1.0,
+    "remediation_failure_total": 0.0,
+    "remediation_cooldown_total": 1.0
+  },
+  "images": {
+    "dispatcher": "autosre/remediation-dispatcher:self-healing-v2",
+    "transaction": "autosre/transaction-service:self-healing-v1"
+  },
+  "final_state": {
+    "auto_remediate": true,
+    "chaos_enabled": false,
+    "pool_fault_enabled": false,
+    "all_autosre_symptom_alerts_resolved": true,
+    "autosre_pods_ready": 7,
+    "monitoring_pods_ready": 6,
+    "autosre_targets_up": 7,
+    "unrelated_autosre_pods_unchanged": true,
+    "unchanged_infrastructure_targets_down": [
+      "kube-controller-manager",
+      "kube-etcd",
+      "kube-scheduler"
+    ]
+  },
+  "tests": {
+    "passed": 174,
+    "warnings": 2,
+    "scope": "Dispatcher, pool recovery, chaos guards, correlation-engine, and second-opinion tests"
+  }
+}

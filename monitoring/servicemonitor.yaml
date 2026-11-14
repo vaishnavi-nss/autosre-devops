@@ -1,0 +1,24 @@
+---
+# Tells Prometheus to scrape every AutoSRE service.
+#
+# Matching is by the shared `app.kubernetes.io/part-of: autosre` label, so a new
+# service is scraped automatically as long as it carries that label and exposes
+# a port named `http`.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: autosre-services
+  namespace: autosre
+  labels:
+    app.kubernetes.io/part-of: autosre
+spec:
+  namespaceSelector:
+    matchNames:
+      - autosre
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: autosre
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

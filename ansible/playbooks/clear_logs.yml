@@ -1,0 +1,55 @@
+---
+# Remediation for: db_disk_full
+#
+# TODO (build step 5): the mock database does not write log files yet, so there
+# is nothing to clear. Decide first where its data and logs live - most likely
+# an emptyDir volume mounted at /var/log/app - then uncomment the k8s_exec task
+# below and delete the placeholder.
+#
+# Note the brief says "clear old log files on the affected node". On minikube
+# the node is a single VM shared by everything, so operating on the pod is both
+# safer and closer to what a real cluster would do.
+#
+#   ansible-playbook -i ../inventory/localhost.yml clear_logs.yml \
+#     -e target_service=database
+- name: Reclaim disk space on a service
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    namespace: autosre
+    target_service: database
+    log_dir: /var/log/app
+    older_than_days: 1
+
+  tasks:
+    - name: Find the pods backing {{ target_service }}
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ namespace }}"
+        label_selectors:
+          - "app={{ target_service }}"
+      register: target_pods
+
+    - name: Fail early if nothing is running
+      ansible.builtin.assert:
+        that: target_pods.resources | length > 0
+        fail_msg: "No pods found for {{ target_service }} in {{ namespace }}."
+
+    # - name: Delete log files older than {{ older_than_days }} day(s)
+    #   kubernetes.core.k8s_exec:
+    #     namespace: "{{ namespace }}"
+    #     pod: "{{ item.metadata.name }}"
+    #     command: >-
+    #       find {{ log_dir }} -type f -name '*.log'
+    #       -mtime +{{ older_than_days }} -delete
+    #   loop: "{{ target_pods.resources }}"
+    #   loop_control:
+    #     label: "{{ item.metadata.name }}"
+
+    - name: Placeholder until the log volume exists
+      ansible.builtin.debug:
+        msg: >-
+          NOT IMPLEMENTED - would clear files older than {{ older_than_days }}
+          day(s) from {{ log_dir }} in
+          {{ target_pods.resources | map(attribute='metadata.name') | join(', ') }}.

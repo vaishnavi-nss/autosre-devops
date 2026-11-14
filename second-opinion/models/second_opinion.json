@@ -1,0 +1,66 @@
+{
+  "trained_on": "RCAEval RE1 (MIT)",
+  "cases": 373,
+  "window_s": 300,
+  "leave_one_system_out": {
+    "cases": 373,
+    "service_top1": 0.909,
+    "fault_accuracy": 0.668,
+    "both_right": 0.614,
+    "by_system": {
+      "ob": 0.659,
+      "ss": 0.616,
+      "tt": 0.568
+    },
+    "by_fault": {
+      "cpu": 0.27,
+      "delay": 0.627,
+      "disk": 0.747,
+      "loss": 0.432,
+      "mem": 0.987
+    },
+    "confidence_gate_precision": {
+      "0.3": 0.614,
+      "0.5": 0.662,
+      "0.6": 0.669,
+      "0.7": 0.5
+    },
+    "acts_at_gate": {
+      "0.3": 373,
+      "0.5": 222,
+      "0.6": 130,
+      "0.7": 12
+    }
+  },
+  "leave_one_system_out_four_services": {
+    "cases": 373,
+    "service_top1": 0.954,
+    "fault_accuracy": 0.71,
+    "both_right": 0.684,
+    "by_system": {
+      "ob": 0.756,
+      "ss": 0.632,
+      "tt": 0.664
+    },
+    "by_fault": {
+      "cpu": 0.311,
+      "delay": 0.68,
+      "disk": 0.76,
+      "loss": 0.689,
+      "mem": 0.973
+    },
+    "confidence_gate_precision": {
+      "0.3": 0.685,
+      "0.5": 0.688,
+      "0.6": 0.7,
+      "0.7": 0.5
+    },
+    "acts_at_gate": {
+      "0.3": 371,
+      "0.5": 330,
+      "0.6": 180,
+      "0.7": 24
+    }
+  },
+  "sklearn": "1.6.1"
+}

@@ -1,0 +1,33 @@
+{
+  "trained_on": [
+    "docs/live-validation-run3",
+    "docs/live-validation-run4",
+    "docs/live-validation-run5-early",
+    "docs/live-validation-run8"
+  ],
+  "trials": 53,
+  "cases": 127,
+  "leave_one_trial_out": {
+    "cases": 127,
+    "service_accuracy": 0.952755905511811,
+    "service_and_fault_accuracy": 0.937007874015748,
+    "verdicts": {
+      "true_claim": {
+        "agree": 100,
+        "disagree": 4,
+        "no_opinion": 0
+      },
+      "wrong_claim": {
+        "agree": 2,
+        "disagree": 125,
+        "no_opinion": 0
+      }
+    }
+  },
+  "faults": [
+    "db_connection_pool_exhaustion",
+    "db_disk_full",
+    "gateway_fault",
+    "high_memory_usage"
+  ]
+}

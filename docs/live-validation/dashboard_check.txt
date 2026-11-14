@@ -1,0 +1,22 @@
+Dashboard 'AutoSRE': checking every panel query against Prometheus
+
+panel                                                series  result
+------------------------------------------------------------------------------
+Confidence of the last diagnosis                          1  ok
+Confidence over time                                      1  ok
+Incidents received                                        1  ok
+Escalated to a human                                      1  ok
+Root causes identified                                    3  ok
+Firing alerts (the symptoms the engine receives)          2  ok
+p95 latency by service                                    4  ok
+5xx error ratio by service                                1  ok
+Connection pool utilisation                               1  ok
+Database disk usage                                       2  ok
+Pod restarts (5m)                                         6  ok
+Container memory vs limit                                 6  ok
+Request rate by service                                   4  ok
+
+Grafana import:
+imported as 'AutoSRE' with 13 panels
+
+OK

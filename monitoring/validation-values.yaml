@@ -1,0 +1,25 @@
+---
+# Extra Helm values for a THROWAWAY validation cluster only. Layer on top of the
+# base values:
+#
+#   helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace \
+#     -f monitoring/kube-prometheus-stack-values.yaml \
+#     -f monitoring/validation-values.yaml
+#
+# Never use this on anything real: it lets anyone who can reach Grafana view
+# dashboards without logging in. On the validation instance port 3000 is open
+# to a single IP address only.
+grafana:
+  grafana.ini:
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+  # Pick up dashboards from ConfigMaps labelled grafana_dashboard=1, in any
+  # namespace - see scripts/install-dashboard.sh.
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL

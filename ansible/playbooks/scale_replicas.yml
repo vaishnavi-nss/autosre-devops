@@ -1,0 +1,31 @@
+---
+# Remediation for: high_memory_usage
+#
+# Spreads load across more replicas so no single pod is OOM-killed. The brief
+# calls this "increase replica count via kubectl scale" (section 6).
+#
+#   ansible-playbook -i ../inventory/localhost.yml scale_replicas.yml \
+#     -e target_service=transaction-service -e replicas=3
+- name: Scale a service horizontally
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    k8s_namespace: autosre
+    target_service: transaction-service
+    replicas: 3
+
+  tasks:
+    - name: Scale {{ target_service }} to {{ replicas }} replica(s)
+      kubernetes.core.k8s_scale:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+        replicas: "{{ replicas | int }}"
+        wait: true
+        wait_timeout: 120
+
+    - name: Report the outcome
+      ansible.builtin.debug:
+        msg: "Scaled {{ target_service }} in {{ k8s_namespace }} to {{ replicas }} replica(s)."

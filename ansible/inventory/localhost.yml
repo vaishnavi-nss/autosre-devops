@@ -1,0 +1,8 @@
+---
+# Everything runs against the local kubeconfig, so Ansible never SSHes anywhere.
+# The kubernetes.core modules talk to the API server directly.
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"
