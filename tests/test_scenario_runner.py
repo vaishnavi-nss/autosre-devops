@@ -203,3 +203,24 @@ def test_every_fault_scenario_also_injects_the_consequence_that_lifts_confidence
     sig = __import__("signatures", fromlist=["x"]) if False else None
     # 0.55 (pool) + 0.20 (errors), 0.60 (memory) + 0.15 (latency), 0.60 (disk) + 0.25 (errors) all reach 0.75
     assert round(0.55 + 0.20, 4) >= 0.75 and round(0.60 + 0.15, 4) >= 0.75 and round(0.60 + 0.25, 4) >= 0.75
+
+
+def test_sigterm_runs_the_restore_instead_of_killing_the_process_silently():
+    """Found after comp5: a relaunch sent SIGTERM, Python exited without running `finally`, and AUTO_REMEDIATE stayed true."""
+    import signal
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        rs.install_term_handler()
+        handler = signal.getsignal(signal.SIGTERM)
+        with pytest.raises(SystemExit) as stop:
+            handler(signal.SIGTERM, None)
+        assert stop.value.code == 128 + signal.SIGTERM
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def test_the_launcher_waits_for_the_old_runner_and_forces_the_safe_defaults():
+    text = (ROOT / "scripts" / "aws" / "completion-run.sh").read_text()
+    assert "pkill -TERM -f 'run_scenario[s]'" in text and "pgrep -f 'run_scenario[s]'" in text
+    assert text.index("AUTO_REMEDIATE=false") < text.index("rollout restart")
+    assert "CHAOS_ENABLED=false" in text and "SECOND_OPINION_MODE=shadow" in text

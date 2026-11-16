@@ -22,7 +22,9 @@ RESULTS="$HOME_DIR/results/$RUN"
 st() { aws ssm put-parameter --name autosre-prep --type String --overwrite --value "$(date -u +%H:%M) $1" >/dev/null 2>&1 || true; }
 
 st "$RUN: fetching $BRANCH"
-pkill -f run_scenarios || true
+# Stop a previous runner and WAIT for it to restore the safe defaults (it handles SIGTERM); the [s] keeps pkill from matching this script.
+pkill -TERM -f 'run_scenario[s]' || true
+for _ in $(seq 1 60); do pgrep -f 'run_scenario[s]' >/dev/null || break; sleep 5; done
 rm -rf /tmp/src-completion && git clone -q --depth 1 -b "$BRANCH" "$REPO" /tmp/src-completion || { st "$RUN: git clone failed"; exit 1; }
 SRC=/tmp/src-completion
 [ -d "$SRC/autosre" ] && SRC=/tmp/src-completion/autosre
@@ -42,6 +44,11 @@ if kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
   kubectl apply -f monitoring/servicemonitor.yaml -f monitoring/alert-rules.yaml
   bash scripts/install-dashboard.sh 2>&1 | tail -3 || true
 fi
+# `kubectl apply` leaves environment overrides that an earlier run set with `kubectl set env`. Force the safe defaults explicitly.
+kubectl -n autosre set env deploy/remediation-dispatcher AUTO_REMEDIATE=false COOLDOWN_SECONDS- VERIFY_TIMEOUT_SECONDS- >/dev/null
+kubectl -n autosre set env deploy/transaction-service CHAOS_ENABLED=false >/dev/null
+kubectl -n autosre set env deploy/database CHAOS_ENABLED=false >/dev/null
+kubectl -n autosre set env deploy/correlation-engine SECOND_OPINION_MODE=shadow ESCALATE_ON_AMBIGUITY- >/dev/null
 # Replace every pod so none carries a stale image or an environment override from an earlier session.
 for d in frontend api-gateway transaction-service database correlation-engine second-opinion remediation-dispatcher; do
   kubectl -n autosre rollout restart deploy/$d >/dev/null

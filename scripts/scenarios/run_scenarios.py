@@ -25,6 +25,7 @@ import argparse
 import atexit
 import json
 import math
+import signal
 import subprocess
 import sys
 import time
@@ -544,7 +545,16 @@ def report(results: list[dict], live: bool, env: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def install_term_handler() -> None:
+    """A SIGTERM (pkill, a relaunch, a shutdown) must run the restore. Python's default kills the process before `finally` runs,
+    which left AUTO_REMEDIATE=true on the real cluster (found after comp5)."""
+    def handler(signum, frame):
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, handler)
+
+
 def main(argv=None) -> int:
+    install_term_handler()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True)
     ap.add_argument("--scenarios", default=",".join(DEFAULT_ORDER), help=f"comma list from: {', '.join(DEFAULT_ORDER)}, pair_ambiguity, pair_gate")
