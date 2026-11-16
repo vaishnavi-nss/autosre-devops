@@ -2,7 +2,7 @@
 
 Branch `devops-completion`. Cluster: Minikube (containerd) on the AWS Academy lab EC2 instance (`i-04f8f4d75378a1aba`), isolated `autosre` namespace,
 2026-11-16 and 2026-11-17. Raw results: `s3://autosre-validation-841736140404/results-comp3/` to `results-comp10/` (`<run>.log`, `report.md`, `scenarios.json`).
-Unit tests: **255 passed** (`pytest tests correlation-engine/tests second-opinion/tests`); the baseline on `devops-integration` was 150. The unit tests use a fake
+Unit tests: **265 passed** (`pytest tests correlation-engine/tests second-opinion/tests`); the baseline on `devops-integration` was 150. The unit tests use a fake
 cluster and a stubbed `ansible-playbook`; they do not show that a playbook works. Only the runs below do.
 
 **Nothing here is simulated recovery.** Each scenario says what kind of fault it is: pool exhaustion sets the pool gauge (no real connections are held) and
@@ -88,10 +88,19 @@ in a browser, so the visual layout is untested.
 | 9 | Unknown and unsafe incidents escalate to a human | Yes: unknown-cause scenario, guardrails, cooldown, two-fault ambiguity, gate veto |
 | 10 | Automated tests pass; deployment documented | Yes (255 tests; `01-audit.md`, `02-deploy-demo-cleanup-rollback.md`, this report) |
 
-## Limits and what is still open
+## Limits, and what was done about each (status as of the last commit)
 
-- **Sample size.** Each live scenario was run once to a pass (pool and cooldown twice). That shows the chain works; it is not a reliability rate.
-- **The pool fault is not a real exhausted pool**, and each scenario's consequence symptom is injected (see the top). The memory scale-out leaves the original pod's leak in place.
-- **Not viewed in a browser:** the rendered front end and the Grafana dashboard.
-- **Memory depends on the second opinion agreeing.** It disagreed once (comp4) and agreed later (comp8, comp10); with the default policy a disagreement blocks the scale-out, correctly.
-- Live execution was approved by the user for all fault scenarios for this session. Any further live run needs new approval. The cluster is left with `AUTO_REMEDIATE=false`.
+| Limit | Fix | Verified on the cluster? |
+|---|---|---|
+| The pool fault only set a gauge | The transaction service now has a **real bounded connection pool** (`DB_POOL_MAX` slots, `DB_POOL_TIMEOUT` wait). `/chaos/leak` takes slots that are never returned; with every slot leaked, requests **really time out with HTTP 503**, the gauge is measured from real slot use, and a restart really clears it (a new process starts with a full pool) | **No.** Unit tests only (`tests/test_real_faults.py`). The live runs above used the older gauge-pin fault |
+| Pool and disk consequence symptoms were injected | Pool: the 503 timeouts give real `ErrorRateHigh` and `APILatencyHigh`. Disk: a full disk (ratio at or above 0.95) **really fails database writes (HTTP 507)**, which the transaction service reports as 5xx. The scenarios no longer inject errors for pool or disk | **No**, same reason |
+| Memory scale-out leaves the leak in the original pod; memory's slowness is injected | **Not fixed.** The injected 0.5 s latency stays (labelled), and recovery for memory still means the extra replicas are ready and the service is healthy. A real memory-driven slowdown cannot be produced deterministically without changing what the playbook does | n/a |
+| One passing run per scenario | A `COOLDOWN` option lets the launcher repeat a scenario (`SCENARIOS=pool,disk,pool,disk COOLDOWN=60`). The repeat run (comp11) was **not run**: the lab session ended before it could start | **No** |
+| Front end and Grafana pages not viewed | Not addressed: the data they read is verified, the rendered pages are not | No |
+
+**Until the next lab session runs comp11, treat the live results above as obtained with the older fault models** (pool gauge pinned plus injected errors; disk bytes
+real plus injected errors). The new fault models have 265 passing unit tests, nothing more. The cluster was left with `AUTO_REMEDIATE=false` (comp10 restored it).
+
+Next live run, needs a new lab session and, for live execution, approval:
+`curl -fsS https://raw.githubusercontent.com/vaishnavi-nss/autosre-devops/devops-completion/scripts/aws/start-completion-run.sh | RUN=comp11 LIVE=1 COOLDOWN=60 SCENARIOS=pool,disk,pool,disk bash`
+(about 55 minutes; it rebuilds the images, so the services pick up the real pool and the real disk failure).
