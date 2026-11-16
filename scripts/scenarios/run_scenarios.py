@@ -330,9 +330,9 @@ class Runner:
                 self.c.post(self.c.svc("transaction-service", "/chaos/memory"), {"megabytes": mb})
                 held += mb
                 time.sleep(20)
-            # Memory pressure slows the service. A delay is injected (0.15 s was too small to fire APILatencyHigh on the real cluster) so the incident carries a corroborating symptom (APILatencyHigh).
-            self.c.post(self.c.svc("transaction-service", "/chaos/latency"), {"seconds": 0.3})
-            return {"held_mb": held, "memory_ratio": self.memory_ratio(), "limit_mib": limit_mib, "consequence": "0.3 s added latency"}
+            # Memory pressure slows the service. A delay is injected (0.15 s and 0.3 s were too small to fire APILatencyHigh on the real cluster; the load generator is one sequential client, so 0.5 s cannot saturate the service) so the incident carries a corroborating symptom (APILatencyHigh).
+            self.c.post(self.c.svc("transaction-service", "/chaos/latency"), {"seconds": 0.5})
+            return {"held_mb": held, "memory_ratio": self.memory_ratio(), "limit_mib": limit_mib, "consequence": "0.5 s added latency"}
         if name == "disk":
             out = self.c.post(self.c.svc("database", "/chaos/disk"), {"ratio": 0.95})
             self.c.post(self.c.svc("transaction-service", "/chaos/errors"), {"rate": 0.5})        # writes failing on a full disk
