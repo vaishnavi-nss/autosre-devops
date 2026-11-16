@@ -1,4 +1,4 @@
-﻿import os
+import os
 import time
 import random
 import httpx
@@ -10,7 +10,9 @@ from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTEN
 app = FastAPI(title="transaction-service")
 
 CHAOS_ENABLED = os.getenv("CHAOS_ENABLED", "false").lower() == "true"
-DATABASE_URL = os.getenv("DATABASE_URL", "http://database.autosre.svc.cluster.local:8000")
+DATABASE_URL = os.getenv("DATABASE_URL", os.getenv("DOWNSTREAM_URL", "http://database.autosre.svc.cluster.local:8000"))
+# The pool maximum the manifest sets (DB_POOL_MAX); the pool alert is active / this maximum above 0.9.
+POOL_MAX = int(os.getenv("DB_POOL_MAX", "20"))
 
 # 2. Safely get or register metrics to prevent DuplicateTimeseries in pytest
 def get_or_create_gauge(name, documentation, labelnames):
@@ -50,7 +52,7 @@ HTTP_LATENCY = get_or_create_histogram(
 )
 
 DB_POOL_ACTIVE.labels(service="transaction-service").set(2)
-DB_POOL_MAX.labels(service="transaction-service").set(10)
+DB_POOL_MAX.labels(service="transaction-service").set(POOL_MAX)
 
 chaos_state = {
     "error_rate": 0.0,
@@ -145,5 +147,5 @@ def chaos_reset():
     chaos_state["latency_seconds"] = 0.0
     chaos_state["memory_leak"].clear()
     DB_POOL_ACTIVE.labels(service="transaction-service").set(2)
-    DB_POOL_MAX.labels(service="transaction-service").set(10)
+    DB_POOL_MAX.labels(service="transaction-service").set(POOL_MAX)
     return {"status": "chaos reset"}

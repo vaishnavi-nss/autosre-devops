@@ -28,3 +28,17 @@ def test_database_chaos_disk_injection(monkeypatch):
     res = db_client.post("/chaos/disk", json={"ratio": 0.95})
     assert res.status_code == 200
     assert res.json()["ratio"] == 0.95
+
+
+def test_the_pool_maximum_comes_from_the_manifest_setting():
+    import re
+    from services.transaction_service import app as tx
+    text = tx_client.get("/metrics").text
+    maximum = float(re.search(r'^db_connection_pool_max\{service="transaction-service"\} ([0-9.]+)$', text, re.M).group(1))
+    assert maximum == tx.POOL_MAX == 20
+
+
+def test_the_manifest_and_the_service_agree_on_the_pool_maximum():
+    from pathlib import Path
+    manifest = (Path(__file__).resolve().parents[1] / "k8s" / "transaction-service.yaml").read_text()
+    assert 'name: DB_POOL_MAX\n              value: "20"' in manifest.replace("\r\n", "\n")
