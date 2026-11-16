@@ -43,11 +43,11 @@ SYMPTOMS = "APILatencyHigh|ErrorRateHigh|DBPoolNearExhaustion|DBDiskNearFull|Pod
 
 SCENARIOS = {
     "pool": {"alert": "DBPoolNearExhaustion", "cause": "db_connection_pool_exhaustion", "playbook": "restart_service.yml",
-             "service": "transaction-service", "kind": "injected: the pool gauge is set (no real connections are held)"},
+             "service": "transaction-service", "kind": "real: every slot of the service's bounded pool is leaked, so requests really time out"},
     "memory": {"alert": "ContainerMemoryHigh", "cause": "high_memory_usage", "playbook": "scale_replicas.yml",
                "service": "transaction-service", "kind": "real: the container holds real memory"},
     "disk": {"alert": "DBDiskNearFull", "cause": "db_disk_full", "playbook": "clear_logs.yml",
-             "service": "database", "kind": "real: real bytes are written to the database's bounded log directory"},
+             "service": "database", "kind": "real: real bytes fill the database's bounded log directory until writes really fail (HTTP 507)"},
 }
 DEFAULT_ORDER = ["guardrails_dry", "pool", "cooldown", "memory", "disk", "unknown", "guardrails_live"]
 
@@ -328,12 +328,11 @@ class Runner:
         wait_for(lambda: self.c.get(self.c.svc("transaction-service", "/health")).get("status") == "ok", 120, 5, "transaction-service health")
         if name == "pool":
             maximum = self.c.prom_scalar('max(db_connection_pool_max{service="transaction-service"})', 20) or 20
-            n = math.ceil(maximum * 0.95)
-            self.c.post(self.c.svc("transaction-service", "/chaos/pool"), {"active_connections": n})
-            # A real exhausted pool fails transactions. The pool fault only sets the gauge, so the failures it would cause are injected too;
-            # without them the incident carries only the deciding symptom (confidence 0.55) and the 0.75 gate correctly refuses to act.
-            self.c.post(self.c.svc("transaction-service", "/chaos/errors"), {"rate": 0.5})
-            return {"active_connections": n, "pool_max": maximum, "consequence": "transaction errors injected (rate 0.5)"}
+            n = int(maximum)
+            # The pool is real: leaking every slot makes every request really wait DB_POOL_TIMEOUT and fail with 503, so the errors and
+            # the latency that raise confidence to the 0.75 gate arise by themselves; nothing else is injected.
+            out = self.c.post(self.c.svc("transaction-service", "/chaos/leak"), {"connections": n})
+            return {"leak": out, "pool_max": maximum, "consequence": "real: requests time out waiting for a pool slot (503)"}
         if name == "memory":
             limit_mib = int(self.c.deployment("transaction-service")["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["memory"].rstrip("Mi"))
             held = 0
@@ -349,9 +348,8 @@ class Runner:
             self.c.post(self.c.svc("transaction-service", "/chaos/latency"), {"seconds": 0.5})
             return {"held_mb": held, "memory_ratio": self.memory_ratio(), "limit_mib": limit_mib, "consequence": "0.5 s added latency"}
         if name == "disk":
-            out = self.c.post(self.c.svc("database", "/chaos/disk"), {"ratio": 0.95})
-            self.c.post(self.c.svc("transaction-service", "/chaos/errors"), {"rate": 0.5})        # writes failing on a full disk
-            return {"response": out, "disk": self.c.get(self.c.svc("database", "/disk")), "consequence": "transaction errors injected (rate 0.5)"}
+            out = self.c.post(self.c.svc("database", "/chaos/disk"), {"ratio": 0.97})       # above the 0.95 at which writes fail
+            return {"response": out, "disk": self.c.get(self.c.svc("database", "/disk")), "consequence": "real: the full disk fails writes (HTTP 507), so transactions fail"}
         raise ValueError(name)
 
     def memory_ratio(self) -> float:
@@ -555,8 +553,9 @@ def report(results: list[dict], live: bool, env: dict) -> str:
             {True: "yes", False: "NO", None: "-"}[ev.get("independent_recovery")], r.get("why", "")))
     lines += ["", f"Passed: {sum(1 for r in results if r.get('passed'))} of {len(results)}.",
               f"Restore: {json.dumps(env.get('restored'))}", "",
-              "Pool exhaustion injects the pool gauge (no real connections); memory and disk hold real memory and real bytes. A memory scale-out does not remove "
-              "the leak in the original pod, so its alert is expected to persist; recovery there means the extra capacity is ready and the service is healthy."]
+              "Pool exhaustion leaks every slot of the service's bounded pool and a full disk really fails writes, so their errors and latency are real; memory holds "
+              "real memory and its slowness is injected. A memory scale-out does not remove the leak in the original pod, so its alert is expected to persist; "
+              "recovery there means the extra capacity is ready and the service is healthy."]
     return "\n".join(lines) + "\n"
 
 

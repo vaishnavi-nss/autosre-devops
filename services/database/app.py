@@ -1,4 +1,4 @@
-﻿import os
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Response
@@ -15,6 +15,8 @@ CHAOS_ENABLED = os.getenv("CHAOS_ENABLED", "false").lower() == "true"
 # is not writable (a laptop, the unit tests) the service falls back to the old stored value, and says so in its replies.
 FILL_PREFIX = "chaos-fill-"          # only files the fault itself created are ever removed by the service
 MAX_FAULT_RATIO = 0.99
+# A disk this full fails writes (507), the way a full volume does; the transaction service then really returns 5xx.
+FULL_RATIO = float(os.getenv("DB_DISK_FULL_RATIO", "0.95"))
 
 
 def log_dir() -> Path:
@@ -141,6 +143,9 @@ def disk():
 
 @app.post("/query")
 def execute_query():
+    if real_disk_available() and disk_ratio() >= FULL_RATIO:
+        HTTP_REQUESTS_TOTAL.labels(service="database", method="POST", status="507").inc()
+        raise HTTPException(status_code=507, detail="Insufficient storage: the disk is full")
     HTTP_REQUESTS_TOTAL.labels(service="database", method="POST", status="200").inc()
     return {"database": "ok", "status": "committed"}
 

@@ -15,6 +15,7 @@ BRANCH="${BRANCH:-devops-completion}"
 RUN="${RUN:?set RUN, e.g. comp1}"
 LIVE="${LIVE:-0}"
 SCENARIOS="${SCENARIOS:-guardrails_dry,pool,memory,disk,unknown}"
+COOLDOWN="${COOLDOWN:-900}"          # dispatcher cooldown (s) during the run; lower it only to repeat a scenario
 HOME_DIR=/home/ubuntu
 WORK="$HOME_DIR/autosre-completion"
 RESULTS="$HOME_DIR/results/$RUN"
@@ -73,6 +74,6 @@ st "$RUN: image checks written"
 
 setsid nohup bash -c "while true; do aws s3 sync $RESULTS s3://$BUCKET/results-$RUN --only-show-errors; aws s3 cp $HOME_DIR/$RUN.log s3://$BUCKET/results-$RUN/$RUN.log --only-show-errors; sleep 45; done" >/dev/null 2>&1 </dev/null &
 LIVEFLAG=""; [ "$LIVE" = "1" ] && LIVEFLAG="--live"
-sudo -u ubuntu -H -g docker bash -c "cd $WORK && setsid nohup python3 scripts/scenarios/run_scenarios.py --out $RESULTS --scenarios $SCENARIOS $LIVEFLAG > $HOME_DIR/$RUN.log 2>&1 < /dev/null &"
+sudo -u ubuntu -H -g docker bash -c "cd $WORK && setsid nohup python3 scripts/scenarios/run_scenarios.py --out $RESULTS --scenarios $SCENARIOS --cooldown $COOLDOWN $LIVEFLAG > $HOME_DIR/$RUN.log 2>&1 < /dev/null &"
 sleep 5
 st "$RUN: scenario runner started on $COMMIT (live=$LIVE): $SCENARIOS"

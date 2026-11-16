@@ -155,7 +155,7 @@ def test_the_report_labels_a_dry_run_and_what_was_actually_injected(tmp_path):
                 "evidence": {"incident": INC}, "timeline": {"alert_after_s": 40, "incident_after_s": 95}}]
     text = rs.report(results, live=False, env={"restored": {"auto_remediate": False}})
     assert "dry run (decisions only, nothing fixed)" in text and "**dry_run**" in text and "Passed: 0 of 1" in text
-    assert "no real connections" in text and "persist" in text
+    assert "leaks every slot" in text and "injected" in text and "persist" in text
 
 
 def test_posts_carry_a_json_content_type(monkeypatch):
@@ -195,13 +195,13 @@ def test_the_runner_judges_the_incident_the_dispatcher_acts_on_not_the_first_web
     assert rs.pick_incident([{**later, "remediation": {"status": "dry_run"}}], since, INC["root_cause"])[1] is True
 
 
-def test_every_fault_scenario_also_injects_the_consequence_that_lifts_confidence_to_the_gate():
+def test_pool_and_disk_consequences_are_real_and_only_memory_still_injects_its_slowness():
     import inspect
     src = inspect.getsource(rs.Runner.inject)
-    for chaos in ("/chaos/errors", "/chaos/latency"):
-        assert chaos in src
-    sig = __import__("signatures", fromlist=["x"]) if False else None
-    # 0.55 (pool) + 0.20 (errors), 0.60 (memory) + 0.15 (latency), 0.60 (disk) + 0.25 (errors) all reach 0.75
+    assert "/chaos/leak" in src and "/chaos/disk" in src and '"ratio": 0.97' in src          # real leak, real full disk
+    assert "/chaos/errors" not in src                                                          # no injected errors for pool or disk
+    assert src.count("/chaos/latency") == 1                                                    # only memory still injects slowness
+    # 0.55 (pool) + 0.20 (real errors), 0.60 (memory) + 0.15 (latency), 0.60 (disk) + 0.25 (real errors) all reach 0.75
     assert round(0.55 + 0.20, 4) >= 0.75 and round(0.60 + 0.15, 4) >= 0.75 and round(0.60 + 0.25, 4) >= 0.75
 
 
@@ -261,3 +261,9 @@ def test_a_post_to_a_pod_that_is_still_starting_is_retried_but_a_real_error_is_n
     monkeypatch.setattr(rs.urllib.request, "urlopen", always_down)
     with pytest.raises(RuntimeError, match="URLError"):
         rs.Cluster().post("/x", {}, tries=2)
+
+
+def test_the_launcher_passes_the_cooldown_so_a_scenario_can_be_repeated():
+    run = (ROOT / "scripts" / "aws" / "completion-run.sh").read_text()
+    start = (ROOT / "scripts" / "aws" / "start-completion-run.sh").read_text()
+    assert "--cooldown $COOLDOWN" in run and 'COOLDOWN="${COOLDOWN:-900}"' in run and "COOLDOWN=$COOLDOWN" in start
