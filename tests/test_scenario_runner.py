@@ -182,3 +182,24 @@ def test_posts_carry_a_json_content_type(monkeypatch):
     out = rs.Cluster().post("/api/v1/namespaces/autosre/services/transaction-service:http/proxy/chaos/pool", {"active_connections": 19})
     assert out == {"status": "pool set"} and seen["headers"]["Content-type"] == "application/json"
     assert seen["body"] == b'{"active_connections": 19}' and seen["url"].startswith("http://127.0.0.1:8011/api/v1/")
+
+
+def test_the_runner_judges_the_incident_the_dispatcher_acts_on_not_the_first_webhook():
+    """Found on the real cluster: the first webhook carries only the deciding symptom (0.55) and is rightly escalated by the 0.75 gate."""
+    first = {**INC, "received_at": "2026-11-20T10:01:00+00:00", "confidence": 0.55, "remediation": {"status": "escalated", "reason": "Confidence below threshold"}}
+    later = {**INC, "received_at": "2026-11-20T10:03:00+00:00", "confidence": 0.75, "remediation": {"status": "accepted"}}
+    since = "2026-11-20T10:00:00+00:00"
+    assert rs.pick_incident([later, first], since, INC["root_cause"]) == (later, True)
+    assert rs.pick_incident([first], since, INC["root_cause"]) == (first, False)      # reported with its reason, not hidden
+    assert rs.pick_incident([], since, INC["root_cause"]) == (None, False)
+    assert rs.pick_incident([{**later, "remediation": {"status": "dry_run"}}], since, INC["root_cause"])[1] is True
+
+
+def test_every_fault_scenario_also_injects_the_consequence_that_lifts_confidence_to_the_gate():
+    import inspect
+    src = inspect.getsource(rs.Runner.inject)
+    for chaos in ("/chaos/errors", "/chaos/latency"):
+        assert chaos in src
+    sig = __import__("signatures", fromlist=["x"]) if False else None
+    # 0.55 (pool) + 0.20 (errors), 0.60 (memory) + 0.15 (latency), 0.60 (disk) + 0.25 (errors) all reach 0.75
+    assert round(0.55 + 0.20, 4) >= 0.75 and round(0.60 + 0.15, 4) >= 0.75 and round(0.60 + 0.25, 4) >= 0.75

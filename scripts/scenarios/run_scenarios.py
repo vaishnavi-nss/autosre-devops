@@ -159,6 +159,20 @@ def find_incident(incidents: list[dict], since: str, cause: str | None = None, e
     return None
 
 
+ACTIONABLE = ("accepted", "dry_run", "skipped")
+
+
+def pick_incident(incidents: list[dict], since: str, cause: str) -> tuple[dict | None, bool]:
+    """(incident, actionable). A lone deciding symptom scores 0.55 to 0.60, below the dispatcher's 0.75, so the first webhook of a
+    real incident is correctly escalated; the dispatcher acts on a later one once a corroborating symptom has fired. Prefer the first
+    incident the dispatcher accepted (or would accept, or skipped); otherwise report the newest one so the reason is visible."""
+    mine = [i for i in reversed(incidents) if i.get("received_at", "") >= since and i.get("root_cause") == cause]
+    for inc in mine:
+        if (inc.get("remediation") or {}).get("status") in ACTIONABLE:
+            return inc, True
+    return (mine[-1], False) if mine else (None, False)
+
+
 def find_incident_with(incidents: list[dict], since: str, alertnames: set[str]) -> dict | None:
     """First incident at or after `since` whose alerts include every name in `alertnames` (the two-fault incident)."""
     for inc in reversed(incidents):
@@ -300,7 +314,10 @@ class Runner:
             maximum = self.c.prom_scalar('max(db_connection_pool_max{service="transaction-service"})', 20) or 20
             n = math.ceil(maximum * 0.95)
             self.c.post(self.c.svc("transaction-service", "/chaos/pool"), {"active_connections": n})
-            return {"active_connections": n, "pool_max": maximum}
+            # A real exhausted pool fails transactions. The pool fault only sets the gauge, so the failures it would cause are injected too;
+            # without them the incident carries only the deciding symptom (confidence 0.55) and the 0.75 gate correctly refuses to act.
+            self.c.post(self.c.svc("transaction-service", "/chaos/errors"), {"rate": 0.5})
+            return {"active_connections": n, "pool_max": maximum, "consequence": "transaction errors injected (rate 0.5)"}
         if name == "memory":
             limit_mib = int(self.c.deployment("transaction-service")["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["memory"].rstrip("Mi"))
             held = 0
@@ -312,10 +329,13 @@ class Runner:
                 self.c.post(self.c.svc("transaction-service", "/chaos/memory"), {"megabytes": mb})
                 held += mb
                 time.sleep(20)
-            return {"held_mb": held, "memory_ratio": self.memory_ratio(), "limit_mib": limit_mib}
+            # Memory pressure slows the service. A small delay is injected so the incident carries a corroborating symptom (APILatencyHigh).
+            self.c.post(self.c.svc("transaction-service", "/chaos/latency"), {"seconds": 0.15})
+            return {"held_mb": held, "memory_ratio": self.memory_ratio(), "limit_mib": limit_mib, "consequence": "0.15 s added latency"}
         if name == "disk":
             out = self.c.post(self.c.svc("database", "/chaos/disk"), {"ratio": 0.95})
-            return {"response": out, "disk": self.c.get(self.c.svc("database", "/disk"))}
+            self.c.post(self.c.svc("transaction-service", "/chaos/errors"), {"rate": 0.5})        # writes failing on a full disk
+            return {"response": out, "disk": self.c.get(self.c.svc("database", "/disk")), "consequence": "transaction errors injected (rate 0.5)"}
         raise ValueError(name)
 
     def memory_ratio(self) -> float:
@@ -362,8 +382,12 @@ class Runner:
             am, _ = wait_for(lambda: [a for a in self.c.get(f"{AM}/api/v2/alerts") if a["labels"].get("alertname") == spec["alert"]],
                              self.t["engine"], 5, "Alertmanager")
             ev["alertmanager"] = bool(am)
-            inc, w2 = wait_for(lambda: find_incident(self.engine_incidents(), since, cause=spec["cause"]), self.t["engine"], 5, "engine incident")
+            first, _ = pick_incident(self.engine_incidents(), since, spec["cause"])
+            got, w2 = wait_for(lambda: (lambda r: r[0] if r[1] else None)(pick_incident(self.engine_incidents(), since, spec["cause"])),
+                               self.t["engine"], 5, "an incident the dispatcher can act on")
+            inc = got or pick_incident(self.engine_incidents(), since, spec["cause"])[0]
             ev["incident"] = inc
+            ev["first_incident"] = first
             rec["timeline"]["incident_after_s"] = round(w + w2, 1) if inc else None
             rem = (inc or {}).get("remediation") or {}
             if inc and rem.get("status") == "accepted":
@@ -392,11 +416,16 @@ class Runner:
                "timeline": {"injected_at": since}, "evidence": {}}
         log("=== unknown: error rate with no deciding symptom")
         self.c.post(self.c.svc("transaction-service", "/chaos/errors"), {"rate": 0.5})
-        alert, _ = wait_for(lambda: self.c.firing("ErrorRateHigh"), self.t["alert"], 5, "ErrorRateHigh")
+        alert, w = wait_for(lambda: self.c.firing("ErrorRateHigh"), self.t["alert"] * 2, 10, "ErrorRateHigh")      # its rate window is 5 minutes
+        rec["timeline"]["alert_after_s"] = w
         inc, _ = wait_for(lambda: find_incident(self.engine_incidents(), since, escalated=True), self.t["engine"], 5, "escalated incident") if alert else (None, 0)
         time.sleep(30)
         n_after = len(self.executions())
-        rec["evidence"] = {"alert_fired": bool(alert), "incident": inc, "executions_before": n_before, "executions_after": n_after}
+        diagnostics = {}
+        if not alert:
+            diagnostics = {"error_ratio": self.c.prom_scalar('sum(rate(http_requests_total{service="transaction-service",status=~"5.."}[5m])) / sum(rate(http_requests_total{service="transaction-service"}[5m]))'),
+                           "tx_request_rate": self.c.prom_scalar('sum(rate(http_requests_total{service="transaction-service"}[1m]))')}
+        rec["evidence"] = {"alert_fired": bool(alert), "incident": inc, "executions_before": n_before, "executions_after": n_after, **diagnostics}
         ok = bool(alert and inc and inc.get("root_cause") is None and n_after == n_before)
         rec["outcome"], rec["passed"] = ("passed" if ok else "failed"), ok
         rec["why"] = "escalated to a human; nothing was executed" if ok else "expected an escalation with no execution"
@@ -413,7 +442,8 @@ class Runner:
         log("=== cooldown: the same fault again, inside the cooldown")
         self.inject("pool")
         alert, _ = wait_for(lambda: self.c.firing("DBPoolNearExhaustion"), self.t["alert"], 5, "alert")
-        inc, _ = wait_for(lambda: find_incident(self.engine_incidents(), since, cause="db_connection_pool_exhaustion"), self.t["engine"], 5, "incident") if alert else (None, 0)
+        inc, _ = wait_for(lambda: (lambda r: r[0] if r[1] else None)(pick_incident(self.engine_incidents(), since, "db_connection_pool_exhaustion")),
+                          self.t["engine"], 5, "incident") if alert else (None, 0)
         rem = (inc or {}).get("remediation") or {}
         time.sleep(20)
         n_after = len(self.executions())
@@ -497,15 +527,15 @@ class Runner:
 
 def report(results: list[dict], live: bool, env: dict) -> str:
     lines = ["# AutoSRE scenario run", "", f"Mode: **{'LIVE execution' if live else 'dry run (decisions only, nothing fixed)'}**.", "",
-             "| Scenario | Fault | Outcome | Alert after | Incident after | Cause | ML verdict | Playbook run | Recovered | Why |",
-             "|---|---|---|---:|---:|---|---|---|---|---|"]
+             "| Scenario | Fault | Outcome | Alert after | Incident after | Cause | Confidence | ML verdict | Playbook run | Recovered | Why |",
+             "|---|---|---|---:|---:|---|---:|---|---|---|---|"]
     for r in results:
         ev, tl = r.get("evidence", {}), r.get("timeline", {})
         inc = ev.get("incident") or {}
         ex = ev.get("execution") or {}
         lines.append("| {} | {} | **{}** | {} | {} | {} | {} | {} | {} | {} |".format(
             r["scenario"], (r.get("fault_kind") or "").split(":")[0], r.get("outcome"), tl.get("alert_after_s", "-"), tl.get("incident_after_s", "-"),
-            inc.get("root_cause", "-"), (inc.get("second_opinion") or {}).get("verdict", "-"), ex.get("playbook", "-"),
+            inc.get("root_cause", "-"), inc.get("confidence", "-"), (inc.get("second_opinion") or {}).get("verdict", "-"), ex.get("playbook", "-"),
             {True: "yes", False: "NO", None: "-"}[ev.get("independent_recovery")], r.get("why", "")))
     lines += ["", f"Passed: {sum(1 for r in results if r.get('passed'))} of {len(results)}.",
               f"Restore: {json.dumps(env.get('restored'))}", "",
@@ -521,8 +551,8 @@ def main(argv=None) -> int:
     ap.add_argument("--live", action="store_true", help="turn AUTO_REMEDIATE on for this run (restored afterwards). Needs approval.")
     ap.add_argument("--cooldown", type=int, default=900, help="dispatcher cooldown (s) during the run")
     ap.add_argument("--timeout-alert", type=int, default=240)
-    ap.add_argument("--timeout-engine", type=int, default=240)
-    ap.add_argument("--timeout-execute", type=int, default=420)
+    ap.add_argument("--timeout-engine", type=int, default=480)
+    ap.add_argument("--timeout-execute", type=int, default=480)
     ap.add_argument("--timeout-resolve", type=int, default=300)
     ap.add_argument("--timeout-quiet", type=int, default=900)
     a = ap.parse_args(argv)

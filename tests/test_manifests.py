@@ -31,3 +31,14 @@ def test_no_pod_pins_a_pull_policy_that_cannot_find_a_freshly_built_image():
     for name, c in containers():
         if c["image"].startswith("autosre/"):
             assert c["image"].endswith(":dev"), (name, c["image"])
+
+
+def test_the_load_generator_drives_the_whole_chain():
+    """Found on the real cluster: it fetched the frontend's static page, so no backend traffic existed and rate alerts could never fire."""
+    text = (ROOT / "k8s" / "loadgen.yaml").read_text()
+    urls = re.findall(r"curl [^\n]*(http://[^\s]+)", text)
+    assert urls == ["http://frontend.autosre.svc.cluster.local:8000/api/poll"]
+    frontend = (ROOT / "services" / "frontend" / "app.py").read_text(encoding="utf-8-sig")
+    assert '@app.get("/api/poll")' in frontend and "/api/v1/trade" in frontend
+    gateway = (ROOT / "services" / "api-gateway" / "app.py").read_text(encoding="utf-8-sig")
+    assert '@app.get("/api/v1/trade")' in gateway

@@ -22,7 +22,9 @@ spec:
         args:
           - |
             while true; do
-              curl -s -o /dev/null http://frontend.autosre.svc.cluster.local:8000/
+              # /api/poll calls api-gateway -> transaction-service -> database; the page at / is static HTML and generates no backend traffic,
+              # so rate-based alerts (latency, error ratio) could never fire.
+              curl -s -o /dev/null http://frontend.autosre.svc.cluster.local:8000/api/poll
               sleep 0.2
             done
         resources:
