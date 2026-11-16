@@ -21,7 +21,8 @@ RUN ansible-galaxy collection install -r collections-requirements.yml -p /app/co
 COPY remediation-dispatcher/app.py ./app.py
 COPY ansible/ ./ansible/
 
-RUN useradd --uid 10001 --no-create-home appuser && chown -R appuser /app
+# ansible-galaxy ran as root with HOME=/tmp, which left /tmp/.ansible root-owned; ansible-playbook (as appuser) needs to write there.
+RUN useradd --uid 10001 --no-create-home appuser && mkdir -p /tmp/.ansible && chown -R appuser /app /tmp/.ansible
 USER appuser
 
 EXPOSE 8001

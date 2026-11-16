@@ -22,12 +22,15 @@ Honesty rules this script follows:
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import math
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -76,8 +79,33 @@ class Cluster:
         except json.JSONDecodeError:
             return raw
 
+    _proxy_proc = None
+    PROXY_PORT = 8011
+
+    def _proxy_base(self) -> str:
+        """`kubectl create --raw` sends no JSON content type, so FastAPI rejects a JSON body (HTTP 422, seen on the real cluster).
+        Requests go through a local `kubectl proxy` instead, which forwards the client's own headers."""
+        base = f"http://127.0.0.1:{self.PROXY_PORT}"
+        if Cluster._proxy_proc is None or Cluster._proxy_proc.poll() is not None:
+            Cluster._proxy_proc = subprocess.Popen(["kubectl", "proxy", f"--port={self.PROXY_PORT}"],
+                                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            atexit.register(lambda: Cluster._proxy_proc and Cluster._proxy_proc.terminate())
+            for _ in range(30):
+                try:
+                    urllib.request.urlopen(base + "/version", timeout=2).read()
+                    break
+                except Exception:                               # noqa: BLE001
+                    time.sleep(0.5)
+        return base
+
     def post(self, path: str, body: dict | None = None, timeout: int = 90):
-        raw = self.kubectl("create", "--raw", path, "-f", "-", timeout=timeout, stdin=json.dumps(body or {}))
+        req = urllib.request.Request(self._proxy_base() + path, data=json.dumps(body or {}).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"POST {path} -> HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}") from exc
         try:
             return json.loads(raw)
         except json.JSONDecodeError:

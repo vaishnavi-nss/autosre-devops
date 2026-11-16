@@ -372,3 +372,11 @@ def test_the_deployments_view_reports_rollout_progress(isolated):
     assert next(d for d in client.get("/deployments").json()["deployments"] if d["name"] == "database")["rolling_out"] is False
     isolated.unreadable = True
     assert "error" in client.get("/deployments").json()["deployments"][0]
+
+
+def test_the_non_root_user_can_write_ansibles_temp_directory():
+    """Found on the real cluster: /tmp/.ansible was left root-owned by the build, so ansible-playbook failed as appuser."""
+    docker = (ROOT / "remediation-dispatcher" / "Dockerfile").read_text()
+    line = next(l for l in docker.splitlines() if l.startswith("RUN useradd"))
+    assert "/tmp/.ansible" in line and "chown -R appuser" in line
+    assert docker.index("RUN useradd") > docker.index("ansible-galaxy collection install") and docker.index("USER appuser") > docker.index("RUN useradd")

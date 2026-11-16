@@ -156,3 +156,29 @@ def test_the_report_labels_a_dry_run_and_what_was_actually_injected(tmp_path):
     text = rs.report(results, live=False, env={"restored": {"auto_remediate": False}})
     assert "dry run (decisions only, nothing fixed)" in text and "**dry_run**" in text and "Passed: 0 of 1" in text
     assert "no real connections" in text and "persist" in text
+
+
+def test_posts_carry_a_json_content_type(monkeypatch):
+    """Found on the real cluster: `kubectl create --raw` sent no JSON content type and the chaos endpoint answered 422."""
+    seen = {}
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"status": "pool set"}'
+
+    def fake_urlopen(req, timeout=0):
+        if hasattr(req, "full_url"):
+            seen["headers"], seen["url"], seen["body"] = dict(req.header_items()), req.full_url, req.data
+        return Resp()
+
+    monkeypatch.setattr(rs.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(rs.Cluster, "_proxy_proc", type("P", (), {"poll": lambda self: None})())
+    out = rs.Cluster().post("/api/v1/namespaces/autosre/services/transaction-service:http/proxy/chaos/pool", {"active_connections": 19})
+    assert out == {"status": "pool set"} and seen["headers"]["Content-type"] == "application/json"
+    assert seen["body"] == b'{"active_connections": 19}' and seen["url"].startswith("http://127.0.0.1:8011/api/v1/")
