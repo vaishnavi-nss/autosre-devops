@@ -32,8 +32,17 @@ spec:
           env:
             - name: SERVICE_NAME
               value: database
-            - name: DB_DISK_USAGE_RATIO
-              value: "0.35"
+            # The disk metric is the real size of *.log files in LOG_DIR (an emptyDir) against this capacity, on top of a
+            # fixed baseline for the data itself. clear_logs.yml removes those files; nothing else is ever touched.
+            - name: LOG_DIR
+              value: /var/log/app
+            - name: DB_DISK_CAPACITY_MB
+              value: "40"
+            - name: DB_BASE_RATIO
+              value: "0.30"
+          volumeMounts:
+            - name: app-logs
+              mountPath: /var/log/app
           resources:
             # Deliberately low so symptoms can be triggered on demand (brief section 4).
             requests:
@@ -56,6 +65,13 @@ spec:
               port: http
             initialDelaySeconds: 3
             periodSeconds: 5
+      securityContext:
+        fsGroup: 10001
+      volumes:
+        # Bounded well above DB_DISK_CAPACITY_MB so a disk fault can never fill the node or get the pod evicted.
+        - name: app-logs
+          emptyDir:
+            sizeLimit: 100Mi
 ---
 apiVersion: v1
 kind: Service

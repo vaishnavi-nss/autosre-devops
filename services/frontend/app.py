@@ -1,4 +1,5 @@
-﻿import os
+import asyncio
+import os
 import httpx
 from fastapi import FastAPI, Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
@@ -27,6 +28,63 @@ async def poll_endpoint():
             return {"status": resp.status_code}
     except Exception:
         return {"status": 503}
+
+ENGINE_URL = os.getenv("ENGINE_URL", "http://correlation-engine.autosre.svc.cluster.local:8000")
+DISPATCHER_URL = os.getenv("DISPATCHER_URL", "http://remediation-dispatcher.autosre.svc.cluster.local:8001")
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://monitoring-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090")
+
+
+async def _json(client, url, params=None):
+    """(data, None) or (None, error). One slow or dead dependency must never break the page."""
+    try:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        return r.json(), None
+    except Exception as exc:                                    # noqa: BLE001
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+def _prom_value(data):
+    try:
+        return float(data["data"]["result"][0]["value"][1])
+    except (TypeError, KeyError, IndexError, ValueError):
+        return None
+
+
+@app.get("/api/state")
+async def state():
+    """Everything the dashboard shows beyond the probe: alerts, the engine's latest decisions, the dispatcher's executions and
+    rollouts, and the live pool and disk numbers. Each part is independent and carries its own error."""
+    prom = f"{PROMETHEUS_URL}/api/v1/query"
+    async with httpx.AsyncClient(timeout=2.5) as client:
+        (incidents, e1), (executions, e2), (rollouts, e3), (health, e4), (cool, e5), (alerts, e6), (pool, e7), (pmax, e8), (disk, e9) = \
+            await asyncio.gather(
+                _json(client, f"{ENGINE_URL}/incidents", {"limit": 10}),
+                _json(client, f"{DISPATCHER_URL}/executions", {"limit": 10}),
+                _json(client, f"{DISPATCHER_URL}/deployments"),
+                _json(client, f"{DISPATCHER_URL}/health"),
+                _json(client, f"{DISPATCHER_URL}/state"),
+                _json(client, prom, {"query": 'ALERTS{alertstate="firing",namespace="autosre"}'}),
+                _json(client, prom, {"query": 'max(db_connection_pool_active{service="transaction-service"})'}),
+                _json(client, prom, {"query": 'max(db_connection_pool_max{service="transaction-service"})'}),
+                _json(client, prom, {"query": 'max(db_disk_usage_ratio{service="database"})'}))
+    firing = []
+    try:
+        firing = [{"alertname": r["metric"].get("alertname"), "service": r["metric"].get("service"),
+                   "severity": r["metric"].get("severity")} for r in alerts["data"]["result"]]
+    except (TypeError, KeyError):
+        pass
+    return {
+        "incidents": (incidents or {}).get("incidents", []),
+        "executions": (executions or {}).get("executions", []),
+        "deployments": (rollouts or {}).get("deployments", []),
+        "dispatcher": {"health": health, "cooldowns": (cool or {}).get("cooldowns", []), "in_flight": (cool or {}).get("in_flight", [])},
+        "alerts": firing,
+        "pool": {"active": _prom_value(pool), "max": _prom_value(pmax)},
+        "disk": _prom_value(disk),
+        "errors": {k: v for k, v in {"engine": e1, "dispatcher": e2 or e3 or e4 or e5, "prometheus": e6 or e7 or e8 or e9}.items() if v},
+    }
+
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_dashboard():
@@ -308,6 +366,8 @@ async def serve_dashboard():
           text-transform: uppercase;
           letter-spacing: 0.5px;
         }
+        table.kv { margin-top: 0.25rem; }
+        table.kv td:first-child { width: 42%; color: var(--text-muted); font-weight: 600; }
         .code-snippet {
           font-family: 'JetBrains Mono', monospace;
           font-size: 0.78rem;
@@ -421,12 +481,12 @@ async def serve_dashboard():
           <div class="grid-4">
             <div class="card">
               <div class="card-title">DB Pool Saturation</div>
-              <div id="stat-pool" class="card-val">2 / 20</div>
-              <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.35rem;">Alert rule: &ge; 18 active</div>
+              <div id="stat-pool" class="card-val">--</div>
+              <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.35rem;">Alert: above 90% of the pool maximum</div>
             </div>
             <div class="card">
               <div class="card-title">Disk Storage Ratio</div>
-              <div id="stat-disk" class="card-val">30%</div>
+              <div id="stat-disk" class="card-val">--</div>
               <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.35rem;">Alert rule: &ge; 90% full</div>
             </div>
             <div class="card">
@@ -460,52 +520,63 @@ async def serve_dashboard():
               </table>
             </div>
 
-            <!-- Right: Teammates Modules Placeholders -->
+            <!-- Right: live root cause and remediation -->
             <div style="display: flex; flex-direction: column; gap: 1.25rem;">
-              
-              <!-- ML Engineer Placeholder -->
+
               <div class="card" style="border-top: 3px solid var(--gold-accent);">
                 <div class="card-header-bar">
-                  <span class="card-title">AI Root Cause Correlation Engine</span>
-                  <span class="placeholder-tag">ML Engineer</span>
+                  <span class="card-title">Latest Incident and Root Cause</span>
+                  <span id="inc-badge" class="badge ok">No incident</span>
                 </div>
-                <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.25rem;">
-                  Alertmanager webhook consumer utilizing topological depth traversal and signature weighting.
-                </p>
-                <div class="placeholder-box">
-                  <div style="font-size: 0.72rem; font-weight: 600; color: var(--navy-mid);">Contract #3 Output Payload:</div>
-                  <div class="code-snippet">
-                    {<br>
-                    &nbsp;&nbsp;"root_cause": "awaiting_telemetry",<br>
-                    &nbsp;&nbsp;"service": "none",<br>
-                    &nbsp;&nbsp;"confidence": 0.0,<br>
-                    &nbsp;&nbsp;"playbook": "standby"<br>
-                    }
-                  </div>
-                </div>
+                <table class="kv">
+                  <tr><td>Root cause</td><td id="inc-cause">-</td></tr>
+                  <tr><td>Affected service</td><td id="inc-service">-</td></tr>
+                  <tr><td>Confidence</td><td id="inc-conf">-</td></tr>
+                  <tr><td>Symptoms matched</td><td id="inc-sym">-</td></tr>
+                  <tr><td>ML second opinion</td><td id="inc-ml">-</td></tr>
+                  <tr><td>Selected playbook</td><td id="inc-play">-</td></tr>
+                  <tr><td>Dispatcher decision</td><td id="inc-disp">-</td></tr>
+                  <tr><td>Received</td><td id="inc-time">-</td></tr>
+                </table>
               </div>
 
-              <!-- Cloud Engineer Placeholder -->
               <div class="card" style="border-top: 3px solid var(--navy-mid);">
                 <div class="card-header-bar">
                   <span class="card-title">Ansible Remediation Dispatcher</span>
-                  <span class="placeholder-tag" style="background: rgba(23, 50, 82, 0.1); color: var(--navy-mid); border-color: rgba(23, 50, 82, 0.25);">Cloud Engineer</span>
+                  <span id="disp-mode" class="badge ok">dry run</span>
                 </div>
-                <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.25rem;">
-                  In-cluster RBAC runner executing remediation playbooks with lockouts.
-                </p>
-                <div class="placeholder-box">
-                  <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-size: 0.75rem; color: var(--text-secondary); font-weight: 600;">Cooldown Protection:</span>
-                    <span style="font-size: 0.75rem; font-family: 'JetBrains Mono', monospace; color: var(--status-ok); font-weight: 700;">ENGAGED (10m)</span>
-                  </div>
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem;">
-                    <span style="font-size: 0.75rem; color: var(--text-secondary); font-weight: 600;">Confidence Threshold:</span>
-                    <span style="font-size: 0.75rem; font-family: 'JetBrains Mono', monospace; color: var(--navy-mid); font-weight: 700;">&ge; 0.75</span>
-                  </div>
-                </div>
+                <table class="kv">
+                  <tr><td>Confidence threshold</td><td id="disp-thr">-</td></tr>
+                  <tr><td>ML policy</td><td id="disp-pol">-</td></tr>
+                  <tr><td>Cooldown</td><td id="disp-cool">none active</td></tr>
+                </table>
+                <table style="margin-top: 0.75rem;">
+                  <thead><tr><th>Playbook</th><th>Status</th><th>Time</th></tr></thead>
+                  <tbody id="exec-rows"><tr><td colspan="3" style="color: var(--text-muted);">no executions yet</td></tr></tbody>
+                </table>
               </div>
 
+            </div>
+          </div>
+
+          <div class="grid-2" style="margin-top: 1.75rem;">
+            <div class="card">
+              <div class="card-header-bar">
+                <span class="card-title">Active Alerts (Prometheus)</span>
+                <span id="alert-count" class="badge ok">0</span>
+              </div>
+              <div id="alert-list" style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: var(--text-secondary);">none firing</div>
+            </div>
+            <div class="card">
+              <div class="card-header-bar">
+                <span class="card-title">Rollout and Recovery</span>
+                <span id="recovery-badge" class="badge ok">No incident</span>
+              </div>
+              <table>
+                <thead><tr><th>Deployment</th><th>Ready</th><th>Updated</th><th>Rollout</th></tr></thead>
+                <tbody id="rollout-rows"><tr><td colspan="4" style="color: var(--text-muted);">waiting for the dispatcher</td></tr></tbody>
+              </table>
+              <p id="exec-steps" style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.6rem;"></p>
             </div>
           </div>
         </section>
@@ -582,6 +653,81 @@ async def serve_dashboard():
         }
 
         setInterval(pollStatus, 1500);
+
+        function esc(v) {
+          return String(v === null || v === undefined ? '-' : v).replace(/[&<>"']/g, function (c) {
+            return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+          });
+        }
+        function setText(id, v) { document.getElementById(id).textContent = (v === null || v === undefined || v === '') ? '-' : v; }
+        function badge(id, text, cls) { const e = document.getElementById(id); e.className = 'badge ' + cls; e.textContent = text; }
+
+        function renderState(st) {
+          const inc = st.incidents && st.incidents[0];
+          const escalated = !!inc && inc.action === 'escalate_to_human';
+          if (!inc) {
+            badge('inc-badge', 'No incident', 'ok');
+          } else {
+            badge('inc-badge', escalated ? 'Escalated to a human' : 'Root cause identified', escalated ? 'fail' : 'ok');
+            setText('inc-cause', inc.root_cause || '(no known cause)');
+            setText('inc-service', inc.service || (inc.alerts && inc.alerts.length ? inc.alerts.map(a => a.service).filter((v, i, a) => a.indexOf(v) === i).join(', ') : '-'));
+            setText('inc-conf', inc.confidence === null || inc.confidence === undefined ? '-' : (Math.round(inc.confidence * 100) + ' %'));
+            setText('inc-sym', inc.matched_symptoms ? inc.matched_symptoms.join(', ') : (inc.reason || '-'));
+            const so = inc.second_opinion;
+            setText('inc-ml', so ? so.verdict + (so.scorer_fault ? ' (metrics say ' + so.scorer_fault + ' on ' + so.scorer_service + ')' : '') : 'not consulted');
+            setText('inc-play', inc.playbook || '-');
+            const rm = inc.remediation;
+            setText('inc-disp', rm ? rm.status + (rm.reason ? ': ' + rm.reason : '') : (escalated ? 'not dispatched' : '-'));
+            setText('inc-time', inc.received_at);
+          }
+
+          const h = st.dispatcher && st.dispatcher.health;
+          if (h) {
+            badge('disp-mode', h.auto_remediate ? 'live execution ON' : 'dry run', h.auto_remediate ? 'fail' : 'ok');
+            setText('disp-thr', h.min_confidence);
+            setText('disp-pol', h.second_opinion_policy);
+          } else { badge('disp-mode', 'dispatcher unreachable', 'fail'); }
+          const cds = (st.dispatcher && st.dispatcher.cooldowns) || [];
+          setText('disp-cool', cds.length ? cds.map(c => c.root_cause + ' ' + c.remaining_s + 's').join(', ') : 'none active');
+
+          const rows = document.getElementById('exec-rows');
+          const ex = st.executions || [];
+          rows.innerHTML = ex.length ? ex.slice(0, 5).map(e => '<tr><td>' + esc(e.playbook) + '</td><td><strong style="color:' +
+            (e.status === 'succeeded' ? 'var(--status-ok)' : (e.status === 'running' ? 'var(--navy-mid)' : 'var(--status-err)')) + '">' +
+            esc(e.status) + '</strong></td><td>' + esc(e.duration_s !== undefined ? e.duration_s + ' s' : 'running') + '</td></tr>').join('')
+            : '<tr><td colspan="3" style="color: var(--text-muted);">no executions yet</td></tr>';
+          const last = ex[0];
+          document.getElementById('exec-steps').textContent = last ? 'Latest run: ' + last.steps.map(s => s.step).join(' > ') + (last.reason ? ' (' + last.reason + ')' : '') : '';
+
+          const al = st.alerts || [];
+          badge('alert-count', String(al.length), al.length ? 'fail' : 'ok');
+          document.getElementById('alert-list').innerHTML = al.length ? al.map(a => esc(a.alertname) + ' <span style="color:var(--text-muted)">on ' + esc(a.service) + '</span>').join('<br>') : 'none firing';
+
+          const dep = st.deployments || [];
+          document.getElementById('rollout-rows').innerHTML = dep.length ? dep.map(d => d.error ? '<tr><td>' + esc(d.name) + '</td><td colspan="3">' + esc(d.error) + '</td></tr>' :
+            '<tr><td>' + esc(d.name) + '</td><td>' + d.ready + ' / ' + d.replicas + '</td><td>' + d.updated + ' / ' + d.replicas + '</td><td>' +
+            (d.rolling_out ? '<strong style="color:var(--navy-mid)">rolling out</strong>' : 'complete') + '</td></tr>').join('')
+            : '<tr><td colspan="4" style="color: var(--text-muted);">waiting for the dispatcher</td></tr>';
+
+          let rec = ['No incident', 'ok'];
+          if (last && last.status === 'running') rec = ['Remediation running', 'fail'];
+          else if (last && last.status === 'succeeded' && !al.length) rec = ['Recovered (verified)', 'ok'];
+          else if (last && last.status === 'succeeded') rec = ['Fix verified; alerts still clearing', 'fail'];
+          else if (last && last.escalate) rec = ['Recovery NOT verified: escalated', 'fail'];
+          else if (escalated) rec = ['Escalated: human needed', 'fail'];
+          else if (al.length) rec = ['Alerts firing', 'fail'];
+          badge('recovery-badge', rec[0], rec[1]);
+
+          if (st.pool && st.pool.active !== null && st.pool.max !== null) setText('stat-pool', Math.round(st.pool.active) + ' / ' + Math.round(st.pool.max));
+          if (st.disk !== null && st.disk !== undefined) setText('stat-disk', Math.round(st.disk * 100) + '%');
+        }
+
+        async function pollState() {
+          try { renderState(await (await fetch('/api/state')).json()); } catch (e) { /* the probe table already shows connectivity */ }
+        }
+        setInterval(pollState, 3000);
+        pollState();
+
       </script>
     </body>
     </html>

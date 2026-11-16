@@ -361,3 +361,14 @@ def _accept(payload):
     disp._inflight.add((record["root_cause"], record["target_service"]))
     disp.in_progress.inc()
     return record
+
+
+def test_the_deployments_view_reports_rollout_progress(isolated):
+    isolated.state.update(generation=3, observed=3, replicas=3, updated=2, ready=1, available=1)
+    body = client.get("/deployments").json()
+    tx = next(d for d in body["deployments"] if d["name"] == "transaction-service")
+    assert body["namespace"] == "autosre" and tx["rolling_out"] is True and tx["ready"] == 1 and tx["replicas"] == 3
+    isolated.state.update(updated=3, ready=3, available=3)
+    assert next(d for d in client.get("/deployments").json()["deployments"] if d["name"] == "database")["rolling_out"] is False
+    isolated.unreadable = True
+    assert "error" in client.get("/deployments").json()["deployments"][0]

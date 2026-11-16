@@ -31,6 +31,7 @@ import httpx
 import json
 import logging
 import os
+from collections import deque
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Response
@@ -227,6 +228,40 @@ async def _dispatch_remediation(result: dict, opinion: dict | None = None) -> di
         return {"status": "unavailable", "reason": str(exc)}
 
 
+RECENT_INCIDENTS: deque = deque(maxlen=50)      # newest last; read by the front end through GET /incidents
+
+
+def _remember(firing: list, response: dict) -> None:
+    """Keep what the engine decided about the latest incidents, for the dashboard. Nothing here influences a decision."""
+    so = response.get("second_opinion") or {}
+    rem = response.get("remediation") or {}
+    RECENT_INCIDENTS.append({
+        "received_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "status": response.get("status"),
+        "action": response.get("action"),
+        "root_cause": response.get("root_cause") or response.get("rule_root_cause"),
+        "service": response.get("service"),
+        "confidence": response.get("confidence") if response.get("confidence") is not None else response.get("rule_confidence"),
+        "playbook": response.get("playbook"),
+        "matched_symptoms": response.get("matched_symptoms"),
+        "missing_symptoms": response.get("missing_symptoms"),
+        "explanation": response.get("explanation"),
+        "reason": response.get("reason"),
+        "alerts": [{"alertname": a.get("labels", {}).get("alertname"), "service": a.get("labels", {}).get("service")}
+                   for a in firing],
+        "second_opinion": {k: so.get(k) for k in ("verdict", "reason", "scorer_service", "scorer_fault", "confidence")} if so else None,
+        "remediation": {k: rem.get(k) for k in ("status", "reason", "playbook", "target_service", "execution_id",
+                                                 "cooldown_remaining_s", "second_opinion")} if rem else None,
+    })
+
+
+@app.get("/incidents")
+async def incidents(limit: int = 20):
+    """The most recent incident decisions, newest first (what the dashboard shows)."""
+    items = list(RECENT_INCIDENTS)[-max(1, min(limit, 50)):]
+    return {"incidents": list(reversed(items))}
+
+
 def _capture(payload: dict, response: dict) -> dict:
     """Append the incident and what the engine decided to CAPTURE_PATH, if capture is on.
 
@@ -236,7 +271,10 @@ def _capture(payload: dict, response: dict) -> dict:
     sends a "resolved" notification, which is the end of an incident rather than
     an incident, and recording it would score as a missed detection.
     """
-    if not CAPTURE_PATH or not firing_only(payload.get("alerts", [])):
+    firing = firing_only(payload.get("alerts", []))
+    if firing:
+        _remember(firing, response)
+    if not CAPTURE_PATH or not firing:
         return response
     record = {
         "label": _capture_label,

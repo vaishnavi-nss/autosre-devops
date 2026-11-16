@@ -446,6 +446,25 @@ def execution(execution_id: str):
     return record
 
 
+WATCHED = ("frontend", "api-gateway", "transaction-service", "database")
+
+
+@app.get("/deployments")
+def deployments():
+    """Read-only rollout view of the application's deployments, for the dashboard (replicas, rollout in progress, ready)."""
+    ns = settings()["namespace"]
+    out = []
+    for name in WATCHED:
+        try:
+            d = cluster.deployment(name, ns)
+            settled = d["observed"] >= d["generation"] and d["updated"] == d["replicas"] and d["ready"] == d["replicas"] \
+                and d["available"] == d["replicas"]
+            out.append({"name": name, **d, "rolling_out": not settled})
+        except Exception as exc:                                # noqa: BLE001
+            out.append({"name": name, "error": str(exc)})
+    return {"namespace": ns, "deployments": out}
+
+
 @app.get("/state")
 def state():
     now = time.monotonic()
