@@ -24,6 +24,7 @@ import os
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from collections import OrderedDict
@@ -97,31 +98,41 @@ def _now() -> str:
 
 
 # ------------------------------------------------------------------------------------------------ cluster access
+SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
+
+
 class Cluster:
-    """Everything the verification needs from Kubernetes and the services. Replaced by a fake in tests."""
+    """Everything the verification needs from Kubernetes and the services. Replaced by a fake in tests.
 
-    def __init__(self):
-        self._apps = None
+    The API calls are plain REST with the pod's service-account token. The `kubernetes` Python client (36.0.0 on the real cluster)
+    sent every request as system:anonymous while a raw call with the same token returned 200, so verification must not depend on it."""
 
-    def _client(self):
-        if self._apps is None:
-            from kubernetes import client, config            # imported late: not needed to decide or to test
-            try:
-                config.load_incluster_config()
-            except Exception:                                  # noqa: BLE001 - outside a cluster (a developer's laptop)
-                config.load_kube_config()
-            self._apps = client.AppsV1Api()
-        return self._apps
+    def _api(self, method: str, path: str, body: dict | None = None, content_type: str = "application/json") -> dict:
+        import ssl
+        host = os.environ.get("KUBERNETES_SERVICE_HOST")
+        if not host:
+            raise RuntimeError("not running inside a cluster (KUBERNETES_SERVICE_HOST is not set)")
+        token = (SA_DIR / "token").read_text().strip()               # re-read each time: the token is rotated
+        ctx = ssl.create_default_context(cafile=str(SA_DIR / "ca.crt"))
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(f"https://{host}:{os.environ.get('KUBERNETES_SERVICE_PORT', '443')}{path}", data=data, method=method,
+                                     headers={"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": content_type})
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"{method} {path} -> HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:200]}") from exc
 
     def deployment(self, name: str, namespace: str) -> dict:
-        d = self._client().read_namespaced_deployment(name, namespace)
-        s = d.status
-        return {"generation": d.metadata.generation or 0, "observed": s.observed_generation or 0,
-                "replicas": d.spec.replicas or 0, "updated": s.updated_replicas or 0,
-                "ready": s.ready_replicas or 0, "available": s.available_replicas or 0}
+        d = self._api("GET", f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}")
+        s = d.get("status", {})
+        return {"generation": d["metadata"].get("generation", 0), "observed": s.get("observedGeneration", 0),
+                "replicas": d["spec"].get("replicas", 0), "updated": s.get("updatedReplicas", 0),
+                "ready": s.get("readyReplicas", 0), "available": s.get("availableReplicas", 0)}
 
     def scale(self, name: str, namespace: str, replicas: int) -> None:
-        self._client().patch_namespaced_deployment_scale(name, namespace, {"spec": {"replicas": replicas}})
+        self._api("PATCH", f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}/scale", {"spec": {"replicas": replicas}},
+                  "application/merge-patch+json")
 
     def get(self, url: str, timeout: float = 4.0) -> tuple[int, str]:
         try:

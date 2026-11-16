@@ -380,3 +380,60 @@ def test_the_non_root_user_can_write_ansibles_temp_directory():
     line = next(l for l in docker.splitlines() if l.startswith("RUN useradd"))
     assert "/tmp/.ansible" in line and "chown -R appuser" in line
     assert docker.index("RUN useradd") > docker.index("ansible-galaxy collection install") and docker.index("USER appuser") > docker.index("RUN useradd")
+
+
+# ------------------------------------------------------------------------------------------------ real cluster access (REST)
+def test_the_real_cluster_class_calls_the_api_server_with_the_service_account_token(monkeypatch, tmp_path):
+    """Found on the real cluster: the kubernetes client 36.0.0 sent requests as system:anonymous; a raw call with the token worked."""
+    (tmp_path / "token").write_text("sa-token\n")
+    (tmp_path / "ca.crt").write_text("")
+    monkeypatch.setattr(disp, "SA_DIR", tmp_path)
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT", "443")
+    import ssl
+    monkeypatch.setattr(ssl, "create_default_context", lambda cafile=None: object())
+    seen = []
+
+    class Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            import json
+            return json.dumps(self.body).encode()
+
+    def fake_urlopen(req, context=None, timeout=0):
+        seen.append((req.get_method(), req.full_url, dict(req.header_items()), req.data))
+        if req.get_method() == "GET":
+            return Resp({"metadata": {"generation": 4}, "spec": {"replicas": 3},
+                         "status": {"observedGeneration": 4, "updatedReplicas": 3, "readyReplicas": 2, "availableReplicas": 2}})
+        return Resp({})
+
+    monkeypatch.setattr(disp.urllib.request, "urlopen", fake_urlopen)
+    real = disp.Cluster()
+    assert real.deployment("transaction-service", "autosre") == {"generation": 4, "observed": 4, "replicas": 3, "updated": 3, "ready": 2, "available": 2}
+    real.scale("transaction-service", "autosre", 1)
+    method, url, headers, data = seen[0]
+    assert (method, url) == ("GET", "https://10.96.0.1:443/apis/apps/v1/namespaces/autosre/deployments/transaction-service")
+    assert headers["Authorization"] == "Bearer sa-token"
+    method, url, headers, data = seen[1]
+    assert method == "PATCH" and url.endswith("/deployments/transaction-service/scale") and headers["Content-type"] == "application/merge-patch+json"
+    assert data == b'{"spec": {"replicas": 1}}'
+
+
+def test_a_missing_cluster_or_an_api_error_is_a_clear_failure_not_a_crash(monkeypatch):
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="not running inside a cluster"):
+        disp.Cluster().deployment("x", "autosre")
+
+
+def test_the_kubernetes_client_ansible_uses_is_pinned():
+    reqs = (ROOT / "remediation-dispatcher" / "requirements.txt").read_text()
+    assert "kubernetes==31.0.0" in reqs and "kubernetes>=" not in reqs

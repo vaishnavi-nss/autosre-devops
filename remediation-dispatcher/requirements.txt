@@ -2,4 +2,5 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 prometheus-client==0.21.1
 PyYAML==6.0.2
-kubernetes>=31.0.0
+# Used by ansible's kubernetes.core modules. Pinned: 36.0.0 sent requests as system:anonymous on the real cluster.
+kubernetes==31.0.0
