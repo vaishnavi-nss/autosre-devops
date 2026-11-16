@@ -1,0 +1,5 @@
+---
+# Only what the three approved playbooks need (k8s, k8s_scale, k8s_info, k8s_exec).
+collections:
+  - name: kubernetes.core
+    version: ">=3.0.0"

@@ -1,55 +1,91 @@
 ---
 # Remediation for: db_disk_full
 #
-# TODO (build step 5): the mock database does not write log files yet, so there
-# is nothing to clear. Decide first where its data and logs live - most likely
-# an emptyDir volume mounted at /var/log/app - then uncomment the k8s_exec task
-# below and delete the placeholder.
-#
-# Note the brief says "clear old log files on the affected node". On minikube
-# the node is a single VM shared by everything, so operating on the pod is both
-# safer and closer to what a real cluster would do.
+# Deletes log files (*.log) directly inside ONE approved directory of the database pod: /var/log/app, which is an emptyDir
+# volume mounted for exactly this purpose. It never touches the database's data, never recurses into subdirectories, never
+# follows a path from outside and never uses a shell, so a wildcard or a variable cannot widen what is deleted.
 #
 #   ansible-playbook -i ../inventory/localhost.yml clear_logs.yml \
 #     -e target_service=database
-- name: Reclaim disk space on a service
+- name: Reclaim disk space by clearing approved log files
   hosts: localhost
   gather_facts: false
 
   vars:
-    namespace: autosre
+    k8s_namespace: autosre
     target_service: database
+    container: database
     log_dir: /var/log/app
-    older_than_days: 1
+    older_than_minutes: 0
+    allowed_services: [database]
+    allowed_namespaces: [autosre]
+    approved_log_dir: /var/log/app
 
   tasks:
-    - name: Find the pods backing {{ target_service }}
+    - name: Refuse anything outside the approved target and directory
+      ansible.builtin.assert:
+        that:
+          - target_service in allowed_services
+          - k8s_namespace in allowed_namespaces
+          - log_dir == approved_log_dir
+          - older_than_minutes | int >= 0
+        fail_msg: "{{ k8s_namespace }}/{{ target_service }}:{{ log_dir }} is not an approved log-cleanup target."
+
+    - name: Find the running pods backing {{ target_service }}
       kubernetes.core.k8s_info:
         kind: Pod
-        namespace: "{{ namespace }}"
+        namespace: "{{ k8s_namespace }}"
         label_selectors:
           - "app={{ target_service }}"
+        field_selectors:
+          - status.phase=Running
       register: target_pods
 
     - name: Fail early if nothing is running
       ansible.builtin.assert:
         that: target_pods.resources | length > 0
-        fail_msg: "No pods found for {{ target_service }} in {{ namespace }}."
+        fail_msg: "No running pods found for {{ target_service }} in {{ k8s_namespace }}."
 
-    # - name: Delete log files older than {{ older_than_days }} day(s)
-    #   kubernetes.core.k8s_exec:
-    #     namespace: "{{ namespace }}"
-    #     pod: "{{ item.metadata.name }}"
-    #     command: >-
-    #       find {{ log_dir }} -type f -name '*.log'
-    #       -mtime +{{ older_than_days }} -delete
-    #   loop: "{{ target_pods.resources }}"
-    #   loop_control:
-    #     label: "{{ item.metadata.name }}"
+    - name: Measure the log directory before cleanup (KiB)
+      kubernetes.core.k8s_exec:
+        namespace: "{{ k8s_namespace }}"
+        pod: "{{ item.metadata.name }}"
+        container: "{{ container }}"
+        command: du -sk {{ log_dir }}
+      loop: "{{ target_pods.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      register: before_size
+      changed_when: false
 
-    - name: Placeholder until the log volume exists
+    - name: Delete *.log files older than {{ older_than_minutes }} minute(s) directly inside {{ log_dir }}
+      kubernetes.core.k8s_exec:
+        namespace: "{{ k8s_namespace }}"
+        pod: "{{ item.metadata.name }}"
+        container: "{{ container }}"
+        command: find {{ log_dir }} -maxdepth 1 -type f -name *.log -mmin +{{ older_than_minutes | int }} -print -delete
+      loop: "{{ target_pods.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      register: deleted
+
+    - name: Measure the log directory after cleanup (KiB)
+      kubernetes.core.k8s_exec:
+        namespace: "{{ k8s_namespace }}"
+        pod: "{{ item.metadata.name }}"
+        container: "{{ container }}"
+        command: du -sk {{ log_dir }}
+      loop: "{{ target_pods.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      register: after_size
+      changed_when: false
+
+    - name: Report the outcome
       ansible.builtin.debug:
         msg: >-
-          NOT IMPLEMENTED - would clear files older than {{ older_than_days }}
-          day(s) from {{ log_dir }} in
-          {{ target_pods.resources | map(attribute='metadata.name') | join(', ') }}.
+          {{ item.0.item.metadata.name }}: {{ item.0.stdout.split()[0] }} KiB -> {{ item.1.stdout.split()[0] }} KiB;
+          deleted {{ item.2.stdout_lines | length }} file(s).
+      loop: "{{ before_size.results | zip(after_size.results, deleted.results) | list }}"
+      loop_control:
+        label: "{{ item.0.item.metadata.name }}"

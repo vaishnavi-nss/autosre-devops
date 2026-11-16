@@ -1,8 +1,11 @@
 ---
 # Remediation for: high_memory_usage
 #
-# Spreads load across more replicas so no single pod is OOM-killed. The brief
-# calls this "increase replica count via kubectl scale" (section 6).
+# Spreads load across more replicas so no single pod is OOM-killed. The brief calls this "increase replica count via
+# kubectl scale" (section 6).
+#
+# Safe by construction: only approved services and namespaces, and only 1 to max_replicas replicas. It records the previous
+# replica count so the dispatcher can roll the change back if recovery is not verified.
 #
 #   ansible-playbook -i ../inventory/localhost.yml scale_replicas.yml \
 #     -e target_service=transaction-service -e replicas=3
@@ -14,8 +17,33 @@
     k8s_namespace: autosre
     target_service: transaction-service
     replicas: 3
+    max_replicas: 5
+    allowed_services: [transaction-service]
+    allowed_namespaces: [autosre]
 
   tasks:
+    - name: Refuse anything outside the approved target and range
+      ansible.builtin.assert:
+        that:
+          - target_service in allowed_services
+          - k8s_namespace in allowed_namespaces
+          - replicas | int >= 1
+          - replicas | int <= max_replicas | int
+        fail_msg: "{{ k8s_namespace }}/{{ target_service }} x{{ replicas }} is not an approved scale operation."
+
+    - name: Read the deployment before scaling
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+      register: before
+
+    - name: Fail early if the deployment does not exist
+      ansible.builtin.assert:
+        that: before.resources | length == 1
+        fail_msg: "{{ target_service }} not found in {{ k8s_namespace }}."
+
     - name: Scale {{ target_service }} to {{ replicas }} replica(s)
       kubernetes.core.k8s_scale:
         api_version: apps/v1
@@ -28,4 +56,6 @@
 
     - name: Report the outcome
       ansible.builtin.debug:
-        msg: "Scaled {{ target_service }} in {{ k8s_namespace }} to {{ replicas }} replica(s)."
+        msg: >-
+          Scaled {{ target_service }} in {{ k8s_namespace }} from {{ before.resources[0].spec.replicas }}
+          to {{ replicas }} replica(s).

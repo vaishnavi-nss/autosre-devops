@@ -1,25 +1,385 @@
+"""AutoSRE remediation dispatcher.
+
+Receives the correlation engine's diagnosis and decides whether an approved Ansible playbook may run. Nothing here guesses:
+every doubt (low confidence, unknown cause, unapproved playbook, wrong target, disagreeing second opinion, cooldown, a run already
+in progress, a failed preflight) ends in `escalated` or a skip, never in an action.
+
+Flow of one request (`POST /dispatch`):
+
+    validate -> confidence >= MIN_CONFIDENCE -> mapped + approved playbook -> target and variables inside the allow-list
+             -> second-opinion policy -> AUTO_REMEDIATE? (no: `dry_run`, nothing runs)
+             -> duplicate / cooldown guard -> accepted (202) -> background run:
+                preflight -> ansible-playbook -> independent verification -> rollback (scale only) -> recorded result
+
+The engine's call has a 5 s timeout, so execution is asynchronous: `/dispatch` returns at once and the run is followed through
+`GET /executions` and `GET /executions/{id}`. A run counts as `succeeded` only when Kubernetes and the service's own health check
+confirm recovery, not because ansible exited 0.
+"""
+from __future__ import annotations
+
 import json
 import logging
+import math
 import os
 import subprocess
+import threading
+import time
+import urllib.request
+import uuid
+from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 from fastapi import FastAPI, HTTPException, Response
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 app = FastAPI(title="AutoSRE Remediation Dispatcher")
 log = logging.getLogger("remediation-dispatcher")
 
-ANSIBLE_DIR = Path("/app/ansible")
+ANSIBLE_DIR = Path(os.getenv("ANSIBLE_DIR", "/app/ansible"))
 MAP_FILE = ANSIBLE_DIR / "remediation_map.yml"
-MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.75"))
-AUTO_REMEDIATE = os.getenv("AUTO_REMEDIATE", "false").lower() == "true"
 
-# Only playbooks that have been implemented and reviewed.
-ALLOWED_PLAYBOOKS = {"restart_service.yml", "scale_replicas.yml"}
+# What each approved playbook may touch. A map entry outside this table is refused even if the file says otherwise.
+POLICY = {
+    "restart_service.yml": {"targets": {"transaction-service"}, "vars": {"target_service"}},
+    "scale_replicas.yml": {"targets": {"transaction-service"}, "vars": {"target_service", "replicas"}},
+    "clear_logs.yml": {"targets": {"database"}, "vars": {"target_service"}},
+}
+ALLOWED_PLAYBOOKS = set(POLICY)               # kept for callers that import it
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except ValueError:
+        return float(default)
+
+
+def settings() -> dict:
+    """Read at call time so a changed environment (and the tests) take effect without a restart."""
+    return {
+        "auto_remediate": os.getenv("AUTO_REMEDIATE", "false").lower() == "true",
+        "min_confidence": _env_float("MIN_CONFIDENCE", 0.75),
+        "namespace": os.getenv("TARGET_NAMESPACE", "autosre"),
+        "cooldown_s": _env_float("COOLDOWN_SECONDS", 600),
+        "second_opinion_policy": os.getenv("SECOND_OPINION_POLICY", "agree"),   # agree | not_disagree | ignore
+        "max_replicas": int(_env_float("MAX_REPLICAS", 5)),
+        "verify_timeout_s": _env_float("VERIFY_TIMEOUT_SECONDS", 150),
+        "ansible_timeout_s": _env_float("ANSIBLE_TIMEOUT_SECONDS", 240),
+        "rollback_on_failure": os.getenv("ROLLBACK_ON_FAILURE", "true").lower() == "true",
+        "disk_recovered_below": _env_float("DISK_RECOVERED_BELOW", 0.9),
+        "service_url_template": os.getenv("SERVICE_URL_TEMPLATE", "http://{service}.{namespace}.svc.cluster.local:8000"),
+        "exec_log": os.getenv("EXEC_LOG", ""),
+    }
+
+
+# ------------------------------------------------------------------------------------------------ metrics
+decisions_total = Counter("remediation_decisions_total", "Dispatch decisions.", ["status", "root_cause"])
+skipped_total = Counter("remediation_skipped_total", "Remediations not run, by reason.", ["reason"])
+executions_total = Counter("remediation_executions_total", "Finished executions.", ["playbook", "result"])
+in_progress = Gauge("remediation_in_progress", "Executions currently running.")
+duration_seconds = Histogram("remediation_duration_seconds", "Execution duration.", ["playbook"],
+                             buckets=(5, 15, 30, 60, 120, 240, 600))
+last_success = Gauge("remediation_last_success_timestamp", "Unix time of the last verified recovery.", ["playbook"])
+
+# ------------------------------------------------------------------------------------------------ state
+_lock = threading.Lock()
+_executions: "OrderedDict[str, dict]" = OrderedDict()      # newest last
+_cooldowns: dict = {}                                        # (cause, target) -> monotonic time the cooldown ends
+_inflight: set = set()
+MAX_KEPT = 100
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# ------------------------------------------------------------------------------------------------ cluster access
+class Cluster:
+    """Everything the verification needs from Kubernetes and the services. Replaced by a fake in tests."""
+
+    def __init__(self):
+        self._apps = None
+
+    def _client(self):
+        if self._apps is None:
+            from kubernetes import client, config            # imported late: not needed to decide or to test
+            try:
+                config.load_incluster_config()
+            except Exception:                                  # noqa: BLE001 - outside a cluster (a developer's laptop)
+                config.load_kube_config()
+            self._apps = client.AppsV1Api()
+        return self._apps
+
+    def deployment(self, name: str, namespace: str) -> dict:
+        d = self._client().read_namespaced_deployment(name, namespace)
+        s = d.status
+        return {"generation": d.metadata.generation or 0, "observed": s.observed_generation or 0,
+                "replicas": d.spec.replicas or 0, "updated": s.updated_replicas or 0,
+                "ready": s.ready_replicas or 0, "available": s.available_replicas or 0}
+
+    def scale(self, name: str, namespace: str, replicas: int) -> None:
+        self._client().patch_namespaced_deployment_scale(name, namespace, {"spec": {"replicas": replicas}})
+
+    def get(self, url: str, timeout: float = 4.0) -> tuple[int, str]:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                return r.status, r.read(200_000).decode("utf-8", "replace")
+        except Exception as exc:                               # noqa: BLE001
+            return 0, str(exc)
+
+
+cluster = Cluster()
+
+
+def _ansible_available() -> bool:
+    from shutil import which
+    return which("ansible-playbook") is not None
+
+
+# ------------------------------------------------------------------------------------------------ decision
+def _verdict_of(payload: dict) -> str | None:
+    so = payload.get("second_opinion")
+    if isinstance(so, dict):
+        return so.get("verdict")
+    return so if isinstance(so, str) else None
+
+
+def decide(payload: dict, cfg: dict | None = None) -> dict:
+    """Pure policy check. Returns a decision with `status` in escalated | dry_run | ready (ready = may execute)."""
+    cfg = cfg or settings()
+    root_cause = payload.get("root_cause")
+    if not root_cause or not isinstance(root_cause, str):
+        return {"status": "escalated", "reason": "Missing root cause"}
+    try:
+        confidence = float(payload.get("confidence"))
+    except (TypeError, ValueError):
+        return {"status": "escalated", "reason": "Missing or invalid confidence", "root_cause": root_cause}
+    if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+        return {"status": "escalated", "reason": "Confidence is not a number between 0 and 1", "root_cause": root_cause}
+    base = {"root_cause": root_cause, "confidence": confidence}
+
+    if confidence < cfg["min_confidence"]:
+        return {**base, "status": "escalated", "reason": "Confidence below threshold", "threshold": cfg["min_confidence"]}
+
+    try:
+        with MAP_FILE.open() as fh:
+            mapping = (yaml.safe_load(fh) or {}).get("remediations", {})
+    except OSError as exc:
+        return {**base, "status": "escalated", "reason": f"Remediation map unreadable: {exc}"}
+    entry = mapping.get(root_cause)
+    if not entry:
+        return {**base, "status": "escalated", "reason": "No remediation mapping for root cause"}
+
+    playbook = entry.get("playbook")
+    if playbook not in POLICY:
+        return {**base, "status": "escalated", "reason": "Playbook is not approved for execution", "playbook": playbook}
+    if not (ANSIBLE_DIR / "playbooks" / playbook).is_file():
+        return {**base, "status": "escalated", "reason": "Approved playbook file is missing", "playbook": playbook}
+
+    extra = dict(entry.get("extra_vars") or {})
+    unknown = set(extra) - POLICY[playbook]["vars"]
+    if unknown:
+        return {**base, "status": "escalated", "reason": f"Variables not allowed for {playbook}: {sorted(unknown)}", "playbook": playbook}
+    target = extra.get("target_service")
+    if target not in POLICY[playbook]["targets"]:
+        return {**base, "status": "escalated", "reason": f"{target!r} is not an approved target for {playbook}", "playbook": playbook}
+    if "replicas" in extra:
+        try:
+            replicas = int(extra["replicas"])
+        except (TypeError, ValueError):
+            return {**base, "status": "escalated", "reason": "replicas is not an integer", "playbook": playbook}
+        if not 1 <= replicas <= cfg["max_replicas"]:
+            return {**base, "status": "escalated", "reason": f"replicas must be 1 to {cfg['max_replicas']}", "playbook": playbook}
+        extra["replicas"] = replicas
+
+    service = payload.get("service")
+    if service and service != target:
+        return {**base, "status": "escalated", "reason": f"Diagnosed service {service!r} differs from the playbook target {target!r}",
+                "playbook": playbook}
+
+    verdict, policy = _verdict_of(payload), cfg["second_opinion_policy"]
+    if policy == "agree" and verdict != "agree":
+        return {**base, "status": "escalated", "reason": f"Second opinion is {verdict or 'missing'}, policy requires agree",
+                "playbook": playbook, "second_opinion": verdict}
+    if policy == "not_disagree" and verdict == "disagree":
+        return {**base, "status": "escalated", "reason": "Second opinion disagrees", "playbook": playbook, "second_opinion": verdict}
+
+    plan = {"root_cause": root_cause, "confidence": confidence, "playbook": playbook, "target_service": target,
+            "namespace": cfg["namespace"], "extra_vars": extra, "second_opinion": verdict}
+    if not cfg["auto_remediate"]:
+        return {**plan, "status": "dry_run", "message": "All checks passed; execution is disabled (AUTO_REMEDIATE=false)"}
+    return {**plan, "status": "ready"}
+
+
+# ------------------------------------------------------------------------------------------------ execution
+def _step(record: dict, step: str, detail: str = "") -> None:
+    record["steps"].append({"t": _now(), "step": step, "detail": detail})
+    log.info("[%s] %s %s", record["id"], step, detail)
+
+
+def _persist(record: dict, cfg: dict) -> None:
+    if cfg["exec_log"]:
+        try:
+            with open(cfg["exec_log"], "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
+        except OSError as exc:
+            log.warning("could not write execution log: %s", exc)
+
+
+def _service_url(cfg: dict, service: str) -> str:
+    return cfg["service_url_template"].format(service=service, namespace=cfg["namespace"]).rstrip("/")
+
+
+def _disk_ratio(cfg: dict, service: str) -> float | None:
+    status, body = cluster.get(_service_url(cfg, service) + "/metrics")
+    if status != 200:
+        return None
+    for line in body.splitlines():
+        if line.startswith("db_disk_usage_ratio"):
+            try:
+                return float(line.rsplit(" ", 1)[1])
+            except (ValueError, IndexError):
+                return None
+    return None
+
+
+def verify(record: dict, before: dict, cfg: dict, sleep=time.sleep) -> tuple[bool, str]:
+    """Independent check that the fix worked. Polls until it holds or the timeout passes."""
+    target, ns, playbook = record["target_service"], record["namespace"], record["playbook"]
+    deadline = time.monotonic() + cfg["verify_timeout_s"]
+    why = "not checked"
+    while True:
+        try:
+            now = cluster.deployment(target, ns)
+        except Exception as exc:                                # noqa: BLE001
+            now, why = None, f"deployment unreadable: {exc}"
+        if now is not None:
+            settled = now["observed"] >= now["generation"] and now["updated"] == now["replicas"] and \
+                now["ready"] == now["replicas"] and now["available"] == now["replicas"]
+            if playbook == "restart_service.yml":
+                ok = settled and now["generation"] > before["generation"] and now["replicas"] >= 1
+                why = "rollout complete" if ok else f"rollout not complete: {now} (generation before {before['generation']})"
+            elif playbook == "scale_replicas.yml":
+                want = record["extra_vars"]["replicas"]
+                ok = settled and now["replicas"] == want
+                why = f"{now['ready']}/{want} replicas ready" if not ok else f"{want} replicas ready"
+            else:                                               # clear_logs.yml: the deployment must be untouched and healthy
+                ok = settled and now["generation"] == before["generation"]
+                why = "deployment healthy" if ok else f"deployment not settled: {now}"
+            if ok:
+                status, _ = cluster.get(_service_url(cfg, target) + "/health")
+                if status != 200:
+                    ok, why = False, f"/health answered {status}"
+            if ok and playbook == "clear_logs.yml":
+                ratio = _disk_ratio(cfg, target)
+                if ratio is None:
+                    ok, why = False, "disk metric unreadable"
+                elif ratio >= cfg["disk_recovered_below"]:
+                    ok, why = False, f"disk ratio still {ratio:.2f}"
+                else:
+                    why = f"disk ratio {ratio:.2f}"
+            if ok:
+                return True, why
+        if time.monotonic() >= deadline:
+            return False, why
+        sleep(2)
+
+
+def run_execution(record: dict, sleep=time.sleep) -> dict:
+    """Run one approved playbook and verify it. Never raises: every failure is recorded and escalated."""
+    cfg = settings()
+    key = (record["root_cause"], record["target_service"])
+    target, ns, playbook = record["target_service"], record["namespace"], record["playbook"]
+    started = time.monotonic()
+    ran = False
+    try:
+        _step(record, "preflight")
+        if not _ansible_available():
+            raise RuntimeError("ansible-playbook is not installed")
+        try:
+            before = cluster.deployment(target, ns)
+        except Exception as exc:                                # noqa: BLE001
+            raise RuntimeError(f"cannot read deployment {ns}/{target}: {exc}") from exc
+        if before["replicas"] < 1 and playbook != "scale_replicas.yml":
+            raise RuntimeError(f"{target} has no replicas to remediate")
+        record["before"] = before
+
+        _step(record, "ansible", playbook)
+        env_vars = {**record["extra_vars"], "k8s_namespace": ns}
+        command = ["ansible-playbook", "-i", "inventory/localhost.yml", f"playbooks/{playbook}", "--extra-vars", json.dumps(env_vars)]
+        ran = True
+        try:
+            result = subprocess.run(command, cwd=ANSIBLE_DIR, capture_output=True, text=True, timeout=cfg["ansible_timeout_s"], check=False)
+        except subprocess.TimeoutExpired:
+            record.update(status="failed", reason="Playbook execution timed out")
+            _step(record, "ansible_timeout")
+            return _finish(record, key, started, "failed", cfg)
+        record["return_code"], record["stdout_tail"], record["stderr_tail"] = result.returncode, result.stdout[-1500:], result.stderr[-1500:]
+        if result.returncode != 0:
+            record.update(status="failed", reason=f"ansible exited {result.returncode}")
+            _step(record, "ansible_failed", result.stderr[-300:])
+            _maybe_rollback(record, before, cfg)
+            return _finish(record, key, started, "failed", cfg)
+
+        _step(record, "verify")
+        ok, why = verify(record, before, cfg, sleep)
+        try:
+            record["after"] = cluster.deployment(target, ns)
+        except Exception:                                       # noqa: BLE001
+            record["after"] = None
+        if ok:
+            record.update(status="succeeded", reason=why, recovered=True)
+            _step(record, "recovered", why)
+            last_success.labels(playbook).set(time.time())
+            return _finish(record, key, started, "succeeded", cfg)
+        record.update(status="verification_failed", reason=why, recovered=False, escalate=True)
+        _step(record, "verification_failed", why)
+        _maybe_rollback(record, before, cfg)
+        return _finish(record, key, started, "verification_failed", cfg)
+    except Exception as exc:                                    # noqa: BLE001 - preflight and anything unexpected
+        record.update(status="preflight_failed" if not ran else "failed", reason=str(exc), recovered=False, escalate=True)
+        _step(record, record["status"], str(exc))
+        return _finish(record, key, started, record["status"], cfg, started_cooldown=ran)
+
+
+def _maybe_rollback(record: dict, before: dict, cfg: dict) -> None:
+    """Only a scale-out is rolled back (to the previous replica count). A restart has nothing to undo."""
+    if record["playbook"] != "scale_replicas.yml" or not cfg["rollback_on_failure"]:
+        return
+    try:
+        cluster.scale(record["target_service"], record["namespace"], before["replicas"])
+        record["rolled_back_to"] = before["replicas"]
+        _step(record, "rollback", f"scaled back to {before['replicas']}")
+    except Exception as exc:                                    # noqa: BLE001
+        record["rollback_error"] = str(exc)
+        _step(record, "rollback_failed", str(exc))
+
+
+def _finish(record: dict, key: tuple, started: float, result: str, cfg: dict, started_cooldown: bool = True) -> dict:
+    record["finished_at"] = _now()
+    record["duration_s"] = round(time.monotonic() - started, 1)
+    with _lock:
+        _inflight.discard(key)
+        if started_cooldown and result != "preflight_failed":
+            _cooldowns[key] = time.monotonic() + cfg["cooldown_s"]
+    in_progress.dec()
+    executions_total.labels(record["playbook"], result).inc()
+    duration_seconds.labels(record["playbook"]).observe(record["duration_s"])
+    _persist(record, cfg)
+    return record
+
+
+def _spawn(record: dict) -> None:
+    threading.Thread(target=run_execution, args=(record,), daemon=True, name=f"exec-{record['id']}").start()
+
+
+launcher = _spawn            # tests replace this with an inline runner
+
+
+# ------------------------------------------------------------------------------------------------ HTTP
 @app.get("/metrics")
 def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
@@ -27,95 +387,69 @@ def metrics():
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "auto_remediate": AUTO_REMEDIATE}
+    cfg = settings()
+    return {"status": "healthy", "auto_remediate": cfg["auto_remediate"], "min_confidence": cfg["min_confidence"],
+            "second_opinion_policy": cfg["second_opinion_policy"], "cooldown_seconds": cfg["cooldown_s"],
+            "approved_playbooks": sorted(POLICY)}
+
+
+@app.get("/ready")
+def ready():
+    return {"status": "ready"}
 
 
 @app.post("/dispatch")
 def dispatch(payload: dict):
-    root_cause = payload.get("root_cause")
-    confidence = payload.get("confidence")
+    cfg = settings()
+    decision = decide(payload, cfg)
+    label = str(decision.get("root_cause") or payload.get("root_cause") or "none")
+    if decision["status"] != "ready":
+        decisions_total.labels(decision["status"], label).inc()
+        if decision["status"] == "escalated":
+            skipped_total.labels("escalated").inc()
+        return decision
 
-    if not root_cause:
-        return {"status": "escalated", "reason": "Missing root cause"}
+    key = (decision["root_cause"], decision["target_service"])
+    with _lock:
+        if key in _inflight:
+            decisions_total.labels("duplicate", label).inc(); skipped_total.labels("duplicate").inc()
+            return {**decision, "status": "skipped", "reason": "duplicate: a remediation for this cause and service is already running"}
+        remaining = _cooldowns.get(key, 0) - time.monotonic()
+        if remaining > 0:
+            decisions_total.labels("cooldown", label).inc(); skipped_total.labels("cooldown").inc()
+            return {**decision, "status": "skipped", "reason": "cooldown", "cooldown_remaining_s": round(remaining)}
+        _inflight.add(key)
+        record = {"id": uuid.uuid4().hex[:12], "status": "running", "started_at": _now(), "steps": [], "recovered": None,
+                  **{k: decision[k] for k in ("root_cause", "confidence", "playbook", "target_service", "namespace", "extra_vars", "second_opinion")}}
+        _executions[record["id"]] = record
+        while len(_executions) > MAX_KEPT:
+            _executions.popitem(last=False)
+    in_progress.inc()
+    decisions_total.labels("accepted", label).inc()
+    launcher(record)
+    return JSONResponse(status_code=202, content={**decision, "status": "accepted", "execution_id": record["id"]})
 
-    try:
-        confidence = float(confidence)
-    except (TypeError, ValueError):
-        return {"status": "escalated", "reason": "Missing or invalid confidence"}
 
-    if confidence < MIN_CONFIDENCE:
-        return {
-            "status": "escalated",
-            "reason": "Confidence below threshold",
-            "confidence": confidence,
-            "threshold": MIN_CONFIDENCE,
-        }
+@app.get("/executions")
+def executions(limit: int = 20):
+    with _lock:
+        items = list(_executions.values())[-max(1, min(limit, MAX_KEPT)):]
+    return {"executions": list(reversed(items))}
 
-    with MAP_FILE.open() as file:
-        config = yaml.safe_load(file) or {}
 
-    remediation = config.get("remediations", {}).get(root_cause)
+@app.get("/executions/{execution_id}")
+def execution(execution_id: str):
+    with _lock:
+        record = _executions.get(execution_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="unknown execution")
+    return record
 
-    if not remediation:
-        return {
-            "status": "escalated",
-            "reason": "No remediation mapping for root cause",
-            "root_cause": root_cause,
-        }
 
-    playbook = remediation.get("playbook")
-    extra_vars = remediation.get("extra_vars", {})
-
-    if playbook not in ALLOWED_PLAYBOOKS:
-        return {
-            "status": "escalated",
-            "reason": "Playbook is not approved for execution",
-            "playbook": playbook,
-        }
-
-    playbook_path = ANSIBLE_DIR / "playbooks" / playbook
-    if not playbook_path.is_file():
-        raise HTTPException(status_code=500, detail="Approved playbook not found")
-
-    if not AUTO_REMEDIATE:
-        return {
-            "status": "dry_run",
-            "root_cause": root_cause,
-            "playbook": playbook,
-            "extra_vars": extra_vars,
-            "message": "Remediation is mapped but execution is disabled",
-        }
-
-    command = [
-        "ansible-playbook",
-        "-i", "inventory/localhost.yml",
-        f"playbooks/{playbook}",
-        "--extra-vars", json.dumps(extra_vars),
-    ]
-
-    try:
-        result = subprocess.run(
-            command,
-            cwd=ANSIBLE_DIR,
-            capture_output=True,
-            text=True,
-            timeout=180,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return {"status": "failed", "reason": "Playbook execution timed out"}
-
-    if result.returncode != 0:
-        log.error("Ansible failed: %s", result.stderr)
-        return {
-            "status": "failed",
-            "return_code": result.returncode,
-            "stderr": result.stderr[-2000:],
-        }
-
-    return {
-        "status": "executed",
-        "root_cause": root_cause,
-        "playbook": playbook,
-        "output": result.stdout[-2000:],
-    }
+@app.get("/state")
+def state():
+    now = time.monotonic()
+    with _lock:
+        return {"in_flight": [list(k) for k in _inflight],
+                "cooldowns": [{"root_cause": k[0], "target_service": k[1], "remaining_s": round(v - now)}
+                              for k, v in _cooldowns.items() if v > now]}

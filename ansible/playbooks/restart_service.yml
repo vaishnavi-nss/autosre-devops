@@ -1,9 +1,12 @@
 ---
 # Remediation for: db_connection_pool_exhaustion
 #
-# Does what `kubectl rollout restart deployment/<target_service>` does - patches
-# a timestamp annotation into the pod template, which makes the Deployment roll
-# its pods. Restarting drops every leaked connection and resets the pool.
+# Does what `kubectl rollout restart deployment/<target_service>` does - patches a timestamp annotation into the pod
+# template, which makes the Deployment roll its pods. Restarting drops every leaked connection and resets the pool.
+#
+# Safe by construction: it refuses any service or namespace outside the approved lists, and it only reports success once
+# the NEW rollout (a higher generation) is observed, fully updated and fully available - not merely because the old pods
+# were ready before the patch took effect.
 #
 #   ansible-playbook -i ../inventory/localhost.yml restart_service.yml \
 #     -e target_service=transaction-service
@@ -14,8 +17,32 @@
   vars:
     k8s_namespace: autosre
     target_service: transaction-service
+    allowed_services: [transaction-service]
+    allowed_namespaces: [autosre]
 
   tasks:
+    - name: Refuse anything outside the approved target
+      ansible.builtin.assert:
+        that:
+          - target_service in allowed_services
+          - k8s_namespace in allowed_namespaces
+        fail_msg: "{{ k8s_namespace }}/{{ target_service }} is not an approved restart target."
+
+    - name: Read the deployment before the restart
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+      register: before
+
+    - name: Fail early if the deployment does not exist or has no replicas
+      ansible.builtin.assert:
+        that:
+          - before.resources | length == 1
+          - before.resources[0].spec.replicas | int >= 1
+        fail_msg: "{{ target_service }} not found in {{ k8s_namespace }}, or scaled to zero."
+
     - name: Trigger a rolling restart of {{ target_service }}
       kubernetes.core.k8s:
         api_version: apps/v1
@@ -29,9 +56,9 @@
               metadata:
                 annotations:
                   kubectl.kubernetes.io/restartedAt: "{{ '%Y-%m-%dT%H:%M:%SZ' | strftime }}"
-                  autosre.io/restarted-by: correlation-engine
+                  autosre.io/restarted-by: remediation-dispatcher
 
-    - name: Wait for the rollout to finish
+    - name: Wait for the new rollout to be complete and available
       kubernetes.core.k8s_info:
         api_version: apps/v1
         kind: Deployment
@@ -39,14 +66,18 @@
         namespace: "{{ k8s_namespace }}"
       register: deployment_state
       until:
-        - deployment_state.resources | length > 0
-        - deployment_state.resources[0].status.readyReplicas | default(0)
-          == deployment_state.resources[0].spec.replicas
+        - deployment_state.resources | length == 1
+        - deployment_state.resources[0].metadata.generation | int > before.resources[0].metadata.generation | int
+        - deployment_state.resources[0].status.observedGeneration | default(0) | int >= deployment_state.resources[0].metadata.generation | int
+        - deployment_state.resources[0].status.updatedReplicas | default(0) | int == deployment_state.resources[0].spec.replicas | int
+        - deployment_state.resources[0].status.availableReplicas | default(0) | int == deployment_state.resources[0].spec.replicas | int
+        - deployment_state.resources[0].status.replicas | default(0) | int == deployment_state.resources[0].spec.replicas | int
       retries: 30
       delay: 5
 
     - name: Report the outcome
       ansible.builtin.debug:
         msg: >-
-          Restarted {{ target_service }} in {{ k8s_namespace }};
-          {{ deployment_state.resources[0].status.readyReplicas | default(0) }} replica(s) ready.
+          Restarted {{ target_service }} in {{ k8s_namespace }}; generation
+          {{ before.resources[0].metadata.generation }} -> {{ deployment_state.resources[0].metadata.generation }};
+          {{ deployment_state.resources[0].status.availableReplicas | default(0) }} replica(s) available.

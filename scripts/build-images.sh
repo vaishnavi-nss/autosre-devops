@@ -24,5 +24,7 @@ docker build -t autosre/transaction-service:dev services/transaction_service
 docker build -t autosre/database:dev services/database
 docker build -t autosre/correlation-engine:dev correlation-engine
 docker build -t autosre/second-opinion:dev second-opinion
+# The dispatcher image needs the playbooks, so it builds from the repository root.
+docker build -t autosre/remediation-dispatcher:dev -f remediation-dispatcher/Dockerfile .
 
-echo "==> All six AutoSRE images successfully built."
+echo "==> All seven AutoSRE images successfully built."

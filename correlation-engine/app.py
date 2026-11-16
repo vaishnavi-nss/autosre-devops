@@ -172,7 +172,7 @@ async def receive_alerts(payload: dict):
     root_causes_identified_total.labels(SERVICE_NAME, result["root_cause"]).inc()
     last_confidence.labels(SERVICE_NAME).set(result["confidence"])
     log.info("root cause: %s (%s)", result["root_cause"], result["explanation"])
-    remediation = await _dispatch_remediation(result)
+    remediation = await _dispatch_remediation(result, opinion)
 
     response = {"status": "correlated", "received_alerts": len(firing), **result}
     if opinion is not None:
@@ -197,8 +197,11 @@ async def _second_opinion(result: dict, firing: list) -> dict:
     return opinion
 
 
-async def _dispatch_remediation(result: dict) -> dict | None:
-    """Send an approved diagnosis to the dispatcher; never block correlation."""
+async def _dispatch_remediation(result: dict, opinion: dict | None = None) -> dict | None:
+    """Send a diagnosis to the dispatcher; never block correlation.
+
+    The dispatcher, not the engine, decides whether to act: it also receives the diagnosed service and the second-opinion
+    verdict so that it can require agreement, refuse a service that does not match its playbook, and apply its cooldown."""
     if not DISPATCHER_ENABLED:
         return {"status": "disabled", "reason": "Dispatcher integration is disabled"}
 
@@ -212,6 +215,9 @@ async def _dispatch_remediation(result: dict) -> dict | None:
                 json={
                     "root_cause": result["root_cause"],
                     "confidence": result["confidence"],
+                    "service": result.get("service"),
+                    "playbook": result.get("playbook"),
+                    "second_opinion": opinion,
                 },
             )
             response.raise_for_status()

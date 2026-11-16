@@ -5,6 +5,10 @@ metadata:
   name: remediation-dispatcher
   namespace: autosre
 ---
+# Least privilege for the three approved playbooks, in the autosre namespace only:
+#   restart_service.yml / scale_replicas.yml : read and patch deployments, scale them
+#   clear_logs.yml                          : find the database pod and run a command in it (pods/exec)
+#   verification                            : read deployments and pods
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -14,6 +18,12 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "deployments/scale"]
     verbs: ["get", "list", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -34,6 +44,9 @@ kind: Deployment
 metadata:
   name: remediation-dispatcher
   namespace: autosre
+  labels:
+    app: remediation-dispatcher
+    app.kubernetes.io/part-of: autosre
 spec:
   replicas: 1
   selector:
@@ -43,9 +56,11 @@ spec:
     metadata:
       labels:
         app: remediation-dispatcher
+        app.kubernetes.io/part-of: autosre
     spec:
       serviceAccountName: remediation-dispatcher
       containers:
+        # Keep this name equal to the service name - the PodRestartsHigh rule turns the `container` label into `service`.
         - name: remediation-dispatcher
           image: autosre/remediation-dispatcher:dev
           imagePullPolicy: IfNotPresent
@@ -53,10 +68,18 @@ spec:
             - name: http
               containerPort: 8001
           env:
+            # Live execution is OFF by default. Turn it on only for a named, approved run and turn it off afterwards.
             - name: AUTO_REMEDIATE
               value: "false"
             - name: MIN_CONFIDENCE
               value: "0.75"
+            # agree: the second opinion must agree. not_disagree: only a disagreement blocks. ignore: not consulted.
+            - name: SECOND_OPINION_POLICY
+              value: "agree"
+            - name: COOLDOWN_SECONDS
+              value: "600"
+            - name: TARGET_NAMESPACE
+              value: "autosre"
           resources:
             requests:
               cpu: 50m
@@ -72,7 +95,7 @@ spec:
             periodSeconds: 10
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
             initialDelaySeconds: 5
             periodSeconds: 5
@@ -83,6 +106,7 @@ metadata:
   name: remediation-dispatcher
   namespace: autosre
   labels:
+    app: remediation-dispatcher
     app.kubernetes.io/part-of: autosre
 spec:
   type: ClusterIP
