@@ -23,7 +23,8 @@ rules:
     verbs: ["get", "list"]
   - apiGroups: [""]
     resources: ["pods/exec"]
-    verbs: ["create"]
+    # The python client opens exec as a WebSocket (GET), so `get` is needed as well as `create` (found on the real cluster: 403 on pods/exec).
+    verbs: ["get", "create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
