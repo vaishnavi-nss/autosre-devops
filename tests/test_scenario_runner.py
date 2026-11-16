@@ -224,3 +224,40 @@ def test_the_launcher_waits_for_the_old_runner_and_forces_the_safe_defaults():
     assert "pkill -TERM -f 'run_scenario[s]'" in text and "pgrep -f 'run_scenario[s]'" in text
     assert text.index("AUTO_REMEDIATE=false") < text.index("rollout restart")
     assert "CHAOS_ENABLED=false" in text and "SECOND_OPINION_MODE=shadow" in text
+
+
+def test_a_post_to_a_pod_that_is_still_starting_is_retried_but_a_real_error_is_not(monkeypatch):
+    """Found in comp9: right after a restart the chaos call got HTTP 503 (EOF) and the whole run stopped."""
+    import urllib.error
+    monkeypatch.setattr(rs.Cluster, "_proxy_proc", type("P", (), {"poll": lambda self: None})())
+    monkeypatch.setattr(rs.Cluster, "RETRY_PAUSE_S", 0)
+    calls = []
+
+    def flaky(req, timeout=0):
+        calls.append(1)
+        if len(calls) < 3:
+            raise urllib.error.HTTPError(req.full_url, 503, "unavailable", {}, __import__("io").BytesIO(b"EOF"))
+
+        class Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"ok": true}'
+        return Resp()
+
+    monkeypatch.setattr(rs.urllib.request, "urlopen", flaky)
+    assert rs.Cluster().post("/x", {}) == {"ok": True} and len(calls) == 3
+
+    def forbidden(req, timeout=0):
+        calls.append(1)
+        raise urllib.error.HTTPError(req.full_url, 422, "bad", {}, __import__("io").BytesIO(b"bad body"))
+    calls.clear()
+    monkeypatch.setattr(rs.urllib.request, "urlopen", forbidden)
+    with pytest.raises(RuntimeError, match="HTTP 422"):
+        rs.Cluster().post("/x", {})
+    assert len(calls) == 1
+
+    def always_down(req, timeout=0):
+        raise urllib.error.URLError("connection refused")
+    monkeypatch.setattr(rs.urllib.request, "urlopen", always_down)
+    with pytest.raises(RuntimeError, match="URLError"):
+        rs.Cluster().post("/x", {}, tries=2)

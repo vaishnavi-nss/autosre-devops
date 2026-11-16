@@ -99,18 +99,31 @@ class Cluster:
                     time.sleep(0.5)
         return base
 
-    def post(self, path: str, body: dict | None = None, timeout: int = 90):
-        req = urllib.request.Request(self._proxy_base() + path, data=json.dumps(body or {}).encode(),
-                                     headers={"Content-Type": "application/json"}, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"POST {path} -> HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}") from exc
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return raw
+    RETRY_PAUSE_S = 15
+
+    def post(self, path: str, body: dict | None = None, timeout: int = 90, tries: int = 4):
+        """POST JSON. A 502/503/504 or a dropped connection means the pod is starting or was just replaced (seen on the real cluster
+        right after a restart): wait and retry. Any other error is real and is raised at once."""
+        last = None
+        for attempt in range(tries):
+            req = urllib.request.Request(self._proxy_base() + path, data=json.dumps(body or {}).encode(),
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    raw = resp.read().decode("utf-8", "replace")
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError:
+                    return raw
+            except urllib.error.HTTPError as exc:
+                last = RuntimeError(f"POST {path} -> HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}")
+                if exc.code not in (502, 503, 504):
+                    raise last from exc
+            except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
+                last = RuntimeError(f"POST {path} -> {type(exc).__name__}: {exc}")
+            if attempt < tries - 1:
+                time.sleep(self.RETRY_PAUSE_S)
+        raise last
 
     def svc(self, name: str, path: str, port: str = "http") -> str:
         return f"/api/v1/namespaces/{NS}/services/{name}:{port}/proxy{path}"
@@ -311,6 +324,8 @@ class Runner:
 
     # -- faults
     def inject(self, name: str) -> dict:
+        self.settle("transaction-service", "database")                      # a pod replaced by the previous scenario may still be starting
+        wait_for(lambda: self.c.get(self.c.svc("transaction-service", "/health")).get("status") == "ok", 120, 5, "transaction-service health")
         if name == "pool":
             maximum = self.c.prom_scalar('max(db_connection_pool_max{service="transaction-service"})', 20) or 20
             n = math.ceil(maximum * 0.95)
