@@ -230,10 +230,13 @@ def classify(spec: dict, ev: dict) -> tuple[str, str]:
 
 # ----------------------------------------------------------------------------------------------- the run
 class Runner:
-    def __init__(self, c: Cluster, out: Path, live: bool, cooldown: int, timeouts: dict):
-        self.c, self.out, self.live, self.cooldown, self.t = c, out, live, cooldown, timeouts
+    def __init__(self, c: Cluster, out: Path, live: bool, cooldown: int, timeouts: dict, collect: bool = False):
+        if collect and live:
+            raise ValueError("--collect needs the fault to stay in place, so it cannot be combined with --live")
+        self.c, self.out, self.live, self.cooldown, self.t, self.collect = c, out, live, cooldown, timeouts, collect
         self.results: list[dict] = []
         self.environment: dict = {}
+        self.trial_count = 0
 
     # -- cluster state
     def set_env(self, deploy: str, **env: str) -> None:
@@ -416,11 +419,43 @@ class Runner:
         pool = self.c.prom_scalar('max(db_connection_pool_active{service="transaction-service"})', 0)
         return True, f"{spec['alert']} resolved after {waited}s; pool active {pool}"
 
+    # -- training data for the second-opinion scorer (dry run only: the fault must stay in place while it is measured)
+    META_ALERTS = ("InfoInhibitor", "Watchdog")
+    PROBE_FIRST_S = 100          # seconds after the fault starts: about when the engine first asks the scorer
+    PROBE_GAP_S = 25
+    PROBES = 4
+
+    def dirty_alerts(self) -> list[str]:
+        return sorted({a["metric"].get("alertname") for a in self.c.firing() if a["metric"].get("alertname") not in self.META_ALERTS})
+
+    def collect_trial(self, name: str, fault_start: float, dirty: list[str]) -> dict:
+        """Record the score table the scorer is given, at several moments, labelled with the cause that was really injected.
+        Written as one line of trials.jsonl in the format second-opinion/train_own.py reads."""
+        cause = SCENARIOS[name]["cause"]
+        probes, next_at = [], fault_start + self.PROBE_FIRST_S
+        for _ in range(self.PROBES):
+            if time.time() < next_at:
+                time.sleep(next_at - time.time())
+            reply = self.c.post(self.c.svc("second-opinion", "/features"), {"incident_start": fault_start, "fault_start": fault_start})
+            probes.append({"at_s": round(time.time() - fault_start), "features": {"scores": (reply or {}).get("scores")},
+                           "reason": (reply or {}).get("reason")})
+            next_at = time.time() + self.PROBE_GAP_S
+        self.trial_count += 1
+        trial = {"trial": f"{self.out.name}:{name}-{self.trial_count}", "label": cause, "fault": name, "contaminated": bool(dirty),
+                 "alerts_before": dirty, "probes": probes}
+        self.out.mkdir(parents=True, exist_ok=True)
+        with open(self.out / "trials.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(trial, separators=(",", ":")) + "\n")
+        got = sum(1 for p in probes if p["features"]["scores"])
+        log(f"    recorded trial {trial['trial']}: {got} of {len(probes)} score tables" + (f" (CONTAMINATED by {dirty})" if dirty else ""))
+        return trial
+
     # -- scenarios
     def run_fault(self, name: str) -> dict:
         spec = SCENARIOS[name]
         rec = {"scenario": name, "expected": {k: spec[k] for k in ("alert", "cause", "playbook", "service")}, "fault_kind": spec["kind"],
                "live": self.live, "timeline": {}, "evidence": {}}
+        dirty = self.dirty_alerts() if self.collect else []
         t0 = now(); since = iso(t0)
         log(f"=== {name}: injecting ({spec['kind']})")
         rec["timeline"]["injected_at"] = since
@@ -448,6 +483,8 @@ class Runner:
                 rec["timeline"]["execution_s"] = ev["execution"].get("duration_s") if ev.get("execution") else None
                 if ex and ex.get("status") == "succeeded":
                     ev["independent_recovery"], ev["recovery_detail"] = self.independent_recovery(name)
+        if self.collect and alert:
+            rec["trial"] = self.collect_trial(name, t0.timestamp(), dirty)["trial"]
         rec["evidence"].update(ev)
         rec["outcome"], rec["why"] = classify(spec, ev)
         rec["passed"] = rec["outcome"] == "passed"
@@ -617,6 +654,8 @@ def main(argv=None) -> int:
     ap.add_argument("--scenarios", default=",".join(DEFAULT_ORDER), help=f"comma list from: {', '.join(DEFAULT_ORDER)}, pair_ambiguity, pair_gate")
     ap.add_argument("--live", action="store_true", help="turn AUTO_REMEDIATE on for this run (restored afterwards). Needs approval.")
     ap.add_argument("--cooldown", type=int, default=900, help="dispatcher cooldown (s) during the run")
+    ap.add_argument("--collect", action="store_true",
+                    help="also record the scorer's score tables for each fault into trials.jsonl (training data; dry run only)")
     ap.add_argument("--timeout-alert", type=int, default=240)
     ap.add_argument("--timeout-engine", type=int, default=480)
     ap.add_argument("--timeout-execute", type=int, default=480)
@@ -624,7 +663,9 @@ def main(argv=None) -> int:
     ap.add_argument("--timeout-quiet", type=int, default=900)
     a = ap.parse_args(argv)
     timeouts = {"alert": a.timeout_alert, "engine": a.timeout_engine, "execute": a.timeout_execute, "resolve": a.timeout_resolve, "quiet": a.timeout_quiet}
-    runner = Runner(Cluster(), Path(a.out), a.live, a.cooldown, timeouts)
+    if a.collect and a.live:
+        ap.error("--collect keeps each fault in place while it is measured, so it cannot be combined with --live")
+    runner = Runner(Cluster(), Path(a.out), a.live, a.cooldown, timeouts, collect=a.collect)
     wanted = [s.strip() for s in a.scenarios.split(",") if s.strip()]
     if not a.live:
         wanted = [s for s in wanted if s not in ("cooldown", "guardrails_live")]

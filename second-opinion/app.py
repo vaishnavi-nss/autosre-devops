@@ -141,8 +141,14 @@ def features(body: dict):
         start = float(body["incident_start"])
     except (KeyError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"need incident_start: {exc}")
+    kwargs = {}
+    if body.get("fault_start") is not None:       # a harness that injected the fault knows when it began
+        try:
+            kwargs["fault_start"] = float(body["fault_start"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"fault_start must be a number: {exc}")
     try:
-        scores, reason = window_scores(start, OWN_KINDS)
+        scores, reason = window_scores(start, OWN_KINDS, **kwargs)
     except Exception as exc:                      # Prometheus down, bad data, ...
         scores, reason = None, f"could not score: {exc}"
     return {"scores": scores} if scores is not None else {"scores": None, "reason": reason}

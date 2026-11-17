@@ -261,3 +261,19 @@ def test_endpoint_uses_an_explicit_fault_start_instead_of_the_lead(client, monke
     assert seen["start"] == 1_200 - svc.BASELINE_S
     client.post("/opinion", json=body)
     assert seen["start"] == 1_500 - 60 - svc.BASELINE_S
+
+
+def test_features_endpoint_passes_a_known_fault_start_through_and_rejects_a_bad_one(monkeypatch):
+    from fastapi.testclient import TestClient
+    seen = {}
+
+    def fake(start, kinds, now=None, fault_start=None):
+        seen["fault_start"] = fault_start
+        return {"database": {k: 0.0 for k in kinds}, "frontend": {k: 1.0 for k in kinds}}, None
+
+    monkeypatch.setattr(svc, "model", None)
+    monkeypatch.setattr(svc, "window_scores", fake)
+    with TestClient(svc.app) as client:
+        assert client.post("/features", json={"incident_start": 1000, "fault_start": 940}).json()["scores"] is not None
+        assert seen["fault_start"] == 940.0
+        assert client.post("/features", json={"incident_start": 1000, "fault_start": "soon"}).status_code == 422

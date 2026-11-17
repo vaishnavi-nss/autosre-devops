@@ -332,3 +332,57 @@ def test_the_launcher_passes_the_cooldown_so_a_scenario_can_be_repeated():
     run = (ROOT / "scripts" / "aws" / "completion-run.sh").read_text()
     start = (ROOT / "scripts" / "aws" / "start-completion-run.sh").read_text()
     assert "--cooldown $COOLDOWN" in run and 'COOLDOWN="${COOLDOWN:-900}"' in run and "COOLDOWN=$COOLDOWN" in start
+
+
+# ---------------------------------------------------------------- --collect: labelled score tables for retraining the scorer
+class CollectCluster:
+    def __init__(self, tables):
+        self.tables, self.posts = list(tables), []
+
+    def svc(self, name, path, port="http"):
+        return f"{name}{path}"
+
+    def post(self, path, body=None, timeout=0, tries=0):
+        self.posts.append((path, body))
+        return {"scores": self.tables.pop(0)} if self.tables else {"scores": None, "reason": "only 2 samples"}
+
+    def firing(self, alert=None):
+        return []
+
+
+def test_collect_records_a_labelled_trial_in_the_format_train_own_reads(tmp_path, monkeypatch):
+    import json
+    table = {"transaction-service": {"mem": 9.0}, "database": {"mem": 0.1}}
+    runner = rs.Runner(CollectCluster([table, table, None, table]), tmp_path / "comp99", False, 60, {}, collect=True)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(rs.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(rs.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    trial = runner.collect_trial("memory", 1000.0, [])
+    lines = (tmp_path / "comp99" / "trials.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1 and json.loads(lines[0]) == trial
+    assert trial["label"] == "high_memory_usage" and trial["contaminated"] is False and len(trial["probes"]) == runner.PROBES
+    assert trial["probes"][0]["features"]["scores"] == table and trial["probes"][2]["features"]["scores"] is None   # a failed probe is kept, not dropped
+    assert runner.c.posts[0] == ("second-opinion/features", {"incident_start": 1000.0, "fault_start": 1000.0})       # the true start, not an estimate
+    assert [p["at_s"] for p in trial["probes"]] == [100, 125, 150, 175]                                             # spaced, starting where the engine asks
+
+
+def test_collect_marks_a_trial_contaminated_when_other_alerts_were_already_firing(tmp_path, monkeypatch):
+    runner = rs.Runner(CollectCluster([]), tmp_path, False, 60, {}, collect=True)
+    monkeypatch.setattr(rs.time, "sleep", lambda s: None)
+    monkeypatch.setattr(rs.time, "time", lambda: 5000.0)
+    assert runner.collect_trial("pool", 4000.0, ["ErrorRateHigh"])["contaminated"] is True
+
+
+def test_collect_ignores_meta_alerts_when_judging_contamination(tmp_path):
+    class C(CollectCluster):
+        def firing(self, alert=None):
+            return [{"metric": {"alertname": n}} for n in ("InfoInhibitor", "Watchdog", "ErrorRateHigh")]
+    runner = rs.Runner(C([]), tmp_path, False, 60, {}, collect=True)
+    assert runner.dirty_alerts() == ["ErrorRateHigh"]
+
+
+def test_collect_cannot_be_combined_with_live_because_the_fault_must_stay_in_place(tmp_path):
+    with pytest.raises(ValueError):
+        rs.Runner(CollectCluster([]), tmp_path, True, 60, {}, collect=True)
+    with pytest.raises(SystemExit):
+        rs.main(["--out", str(tmp_path), "--scenarios", "pool", "--live", "--collect"])

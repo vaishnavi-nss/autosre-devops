@@ -11,6 +11,7 @@ INSTANCE="${INSTANCE:-i-04f8f4d75378a1aba}"
 RUN="${RUN:-comp1}"; LIVE="${LIVE:-0}"; BRANCH="${BRANCH:-devops-completion}"
 SCENARIOS="${SCENARIOS:-guardrails_dry,pool,memory,disk,unknown}"
 COOLDOWN="${COOLDOWN:-900}"
+COLLECT="${COLLECT:-0}"; SCORER_MODEL="${SCORER_MODEL:-}"
 RAW="https://raw.githubusercontent.com/vaishnavi-nss/autosre-devops/$BRANCH/scripts/aws/completion-run.sh"
 
 say() { echo "$(date -u +%H:%M:%S) $1"; aws ssm put-parameter --name autosre-go --type String --overwrite --value "$(date -u +%H:%M) $1" >/dev/null 2>&1 || true; }
@@ -26,7 +27,7 @@ for _ in $(seq 1 60); do
 done
 if [ "$S" != running ] || [ "$P" != Online ]; then say "gave up: $S / ssm ${P:-none}"; exit 1; fi
 sleep 30
-CMD="curl -fsS $RAW -o /tmp/completion-run.sh && RUN=$RUN LIVE=$LIVE BRANCH=$BRANCH SCENARIOS=$SCENARIOS COOLDOWN=$COOLDOWN setsid nohup bash /tmp/completion-run.sh >/tmp/completion-run.out 2>&1 < /dev/null &"
+CMD="curl -fsS $RAW -o /tmp/completion-run.sh && RUN=$RUN LIVE=$LIVE BRANCH=$BRANCH SCENARIOS=$SCENARIOS COOLDOWN=$COOLDOWN COLLECT=$COLLECT SCORER_MODEL=$SCORER_MODEL setsid nohup bash /tmp/completion-run.sh >/tmp/completion-run.out 2>&1 < /dev/null &"
 ID=$(aws ssm send-command --instance-ids "$INSTANCE" --document-name AWS-RunShellScript \
        --parameters "commands=[\"$CMD\"]" --query Command.CommandId --output text)
 say "$RUN launch command sent ($ID); watch progress in the parameter autosre-prep and the log in s3 results-$RUN"

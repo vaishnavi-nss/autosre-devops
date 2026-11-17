@@ -15,6 +15,8 @@ BRANCH="${BRANCH:-devops-completion}"
 RUN="${RUN:?set RUN, e.g. comp1}"
 LIVE="${LIVE:-0}"
 SCENARIOS="${SCENARIOS:-guardrails_dry,pool,memory,disk,unknown}"
+COLLECT="${COLLECT:-0}"              # 1 = also record the scorer's score tables for training (dry run only)
+SCORER_MODEL="${SCORER_MODEL:-}"     # a file in second-opinion/models to load instead of the image's default (e.g. own_real.joblib)
 COOLDOWN="${COOLDOWN:-900}"          # dispatcher cooldown (s) during the run; lower it only to repeat a scenario
 HOME_DIR=/home/ubuntu
 WORK="$HOME_DIR/autosre-completion"
@@ -50,6 +52,8 @@ kubectl -n autosre set env deploy/remediation-dispatcher AUTO_REMEDIATE=false CO
 kubectl -n autosre set env deploy/transaction-service CHAOS_ENABLED=false >/dev/null
 kubectl -n autosre set env deploy/database CHAOS_ENABLED=false >/dev/null
 kubectl -n autosre set env deploy/correlation-engine SECOND_OPINION_MODE=shadow ESCALATE_ON_AMBIGUITY- >/dev/null
+# Which scorer model to load. An override from an earlier run must not linger, so it is set or cleared explicitly every time.
+if [ -n "${1:-}" ]; then kubectl -n autosre set env deploy/second-opinion MODEL_PATH="models/$1" >/dev/null; else kubectl -n autosre set env deploy/second-opinion MODEL_PATH- >/dev/null; fi
 # Replace every pod so none carries a stale image or an environment override from an earlier session.
 for d in frontend api-gateway transaction-service database correlation-engine second-opinion remediation-dispatcher; do
   kubectl -n autosre rollout restart deploy/$d >/dev/null
@@ -60,7 +64,7 @@ done
 EOF
 chmod +x "$HOME_DIR/prep-completion.sh"; chown ubuntu:ubuntu "$HOME_DIR/prep-completion.sh"
 st "$RUN: commit $COMMIT; building and deploying"
-PREP=$(sudo -u ubuntu -H -g docker bash "$HOME_DIR/prep-completion.sh" 2>&1 | tail -12 | tr '\n' '|' | cut -c1-500)
+PREP=$(sudo -u ubuntu -H -g docker bash "$HOME_DIR/prep-completion.sh" "$SCORER_MODEL" 2>&1 | tail -12 | tr '\n' '|' | cut -c1-500)
 st "$RUN: deployed ($PREP); settling 4 min"
 echo "$PREP" > "$RESULTS/deploy.txt"
 sleep 240
@@ -70,10 +74,12 @@ sleep 240
   echo "== dispatcher pod: ansible, collections and playbook syntax (checked inside the running pod; this minikube uses containerd, so docker run cannot see the images)"
   sudo -u ubuntu -H bash -c 'kubectl -n autosre exec deploy/remediation-dispatcher -- sh -c "ansible-playbook --version | head -1; ansible-galaxy collection list 2>/dev/null | grep -i kubernetes.core; cd /app/ansible && for p in playbooks/*.yml; do echo syntax-check \$p; ansible-playbook -i inventory/localhost.yml \$p --syntax-check 2>&1 | tail -2; done"'
 } > "$RESULTS/image-checks.txt" 2>&1
-st "$RUN: image checks written"
+sudo -u ubuntu -H bash -c 'kubectl -n autosre logs deploy/second-opinion --tail=40 | grep -i "loaded scorer"' >> "$RESULTS/image-checks.txt" 2>&1
+st "$RUN: image checks written ($(grep -i 'loaded scorer' "$RESULTS/image-checks.txt" | tail -1 | cut -c1-120))"
 
 setsid nohup bash -c "while true; do aws s3 sync $RESULTS s3://$BUCKET/results-$RUN --only-show-errors; aws s3 cp $HOME_DIR/$RUN.log s3://$BUCKET/results-$RUN/$RUN.log --only-show-errors; sleep 45; done" >/dev/null 2>&1 </dev/null &
 LIVEFLAG=""; [ "$LIVE" = "1" ] && LIVEFLAG="--live"
+[ "$COLLECT" = "1" ] && LIVEFLAG="$LIVEFLAG --collect"
 sudo -u ubuntu -H -g docker bash -c "cd $WORK && setsid nohup python3 scripts/scenarios/run_scenarios.py --out $RESULTS --scenarios $SCENARIOS --cooldown $COOLDOWN $LIVEFLAG > $HOME_DIR/$RUN.log 2>&1 < /dev/null &"
 sleep 5
 st "$RUN: scenario runner started on $COMMIT (live=$LIVE): $SCENARIOS"
