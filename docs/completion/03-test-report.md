@@ -61,13 +61,21 @@ that pod (the runner does it itself after each trial). The dispatcher also verif
 These are small counts, not a reliability rate: 12 faults acted on correctly out of 13, and the one that did not act was the second opinion saying no. Run-to-run spread:
 pool alert after 36 to 46 s and incident after 128 to 173 s; disk 72 to 87 s and 102 to 118 s; memory 51 to 56 s.
 
-**The memory disagreement is a real finding about the ML check, not a bug in the run.** In comp13 trial 1 the rules named `transaction-service` (0.75, the deciding
-symptom `ContainerMemoryHigh` plus `APILatencyHigh`), and the scorer, which was trained on RCAEval's benchmark and is deployed as is, put the fault on `api-gateway`
-(`gateway_fault`, confidence 0.81). A really slow transaction service makes the gateway's own latency breach too, and that scorer sometimes cannot tell them apart. The
-gate did what it is for (`Second opinion is disagree, policy requires agree`: escalated, nothing executed), but it means real memory slowness is acted on only some of the
-time. In the two later trials the same scorer agreed (0.94 in the one I read). I did not change the scorer. A model trained on this cluster's incidents
-(`second-opinion/train_own.py`, `models/own.joblib`) exists and was not deployed or re-validated here; that is the obvious next experiment, and it belongs to the owner
-of the ML component.
+**Correction (made after I was asked to deploy the cluster-trained model): the scorer in these runs was already that model.** An earlier version of this
+report said the scorer was the RCAEval benchmark model. It was not. `second-opinion/Dockerfile` sets `MODEL_PATH=models/own.joblib`, and the verdicts name this cluster's own
+causes (`db_connection_pool_exhaustion`, `high_memory_usage`), which the benchmark model cannot output (its classes are `cpu, delay, disk, loss, mem`; checked by loading both).
+So every second opinion above came from the model trained on this cluster's incidents (53 labelled trials from the earlier live runs 3, 4, 5-early and 8; its own
+leave-one-trial-out check gave 95 % service accuracy). Nothing needed deploying.
+
+**What the runs add, and the one disagreement.** That model was trained on the *older* fault shapes (injected latency for memory, a pinned gauge for the pool). The real faults
+here are new to it, so these runs are a genuine held-out test: it agreed on 12 of 13 live faults (pool 5/5, disk 4/4, memory 3/4). In the memory miss (comp13 trial 1) the rules
+named `transaction-service` (0.75; `ContainerMemoryHigh` plus `APILatencyHigh`) and the scorer put the fault on `api-gateway` (`gateway_fault`, confidence 0.81). A really slow
+transaction service makes the gateway's own latency breach too, and a model that learned memory faults from a milder injected slowness sometimes reads that as a gateway fault.
+The gate did what it is for (`Second opinion is disagree, policy requires agree`: escalated, nothing executed). I did not change or retrain the model.
+
+**The obvious next step, not done here (the lab session had ended):** retrain it on windows from these real faults (`second-opinion/train_own.py` needs per-trial score tables;
+the scenario runner does not record them yet, so that has to be added), re-run its leave-one-trial-out check, redeploy, and repeat the memory trials. Until then, expect
+real memory faults to be acted on about three times in four.
 
 ### Dry-run and Phase 3 (ML) results, decisions only
 
@@ -160,12 +168,12 @@ it yet. It was verified in the browser through the locally served real page.
 | Limit (from the previous version of this report) | What was done | Status |
 |---|---|---|
 | Memory's slowness was injected; a scale-out leaves the leak | The slowness is now real work on the leaked heap (no sleep), calibrated by measuring. The "alert persists" assumption was wrong: the alert sums across pods and resolves, and recovery now requires that plus 24 live transactions with no errors and a median under 0.3 s. The leak itself stays in the original pod by design (the approved playbook is a scale-out); the runner replaces that pod after each trial | **Verified live** (comp12, comp13): 3 of 4 acted and recovered. **Still true:** a scale-out does not cure a leak, a human must replace the pod |
-| One passing run per scenario, not a rate | pool 5/5, disk 4/4, memory 3 acted of 4 (1 escalated by the ML gate), cooldown, unknown cause and live guardrails each repeated against the real fault models | **Counted, still small.** These are not confidence intervals. Memory acts on only about three in four real faults while the benchmark-trained scorer is the gate |
+| One passing run per scenario, not a rate | pool 5/5, disk 4/4, memory 3 acted of 4 (1 escalated by the ML gate), cooldown, unknown cause and live guardrails each repeated against the real fault models | **Counted, still small.** These are not confidence intervals. Memory acts on only about three in four real faults while the cluster-trained scorer (trained on the older injected shapes) is the gate |
 | Front end and Grafana pages not viewed | Both rendered in a real browser from the deployed cluster; four defects found and fixed | **Done**, except that the last front-end fix is not deployed yet |
 | memory, cooldown, guardrails, unknown cause not repeated against the new fault models | All four were run against them (comp13, comp14) | **Done** |
 
 New things this work found and did **not** fix:
-- The scorer's disagreement on real memory slowness (above); changing or retraining the model is the ML owner's call.
+- The scorer's disagreement on real memory slowness (above). The model in use is already the cluster-trained one; retraining it on the new real-fault data is the next step and needs per-trial score tables the runner does not record yet.
 - The dispatcher's execution history and counters are in memory, so any dispatcher restart empties the dashboard's execution panels.
 - Lab caveats: the instance runs a single-node Minikube on 2 vCPUs, so timings are not production numbers, and every fault is started by the runner.
 
