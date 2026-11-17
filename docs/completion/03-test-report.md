@@ -157,7 +157,7 @@ So the live path (Prometheus, Alertmanager, engine, second opinion, dispatcher, 
 
 Two things the check turned up, neither a failure of the system:
 - The image-check step printed a Python `BrokenPipeError` traceback because it piped `ansible-playbook --version` into `head -1`. It was noise only (the playbook checks after it passed); fixed in the launcher.
-- **Three other EC2 instances were running** in the lab account (`t3.medium`, ids ending `...7ea`, `...a88c6`, `...1ed3519`, not part of AutoSRE), using lab budget. I left them alone as agreed earlier; stopping or terminating them is your call.
+- **Three other EC2 instances were running** in the lab account (`t3.medium`, `i-071187d6f97ea8271`, `i-0cf7a8f86041a88c6`, `i-0227adbb1ed3d2519`, not part of AutoSRE), using lab budget. I left them alone as agreed earlier; stopping or terminating them is your call.
 
 ## Runs, in order
 
