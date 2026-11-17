@@ -69,13 +69,35 @@ leave-one-trial-out check gave 95 % service accuracy). Nothing needed deploying.
 
 **What the runs add, and the one disagreement.** That model was trained on the *older* fault shapes (injected latency for memory, a pinned gauge for the pool). The real faults
 here are new to it, so these runs are a genuine held-out test: it agreed on 12 of 13 live faults (pool 5/5, disk 4/4, memory 3/4). In the memory miss (comp13 trial 1) the rules
-named `transaction-service` (0.75; `ContainerMemoryHigh` plus `APILatencyHigh`) and the scorer put the fault on `api-gateway` (`gateway_fault`, confidence 0.81). A really slow
-transaction service makes the gateway's own latency breach too, and a model that learned memory faults from a milder injected slowness sometimes reads that as a gateway fault.
-The gate did what it is for (`Second opinion is disagree, policy requires agree`: escalated, nothing executed). I did not change or retrain the model.
+named `transaction-service` (0.75; `ContainerMemoryHigh` plus `APILatencyHigh`) and the scorer put the fault on `api-gateway` (`gateway_fault`, confidence 0.81). The gate did what it
+is for (`Second opinion is disagree, policy requires agree`: escalated, nothing executed).
 
-**The obvious next step, not done here (the lab session had ended):** retrain it on windows from these real faults (`second-opinion/train_own.py` needs per-trial score tables;
-the scenario runner does not record them yet, so that has to be added), re-run its leave-one-trial-out check, redeploy, and repeat the memory trials. Until then, expect
-real memory faults to be acted on about three times in four.
+### Retraining the scorer on real-fault trials: tried, no measurable gain (2026-11-17/18)
+
+I added what retraining needs: `run_scenarios.py --collect` (dry run only, so each fault stays in place) records the scorer's score table at four moments per fault, labelled with the
+cause that was really injected, in the format `train_own.py` reads; `/features` now accepts the true `fault_start`; `eval_real.py` compares models; the launcher takes
+`COLLECT=1` and `SCORER_MODEL=<file>`. The pipeline was first checked by retraining on the old data with the image's scikit-learn (1.6.1): it reproduced the shipped model's own
+numbers exactly (95.3 % service accuracy; 100 true claims agreed, 2 wrong claims wrongly agreed).
+
+| Test | Data | Current model (`own.joblib`) | Retrained (`own_real.joblib`) |
+|---|---|---|---|
+| Real-fault windows, 10 trials (5 memory, 3 pool, 2 disk), 40 probes | `docs/completion/real-fault-trials` | **40 of 40** right service and fault; every true claim agreed; every wrong claim rejected | **40 of 40** under leave-one-real-trial-out (trained on the old trials plus the other 9) |
+| Independent real-fault windows, 8 trials (4 memory, 2 pool, 2 disk), 32 probes, **trained on by neither** | `docs/completion/real-fault-trials-2` | **32 of 32**, same | **32 of 32**, same |
+| Live verdicts, dry run with the current model loaded (10 faults, comp "coll1") | the cluster | agreed **10 of 10** (memory 5/5) | n/a |
+
+Counting every live run with the current model, the second opinion agreed on 8 of 9 real memory faults, and on every pool and disk fault. The retrained model also loaded and ran on
+the cluster (the pod log shows `loaded scorer from models/own_real.joblib`; run "coll2": 8 real faults with it loaded, decisions only). **Not yet read: coll2's live verdicts
+and its two-fault gate check** (`pair_gate`). The lab session ended before I could read them from `s3://autosre-validation-841736140404/results-coll2/`; the raw data is there.
+Those two results are the only open item of this experiment.
+
+**What this means.** Retraining did not change anything measurable, because the current model is already right on every real-fault window I could record, including the weak-signal
+windows (a fault that follows another within 30 minutes has a polluted baseline, so memory shows as z of about 3 instead of 33) and the clean strong one. So I kept
+`own.joblib` as the default and shipped `own_real.joblib` **opt-in only** (`SCORER_MODEL=own_real.joblib`). The earlier "obvious next step, retrain" was a guess that the data does not support.
+
+**Why the one live miss is still unexplained.** My offline windows start at the true fault start; the live engine estimates it from the alert times (`startsAt` minus the rule's `for:`
+and a scrape), so its window can begin later and look different. The miss was at the engine's window, not at mine. The way to settle it is to record the scorer's feature table
+**with the engine's own estimated `fault_start`**, which needs an engine change or a replay of its estimate in the runner; it is not done. One miss in nine real memory faults is
+too few to say whether it is a rare scorer error or a windowing artefact.
 
 ### Dry-run and Phase 3 (ML) results, decisions only
 
@@ -168,12 +190,12 @@ it yet. It was verified in the browser through the locally served real page.
 | Limit (from the previous version of this report) | What was done | Status |
 |---|---|---|
 | Memory's slowness was injected; a scale-out leaves the leak | The slowness is now real work on the leaked heap (no sleep), calibrated by measuring. The "alert persists" assumption was wrong: the alert sums across pods and resolves, and recovery now requires that plus 24 live transactions with no errors and a median under 0.3 s. The leak itself stays in the original pod by design (the approved playbook is a scale-out); the runner replaces that pod after each trial | **Verified live** (comp12, comp13): 3 of 4 acted and recovered. **Still true:** a scale-out does not cure a leak, a human must replace the pod |
-| One passing run per scenario, not a rate | pool 5/5, disk 4/4, memory 3 acted of 4 (1 escalated by the ML gate), cooldown, unknown cause and live guardrails each repeated against the real fault models | **Counted, still small.** These are not confidence intervals. Memory acts on only about three in four real faults while the cluster-trained scorer (trained on the older injected shapes) is the gate |
+| One passing run per scenario, not a rate | pool 5/5, disk 4/4, memory 3 acted of 4 (1 escalated by the ML gate), cooldown, unknown cause and live guardrails each repeated against the real fault models | **Counted, still small.** These are not confidence intervals. Memory acted on 3 of 4 in the repeat runs and the scorer then agreed on 5 of 5 more in the dry-run batch; 8 of 9 in all. Too few to call a rate either way |
 | Front end and Grafana pages not viewed | Both rendered in a real browser from the deployed cluster; four defects found and fixed | **Done**, except that the last front-end fix is not deployed yet |
 | memory, cooldown, guardrails, unknown cause not repeated against the new fault models | All four were run against them (comp13, comp14) | **Done** |
 
 New things this work found and did **not** fix:
-- The scorer's disagreement on real memory slowness (above). The model in use is already the cluster-trained one; retraining it on the new real-fault data is the next step and needs per-trial score tables the runner does not record yet.
+- The one scorer disagreement on a real memory fault (above). Retraining on real-fault trials was tried and changed nothing measurable; the open question is whether the engine's estimated `fault_start` window differs from the true-start windows I recorded.
 - The dispatcher's execution history and counters are in memory, so any dispatcher restart empties the dashboard's execution panels.
 - Lab caveats: the instance runs a single-node Minikube on 2 vCPUs, so timings are not production numbers, and every fault is started by the runner.
 
