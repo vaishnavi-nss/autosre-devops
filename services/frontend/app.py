@@ -662,8 +662,19 @@ async def serve_dashboard():
         function setText(id, v) { document.getElementById(id).textContent = (v === null || v === undefined || v === '') ? '-' : v; }
         function badge(id, text, cls) { const e = document.getElementById(id); e.className = 'badge ' + cls; e.textContent = text; }
 
+        // The engine keeps raising 'unmatched' incidents while alerts are still clearing after a fix. Show the incident that was acted on (or
+        // correlated) when such a follow-up arrives within 5 minutes of it; anything newer or older is shown as it is.
+        function pickIncident(st) {
+          const list = st.incidents || [];
+          const latest = list[0];
+          if (!latest || latest.root_cause) return latest;
+          const t = Date.parse(latest.received_at);
+          const prior = list.slice(1).find(i => i.root_cause && t - Date.parse(i.received_at) <= 300000);
+          return prior || latest;
+        }
+
         function renderState(st) {
-          const inc = st.incidents && st.incidents[0];
+          const inc = pickIncident(st);
           const escalated = !!inc && inc.action === 'escalate_to_human';
           if (!inc) {
             badge('inc-badge', 'No incident', 'ok');

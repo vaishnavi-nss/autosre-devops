@@ -111,3 +111,11 @@ def test_meta_alerts_are_not_shown_as_firing_incidents():
     """Seen in the rendered page on the real cluster: InfoInhibitor (a meta alert) was listed as an active alert with a red badge."""
     import inspect
     assert 'alertname!~"InfoInhibitor|Watchdog"' in inspect.getsource(fe.state)
+
+
+def test_page_shows_the_acted_on_incident_not_the_follow_up_noise_after_a_fix():
+    """Seen in the rendered page on the real cluster: after a successful restart the engine raised an 'unmatched' incident while alerts were
+    still clearing, and the panel said 'Escalated to a human' above a 'Fix verified' panel."""
+    html = client.get("/").text
+    assert "function pickIncident(st)" in html and "const inc = pickIncident(st);" in html
+    assert "<= 300000" in html
