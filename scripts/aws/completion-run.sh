@@ -72,7 +72,7 @@ sleep 240
 # Static checks of the playbooks and the image, recorded with the results.
 {
   echo "== dispatcher pod: ansible, collections and playbook syntax (checked inside the running pod; this minikube uses containerd, so docker run cannot see the images)"
-  sudo -u ubuntu -H bash -c 'kubectl -n autosre exec deploy/remediation-dispatcher -- sh -c "ansible-playbook --version | head -1; ansible-galaxy collection list 2>/dev/null | grep -i kubernetes.core; cd /app/ansible && for p in playbooks/*.yml; do echo syntax-check \$p; ansible-playbook -i inventory/localhost.yml \$p --syntax-check 2>&1 | tail -2; done"'
+  sudo -u ubuntu -H bash -c 'kubectl -n autosre exec deploy/remediation-dispatcher -- sh -c "ansible-playbook --version 2>/dev/null | head -1; ansible-galaxy collection list 2>/dev/null | grep -i kubernetes.core; cd /app/ansible && for p in playbooks/*.yml; do echo syntax-check \$p; ansible-playbook -i inventory/localhost.yml \$p --syntax-check 2>&1 | tail -2; done"'
 } > "$RESULTS/image-checks.txt" 2>&1
 sudo -u ubuntu -H bash -c 'kubectl -n autosre logs deploy/second-opinion --tail=40 | grep -i "loaded scorer"' >> "$RESULTS/image-checks.txt" 2>&1
 st "$RUN: image checks written ($(grep -i 'loaded scorer' "$RESULTS/image-checks.txt" | tail -1 | cut -c1-120))"
