@@ -126,3 +126,37 @@ def test_without_a_real_log_directory_writes_never_fail(monkeypatch, tmp_path):
     db_client.post("/chaos/disk", json={"ratio": 0.99})
     assert db_client.post("/query").status_code == 200
     db_client.post("/chaos/reset")
+
+
+# ---------------------------------------------------------------- memory: the slowness is real work on the leaked heap, not a sleep
+def test_leaked_memory_makes_every_request_really_do_work_and_reset_clears_it(pool, monkeypatch):
+    scans = []
+    real = tx._scan_leaked_memory
+    monkeypatch.setattr(tx, "_scan_leaked_memory", lambda passes: scans.append(passes) or real(passes))
+    assert tx_client.post("/transaction").status_code == 200 and scans == []          # no leak, no extra work
+    r = tx_client.post("/chaos/memory", json={"megabytes": 8}).json()
+    assert r["held_mb"] == 8 and r["scan_passes"] == tx.DEFAULT_SCAN_PASSES
+    assert tx_client.post("/transaction").status_code == 200
+    assert scans == [tx.DEFAULT_SCAN_PASSES]                                          # the request read the heap
+    assert tx.chaos_state["latency_seconds"] == 0.0                                    # and nothing was slept
+    tx_client.post("/chaos/reset")
+    assert tx.chaos_state["memory_leak"] == [] and tx.chaos_state["scan_passes"] == 0
+    tx_client.post("/transaction")
+    assert scans == [tx.DEFAULT_SCAN_PASSES]
+
+
+def test_scan_passes_can_be_tuned_without_allocating_more_and_bad_values_are_rejected(pool):
+    tx_client.post("/chaos/memory", json={"megabytes": 4})
+    r = tx_client.post("/chaos/memory", json={"megabytes": 0, "scan_passes": 9}).json()
+    assert r["held_mb"] == 4 and r["scan_passes"] == 9
+    assert tx_client.post("/chaos/memory", json={"megabytes": -1}).status_code == 422
+    assert tx_client.post("/chaos/memory", json={"megabytes": 0, "scan_passes": 999}).status_code == 422
+
+
+def test_the_scan_really_reads_every_byte_of_the_leak():
+    import zlib
+    tx.chaos_state["memory_leak"].clear()
+    tx.chaos_state["memory_leak"].append(bytearray(b"ab" * 1024))
+    assert tx._scan_leaked_memory(1) == zlib.crc32(b"ab" * 1024)
+    assert tx._scan_leaked_memory(2) == zlib.crc32(b"ab" * 1024, zlib.crc32(b"ab" * 1024))
+    tx.chaos_state["memory_leak"].clear()

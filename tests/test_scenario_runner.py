@@ -155,7 +155,7 @@ def test_the_report_labels_a_dry_run_and_what_was_actually_injected(tmp_path):
                 "evidence": {"incident": INC}, "timeline": {"alert_after_s": 40, "incident_after_s": 95}}]
     text = rs.report(results, live=False, env={"restored": {"auto_remediate": False}})
     assert "dry run (decisions only, nothing fixed)" in text and "**dry_run**" in text and "Passed: 0 of 1" in text
-    assert "leaks every slot" in text and "injected" in text and "persist" in text
+    assert "leaks every slot" in text and "injected" in text and "work per request" in text and "sums across pods" in text
 
 
 def test_posts_carry_a_json_content_type(monkeypatch):
@@ -195,14 +195,68 @@ def test_the_runner_judges_the_incident_the_dispatcher_acts_on_not_the_first_web
     assert rs.pick_incident([{**later, "remediation": {"status": "dry_run"}}], since, INC["root_cause"])[1] is True
 
 
-def test_pool_and_disk_consequences_are_real_and_only_memory_still_injects_its_slowness():
+def test_no_fault_injects_a_consequence_any_more():
     import inspect
     src = inspect.getsource(rs.Runner.inject)
     assert "/chaos/leak" in src and "/chaos/disk" in src and '"ratio": 0.97' in src          # real leak, real full disk
-    assert "/chaos/errors" not in src                                                          # no injected errors for pool or disk
-    assert src.count("/chaos/latency") == 1                                                    # only memory still injects slowness
-    # 0.55 (pool) + 0.20 (real errors), 0.60 (memory) + 0.15 (latency), 0.60 (disk) + 0.25 (real errors) all reach 0.75
+    assert "/chaos/errors" not in src and "/chaos/latency" not in src                          # nothing injected on top: no errors, no sleep
+    assert "calibrate_memory_slowness" in src                                                  # memory slowness is real work, calibrated by measuring
+    # 0.55 (pool) + 0.20 (real errors), 0.60 (memory) + 0.15 (real latency), 0.60 (disk) + 0.25 (real errors) all reach 0.75
     assert round(0.55 + 0.20, 4) >= 0.75 and round(0.60 + 0.15, 4) >= 0.75 and round(0.60 + 0.25, 4) >= 0.75
+
+
+class SlownessCluster:
+    """Answers the memory chaos endpoint and transactions whose speed follows the scan passes last set."""
+    def __init__(self, seconds_per_pass):
+        self.passes, self.per_pass, self.calls = 0, seconds_per_pass, []
+
+    def svc(self, name, path, port="http"):
+        return path
+
+    def post(self, path, body=None, timeout=0, tries=0):
+        self.calls.append((path, body))
+        if path == "/chaos/memory":
+            self.passes = body["scan_passes"]
+        return {}
+
+
+def test_memory_slowness_is_calibrated_by_measuring_until_the_target_is_reached(monkeypatch):
+    c = SlownessCluster(0.1)
+    runner = rs.Runner.__new__(rs.Runner)
+    runner.c = c
+    clock = {"t": 0.0}
+    monkeypatch.setattr(rs.time, "time", lambda: clock["t"])
+    real_post = c.post
+
+    def post(path, body=None, timeout=0, tries=0):
+        out = real_post(path, body, timeout, tries)
+        if path == "/transaction":
+            clock["t"] += 0.02 + c.per_pass * c.passes * 0.1             # 0.1 s per 10 passes
+        return out
+    c.post = post
+    passes, med = runner.calibrate_memory_slowness()
+    assert med >= rs.Runner.TARGET_LATENCY_S and passes > 3 and passes <= 200
+
+
+def test_probe_counts_errors_and_reports_median_and_p95(monkeypatch):
+    runner = rs.Runner.__new__(rs.Runner)
+    outcomes = iter([0.1, 0.2, "boom", 0.3, 0.4])
+    clock = {"t": 0.0}
+    monkeypatch.setattr(rs.time, "time", lambda: clock["t"])
+
+    class C:
+        def svc(self, *a, **k):
+            return "/transaction"
+
+        def post(self, path, body=None, timeout=0, tries=0):
+            o = next(outcomes)
+            if o == "boom":
+                raise RuntimeError("503")
+            clock["t"] += o
+            return {}
+    runner.c = C()
+    r = runner.probe(5)
+    assert r["errors"] == 1 and r["median_s"] == 0.3 and r["p95_s"] == 0.4
 
 
 def test_sigterm_runs_the_restore_instead_of_killing_the_process_silently():

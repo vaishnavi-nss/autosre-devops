@@ -45,7 +45,7 @@ SCENARIOS = {
     "pool": {"alert": "DBPoolNearExhaustion", "cause": "db_connection_pool_exhaustion", "playbook": "restart_service.yml",
              "service": "transaction-service", "kind": "real: every slot of the service's bounded pool is leaked, so requests really time out"},
     "memory": {"alert": "ContainerMemoryHigh", "cause": "high_memory_usage", "playbook": "scale_replicas.yml",
-               "service": "transaction-service", "kind": "real: the container holds real memory"},
+               "service": "transaction-service", "kind": "real: the container holds real memory and every request does work proportional to it (slow, no sleep)"},
     "disk": {"alert": "DBDiskNearFull", "cause": "db_disk_full", "playbook": "clear_logs.yml",
              "service": "database", "kind": "real: real bytes fill the database's bounded log directory until writes really fail (HTTP 507)"},
 }
@@ -344,13 +344,43 @@ class Runner:
                 self.c.post(self.c.svc("transaction-service", "/chaos/memory"), {"megabytes": mb})
                 held += mb
                 time.sleep(20)
-            # Memory pressure slows the service. A delay is injected (0.15 s and 0.3 s were too small to fire APILatencyHigh on the real cluster; the load generator is one sequential client, so 0.5 s cannot saturate the service) so the incident carries a corroborating symptom (APILatencyHigh).
-            self.c.post(self.c.svc("transaction-service", "/chaos/latency"), {"seconds": 0.5})
-            return {"held_mb": held, "memory_ratio": self.memory_ratio(), "limit_mib": limit_mib, "consequence": "0.5 s added latency"}
+            # Memory pressure slows the service for real: each request reads the leaked heap `scan_passes` times (no sleep). The slowdown depends on the CPU
+            # the pod gets, so the intensity is calibrated by measuring: raise the passes until a transaction takes at least TARGET_LATENCY_S (the load
+            # generator is one sequential client, so this cannot saturate the service; 0.15 s and 0.3 s were too small to fire APILatencyHigh).
+            passes, med = self.calibrate_memory_slowness()
+            return {"held_mb": held, "memory_ratio": self.memory_ratio(), "limit_mib": limit_mib, "scan_passes": passes,
+                    "median_transaction_s": med, "consequence": "real: every request reads the leaked heap, so it is really slower"}
         if name == "disk":
             out = self.c.post(self.c.svc("database", "/chaos/disk"), {"ratio": 0.97})       # above the 0.95 at which writes fail
             return {"response": out, "disk": self.c.get(self.c.svc("database", "/disk")), "consequence": "real: the full disk fails writes (HTTP 507), so transactions fail"}
         raise ValueError(name)
+
+    TARGET_LATENCY_S = 0.7
+
+    def probe(self, n: int = 7) -> dict:
+        """Time n real transactions through the service. Errors are counted, not raised."""
+        lat, errors = [], 0
+        for _ in range(n):
+            t = time.time()
+            try:
+                self.c.post(self.c.svc("transaction-service", "/transaction"), {}, timeout=30, tries=1)
+                lat.append(time.time() - t)
+            except Exception:
+                errors += 1
+        lat.sort()
+        pick = lambda q: round(lat[min(len(lat) - 1, int(q * len(lat)))], 3) if lat else None
+        return {"n": n, "errors": errors, "median_s": pick(0.5), "p95_s": pick(0.95)}
+
+    def calibrate_memory_slowness(self) -> tuple[int, float | None]:
+        passes, med = 3, None
+        for _ in range(6):
+            self.c.post(self.c.svc("transaction-service", "/chaos/memory"), {"megabytes": 0, "scan_passes": passes})
+            med = self.probe(5)["median_s"]
+            log(f"    memory slowness: {passes} passes -> median transaction {med} s")
+            if med is not None and med >= self.TARGET_LATENCY_S:
+                break
+            passes = min(200, int(passes * max(1.5, min(8.0, self.TARGET_LATENCY_S / max(med or 0.02, 0.02)))) + 1)
+        return passes, med
 
     def memory_ratio(self) -> float:
         r = self.c.prom_scalar('sum(container_memory_working_set_bytes{namespace="autosre",container="transaction-service"})'
@@ -369,7 +399,14 @@ class Runner:
         if h.get("status") != "ok":
             return False, f"/health answered {h}"
         if name == "memory":
-            return (want == 3), f"{want} replicas ready (the leaking pod still holds its memory; the alert is expected to persist until it is replaced)"
+            # The alert sums memory across pods, so three pods with one leaking one should drop it back under 0.9. The leaking pod still holds its
+            # memory and stays slow; what recovers is the service as a whole: most requests land on healthy pods.
+            gone, waited = wait_for(lambda: not self.c.firing(spec["alert"]), self.t["resolve"], 10, f"{spec['alert']} to resolve")
+            p = self.probe(24)
+            ok = want == 3 and bool(gone) and p["errors"] == 0 and p["median_s"] is not None and p["median_s"] < 0.3
+            return ok, (f"{want} replicas ready; {spec['alert']} {'resolved after ' + str(waited) + ' s' if gone else 'STILL FIRING'}; "
+                        f"24 transactions: {p['errors']} errors, median {p['median_s']} s, p95 {p['p95_s']} s "
+                        f"(the leaking pod still holds its memory and is still slow)")
         gone, waited = wait_for(lambda: not self.c.firing(spec["alert"]), self.t["resolve"], 10, f"{spec['alert']} to resolve")
         if not gone:
             return False, f"{spec['alert']} still firing after {waited}s"
@@ -554,8 +591,8 @@ def report(results: list[dict], live: bool, env: dict) -> str:
     lines += ["", f"Passed: {sum(1 for r in results if r.get('passed'))} of {len(results)}.",
               f"Restore: {json.dumps(env.get('restored'))}", "",
               "Pool exhaustion leaks every slot of the service's bounded pool and a full disk really fails writes, so their errors and latency are real; memory holds "
-              "real memory and its slowness is injected. A memory scale-out does not remove the leak in the original pod, so its alert is expected to persist; "
-              "recovery there means the extra capacity is ready and the service is healthy."]
+              "real memory whose slowness is real work per request (calibrated by measuring). A memory scale-out does not remove the leak in the original pod; "
+              "recovery there means the alert resolved (it sums across pods), the extra replicas are ready, and live transactions succeed at normal speed."]
     return "\n".join(lines) + "\n"
 
 

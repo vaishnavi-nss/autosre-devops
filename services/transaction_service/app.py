@@ -1,5 +1,6 @@
 import asyncio
 import os
+import zlib
 import time
 import random
 import httpx
@@ -78,8 +79,25 @@ DB_POOL_MAX.labels(service="transaction-service").set(POOL_MAX)
 chaos_state = {
     "error_rate": 0.0,
     "latency_seconds": 0.0,
-    "memory_leak": []
+    "memory_leak": [],
+    "scan_passes": 0
 }
+
+# A service holding a large leaked heap does more work per request (cache misses, page faults, garbage collection). This models that with real
+# work, not a sleep: each request reads the whole leaked heap `scan_passes` times (a CRC over every byte, in a worker thread so /health and
+# /metrics stay responsive). The delay a request sees is therefore proportional to the memory really held and to the CPU the pod really gets.
+DEFAULT_SCAN_PASSES = int(os.getenv("MEM_SCAN_PASSES", "3"))
+_SCAN_CHUNK = 4 * 1024 * 1024
+
+
+def _scan_leaked_memory(passes: int) -> int:
+    crc = 0
+    for _ in range(passes):
+        for block in list(chaos_state["memory_leak"]):
+            view = memoryview(block)
+            for off in range(0, len(view), _SCAN_CHUNK):
+                crc = zlib.crc32(view[off:off + _SCAN_CHUNK], crc)
+    return crc
 
 class PoolChaosRequest(BaseModel):
     active_connections: int
@@ -95,7 +113,8 @@ class LatencyChaosRequest(BaseModel):
     seconds: float
 
 class MemoryChaosRequest(BaseModel):
-    megabytes: int
+    megabytes: int = 0
+    scan_passes: int | None = None
 
 @app.get("/metrics")
 def metrics():
@@ -111,6 +130,9 @@ async def execute_transaction():
     
     if chaos_state["latency_seconds"] > 0:
         time.sleep(chaos_state["latency_seconds"])
+
+    if chaos_state["memory_leak"] and chaos_state["scan_passes"] > 0:
+        await asyncio.get_running_loop().run_in_executor(None, _scan_leaked_memory, chaos_state["scan_passes"])
 
     if chaos_state["error_rate"] > 0 and random.random() < chaos_state["error_rate"]:
         HTTP_REQUESTS_TOTAL.labels(service="transaction-service", method="POST", status="500").inc()
@@ -176,9 +198,16 @@ def chaos_latency(req: LatencyChaosRequest):
 def chaos_memory(req: MemoryChaosRequest):
     if not (os.getenv("CHAOS_ENABLED", "false").lower() == "true"):
         raise HTTPException(status_code=404, detail="Chaos disabled")
-    block = bytearray(req.megabytes * 1024 * 1024)
-    chaos_state["memory_leak"].append(block)
-    return {"status": "memory allocated", "mb": req.megabytes}
+    if req.megabytes < 0 or (req.scan_passes is not None and not 0 <= req.scan_passes <= 200):
+        raise HTTPException(status_code=422, detail="megabytes must be >= 0 and scan_passes between 0 and 200")
+    if req.megabytes > 0:
+        chaos_state["memory_leak"].append(bytearray(req.megabytes * 1024 * 1024))
+    if req.scan_passes is not None:
+        chaos_state["scan_passes"] = req.scan_passes
+    elif chaos_state["memory_leak"] and chaos_state["scan_passes"] == 0:
+        chaos_state["scan_passes"] = DEFAULT_SCAN_PASSES
+    held = sum(len(b) for b in chaos_state["memory_leak"]) // (1024 * 1024)
+    return {"status": "memory allocated", "mb": req.megabytes, "held_mb": held, "scan_passes": chaos_state["scan_passes"]}
 
 @app.post("/chaos/reset")
 def chaos_reset():
@@ -187,6 +216,7 @@ def chaos_reset():
     chaos_state["error_rate"] = 0.0
     chaos_state["latency_seconds"] = 0.0
     chaos_state["memory_leak"].clear()
+    chaos_state["scan_passes"] = 0
     pool_state["pinned"] = 0
     pool_state["leaked"] = 0
     DB_POOL_MAX.labels(service="transaction-service").set(POOL_MAX)
