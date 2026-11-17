@@ -1,24 +1,29 @@
 # Test report: what was run on the real cluster, what it showed, what is still open
 
 Branch `devops-completion`. Cluster: Minikube (containerd) on the AWS Academy lab EC2 instance (`i-04f8f4d75378a1aba`), isolated `autosre` namespace,
-2026-11-16 and 2026-11-17. Raw results: `s3://autosre-validation-841736140404/results-comp3/` to `results-comp10/` (`<run>.log`, `report.md`, `scenarios.json`).
+2026-11-16 and 2026-11-17 (comp11 ran on 2026-11-17, 09:02 to 09:37 UTC). Raw results: `s3://autosre-validation-841736140404/results-comp3/` to `results-comp10/` (`<run>.log`, `report.md`, `scenarios.json`).
 Unit tests: **265 passed** (`pytest tests correlation-engine/tests second-opinion/tests`); the baseline on `devops-integration` was 150. The unit tests use a fake
 cluster and a stubbed `ansible-playbook`; they do not show that a playbook works. Only the runs below do.
 
-**Nothing here is simulated recovery.** Each scenario says what kind of fault it is: pool exhaustion sets the pool gauge (no real connections are held) and
-injects the transaction errors an exhausted pool would cause; memory holds real memory in the container and injects the slowness that causes; disk writes real
-bytes into the database pod's bounded log directory and injects the write errors a full disk causes. Those consequence symptoms are injected because a lone
-deciding symptom scores only 0.55 to 0.60, below the dispatcher's 0.75 gate, which then (correctly) refuses to act.
+**Nothing here is simulated recovery.** Each row says what kind of fault it is. From comp11 on, **pool exhaustion and a full disk are real faults**: every slot of
+the transaction service's bounded connection pool is leaked (requests really time out with HTTP 503), and the database's bounded log directory is really filled until
+writes fail with HTTP 507. Their errors and latency are real; nothing is injected on top. **Memory is partly injected**: real memory is held in the container, but the
+slowness it would cause is injected (0.5 s latency). The comp6 to comp10 rows for pool and disk used the older models (pool gauge pinned plus injected errors; real disk
+bytes plus injected errors) and are kept for history.
 
 ## Live results (AUTO_REMEDIATE on for the run only; restored and confirmed off afterwards)
 
 | Scenario | Run | Outcome | Alert after | Incident after | Cause | Confidence | ML | Playbook | Recovered (independent check) |
 |---|---|---|---:|---:|---|---:|---|---|---|
-| pool | comp6 | **passed** | 56 s | 118 s | db_connection_pool_exhaustion | 0.75 | agree | `restart_service.yml` | yes |
-| pool | comp9 | **passed** (reproduced) | 51 s | 128 s | db_connection_pool_exhaustion | 0.75 | agree | `restart_service.yml` | yes |
+| **pool (real)** | comp11, trial 1 | **passed** | 41 s | 148 s | db_connection_pool_exhaustion | **0.85** | agree | `restart_service.yml` | yes |
+| **pool (real)** | comp11, trial 2 | **passed** (repeat) | 46 s | 133 s | db_connection_pool_exhaustion | **0.85** | agree | `restart_service.yml` | yes |
+| **disk (real, writes fail with 507)** | comp11, trial 1 | **passed** | 72 s | 103 s | db_disk_full | **0.85** | agree | `clear_logs.yml` | yes |
+| **disk (real, writes fail with 507)** | comp11, trial 2 | **passed** (repeat) | 82 s | 112 s | db_disk_full | **0.85** | agree | `clear_logs.yml` | yes |
+| pool (older model) | comp6 | **passed** | 56 s | 118 s | db_connection_pool_exhaustion | 0.75 | agree | `restart_service.yml` | yes |
+| pool (older model) | comp9 | **passed** (reproduced) | 51 s | 128 s | db_connection_pool_exhaustion | 0.75 | agree | `restart_service.yml` | yes |
 | cooldown | comp6, comp9 | **passed**: the same fault again was `skipped/cooldown`; executions 1 to 1 | | | db_connection_pool_exhaustion | 0.75 | agree | none started | n/a |
 | **memory** | comp10 | **passed** | 56 s | 128 s | high_memory_usage | 0.75 | agree | `scale_replicas.yml` | yes |
-| **disk** | comp10 | **passed** | 66 s | 82 s | db_disk_full | 0.75 | agree | `clear_logs.yml` | yes (disk ratio back to 0.30) |
+| **disk** (older model) | comp10 | **passed** | 66 s | 82 s | db_disk_full | 0.75 | agree | `clear_logs.yml` | yes (disk ratio back to 0.30) |
 | unknown cause | comp4, comp10 | **passed**: escalated to a human, nothing executed | 91 s | n/a | none | n/a | n/a | none | n/a |
 | guardrails (7 checks dry, 6 live) | comp4, comp6, comp8 to comp10 | **passed** every time, no execution started | | | | | | | |
 
@@ -58,6 +63,7 @@ in a browser, so the visual layout is untested.
 | comp8 | dry | memory, two-fault ambiguity and gate scenarios (above) |
 | comp9 | live | pool and cooldown passed again; stopped at memory on an HTTP 503 right after a restart (the runner now waits for a healthy pod and retries) and restored |
 | comp10 | live | **memory, disk and unknown cause passed** (above) |
+| **comp11** | live | **real pool and real disk faults, each twice: 4 of 4 passed** (above). Restore confirmed: `auto_remediate: false`, no errors, all 8 deployments 1/1 |
 
 ## Bugs that only the real cluster showed (all fixed and covered by a test)
 
@@ -77,7 +83,7 @@ in a browser, so the visual layout is untested.
 
 | # | Criterion | Status |
 |---|---|---|
-| 1 | All three faults can be injected | Yes: pool (injected gauge), memory (real), disk (real bytes) |
+| 1 | All three faults can be injected | Yes: pool (real: leaked slots), memory (real memory, injected slowness), disk (real bytes, real write failures) |
 | 2 | Prometheus detects the correct symptoms | Yes: 51 to 91 s |
 | 3 | The engine identifies the correct root cause | Yes, all three, at confidence 0.75 to 0.85 |
 | 4 | The ML second opinion produces a recorded verdict | Yes, on every incident (agree on all passing live runs) |
@@ -86,21 +92,17 @@ in a browser, so the visual layout is untested.
 | 7 | Kubernetes and application health confirm recovery | **Yes, all three**, by an independent check (memory = capacity ready and healthy) |
 | 8 | Grafana displays the incident and recovery evidence | **Partly**: the data the panels use is present and the front end serves it; the rendered pages were not viewed |
 | 9 | Unknown and unsafe incidents escalate to a human | Yes: unknown-cause scenario, guardrails, cooldown, two-fault ambiguity, gate veto |
-| 10 | Automated tests pass; deployment documented | Yes (255 tests; `01-audit.md`, `02-deploy-demo-cleanup-rollback.md`, this report) |
+| 10 | Automated tests pass; deployment documented | Yes (265 tests; `01-audit.md`, `02-deploy-demo-cleanup-rollback.md`, this report) |
 
-## Limits, and what was done about each (status as of the last commit)
+## Limits, and what was done about each
 
 | Limit | Fix | Verified on the cluster? |
 |---|---|---|
-| The pool fault only set a gauge | The transaction service now has a **real bounded connection pool** (`DB_POOL_MAX` slots, `DB_POOL_TIMEOUT` wait). `/chaos/leak` takes slots that are never returned; with every slot leaked, requests **really time out with HTTP 503**, the gauge is measured from real slot use, and a restart really clears it (a new process starts with a full pool) | **No.** Unit tests only (`tests/test_real_faults.py`). The live runs above used the older gauge-pin fault |
-| Pool and disk consequence symptoms were injected | Pool: the 503 timeouts give real `ErrorRateHigh` and `APILatencyHigh`. Disk: a full disk (ratio at or above 0.95) **really fails database writes (HTTP 507)**, which the transaction service reports as 5xx. The scenarios no longer inject errors for pool or disk | **No**, same reason |
-| Memory scale-out leaves the leak in the original pod; memory's slowness is injected | **Not fixed.** The injected 0.5 s latency stays (labelled), and recovery for memory still means the extra replicas are ready and the service is healthy. A real memory-driven slowdown cannot be produced deterministically without changing what the playbook does | n/a |
-| One passing run per scenario | A `COOLDOWN` option lets the launcher repeat a scenario (`SCENARIOS=pool,disk,pool,disk COOLDOWN=60`). The repeat run (comp11) was **not run**: the lab session ended before it could start | **No** |
-| Front end and Grafana pages not viewed | Not addressed: the data they read is verified, the rendered pages are not | No |
+| The pool fault only set a gauge | Real bounded connection pool in the transaction service; `/chaos/leak` takes slots that are never returned, so requests really time out with HTTP 503, and a restart really clears it | **Yes**: comp11, 2 of 2, alert 41 s and 46 s, confidence 0.85, `restart_service.yml`, recovered |
+| Pool and disk consequence symptoms were injected | Pool: the 503 timeouts give real `ErrorRateHigh` and `APILatencyHigh`. Disk: a full disk (ratio at or above 0.95) really fails writes with 507. The scenarios inject nothing else for these two | **Yes**: confidence rose from 0.75 to **0.85** with no injected symptoms, which is what the real consequences should do |
+| One passing run per scenario | The `COOLDOWN` option repeats scenarios in one run | **Partly**: pool and disk each passed twice in a row (4 of 4). Two trials are not a reliability rate, and memory was not repeated |
+| Memory scale-out leaves the leak in the original pod; memory's slowness is injected | **Not fixed.** A real memory-driven slowdown cannot be produced deterministically without changing what the playbook does; recovery for memory means the extra replicas are ready and the service is healthy | n/a |
+| Front end and Grafana pages not viewed | **Not addressed**: the data they read is verified, the rendered pages are not | No |
 
-**Until the next lab session runs comp11, treat the live results above as obtained with the older fault models** (pool gauge pinned plus injected errors; disk bytes
-real plus injected errors). The new fault models have 265 passing unit tests, nothing more. The cluster was left with `AUTO_REMEDIATE=false` (comp10 restored it).
-
-Next live run, needs a new lab session and, for live execution, approval:
-`curl -fsS https://raw.githubusercontent.com/vaishnavi-nss/autosre-devops/devops-completion/scripts/aws/start-completion-run.sh | RUN=comp11 LIVE=1 COOLDOWN=60 SCENARIOS=pool,disk,pool,disk bash`
-(about 55 minutes; it rebuilds the images, so the services pick up the real pool and the real disk failure).
+Not covered by comp11: the cooldown, guardrail and unknown-cause scenarios were not repeated against the new fault models (their results above stand; they do not
+depend on the pool or disk fault). Merging `devops-completion` into the teammate's branch is the owner's decision.
