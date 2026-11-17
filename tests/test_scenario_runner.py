@@ -259,6 +259,17 @@ def test_probe_counts_errors_and_reports_median_and_p95(monkeypatch):
     assert r["errors"] == 1 and r["median_s"] == 0.3 and r["p95_s"] == 0.4
 
 
+def test_memory_cleanup_replaces_the_pods_so_no_leak_survives_a_scale_down():
+    calls = []
+    runner = rs.Runner.__new__(rs.Runner)
+    runner.c = type("C", (), {"kubectl": lambda self, *a, **k: calls.append(a)})()
+    runner.cleanup_memory_fault()
+    assert ("-n", rs.NS, "scale", "deploy/transaction-service", "--replicas=1") in calls
+    assert ("-n", rs.NS, "rollout", "restart", "deploy/transaction-service") in calls
+    import inspect
+    assert "cleanup_memory_fault" in inspect.getsource(rs.Runner.run_fault)
+
+
 def test_sigterm_runs_the_restore_instead_of_killing_the_process_silently():
     """Found after comp5: a relaunch sent SIGTERM, Python exited without running `finally`, and AUTO_REMEDIATE stayed true."""
     import signal

@@ -454,11 +454,17 @@ class Runner:
         log(f"    -> {rec['outcome']}: {rec['why']}")
         self.reset_faults()
         if name == "memory":
-            self.c.kubectl("-n", NS, "scale", "deploy/transaction-service", "--replicas=1")
+            self.cleanup_memory_fault()
         self.settle("transaction-service", "database")
         if not self.quiet(self.t["quiet"]):
             rec["warning"] = "alerts had not cleared by the time the next scenario was due"
         return rec
+
+    def cleanup_memory_fault(self) -> None:
+        """A reset reaches one pod only, and scaling down keeps an arbitrary pod, which may be the one holding the leak (found in comp12: the alert
+        fired again and the dispatcher, correctly, scaled out a second time). Scale back to one replica and replace the pods, so nothing is left."""
+        self.c.kubectl("-n", NS, "scale", "deploy/transaction-service", "--replicas=1")
+        self.c.kubectl("-n", NS, "rollout", "restart", "deploy/transaction-service")
 
     def run_unknown(self) -> dict:
         since = iso()
