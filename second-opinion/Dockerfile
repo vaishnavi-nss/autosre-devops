@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+﻿FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -13,6 +13,8 @@ COPY app.py opinion.py prometheus.py scoring.py ./
 COPY models/second_opinion.joblib models/second_opinion.joblib
 # Trained on our own injected faults (train_own.py, docs/evaluation.md run 3). Shadow mode only.
 COPY models/own.joblib models/own.joblib
+# Retrained on the older trials plus real-fault trials (eval_real.py). Opt-in only: load it with MODEL_PATH=models/own_real.joblib (launcher: SCORER_MODEL=own_real.joblib).
+COPY models/own_real.joblib models/own_real.joblib
 ENV MODEL_PATH=models/own.joblib
 
 RUN useradd --create-home --uid 10001 appuser
