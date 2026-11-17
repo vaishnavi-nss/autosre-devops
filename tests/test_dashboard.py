@@ -35,3 +35,12 @@ def test_the_original_panels_are_untouched():
     titles = [p["title"] for p in DASH["panels"]]
     for t in ("Confidence of the last diagnosis", "Incidents received", "Connection pool utilisation", "Database disk usage", "Container memory vs limit"):
         assert t in titles
+
+
+def test_count_panels_always_show_their_name_and_read_zero_instead_of_no_data():
+    """Seen in the rendered Grafana on the real cluster: the bar gauges hid the series name, and 'Executions by result' said 'No data' before the first execution."""
+    count_panels = [p for p in DASH["panels"] if p["title"] in ("Root causes identified", "Executions by result", "Not run, and why")]
+    assert len(count_panels) == 3
+    for p in count_panels:
+        assert p["type"] == "stat" and p["options"]["textMode"] == "value_and_name"
+        assert " or on() label_replace(vector(0)" in p["targets"][0]["expr"]

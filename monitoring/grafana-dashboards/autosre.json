@@ -301,7 +301,7 @@
     },
     {
       "id": 6,
-      "type": "bargauge",
+      "type": "stat",
       "title": "Root causes identified",
       "datasource": {
         "type": "prometheus",
@@ -319,7 +319,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (root_cause) (root_causes_identified_total{service=\"correlation-engine\"})",
+          "expr": "sum by (root_cause) (root_causes_identified_total{service=\"correlation-engine\"}) or on() label_replace(vector(0), \"root_cause\", \"none yet\", \"\", \"\")",
           "legendFormat": "{{root_cause}}",
           "refId": "A",
           "instant": true
@@ -351,8 +351,11 @@
           "fields": "",
           "values": false
         },
-        "orientation": "horizontal",
-        "displayMode": "basic"
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "orientation": "auto",
+        "justifyMode": "center"
       }
     },
     {
@@ -951,7 +954,7 @@
     },
     {
       "id": 18,
-      "type": "bargauge",
+      "type": "stat",
       "title": "Executions by result",
       "datasource": {
         "type": "prometheus",
@@ -969,7 +972,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (result) (remediation_executions_total)",
+          "expr": "sum by (result) (remediation_executions_total) or on() label_replace(vector(0), \"result\", \"none yet\", \"\", \"\")",
           "legendFormat": "{{result}}",
           "refId": "A",
           "instant": true
@@ -1001,14 +1004,17 @@
           "fields": "",
           "values": false
         },
-        "orientation": "horizontal",
-        "displayMode": "basic"
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "orientation": "auto",
+        "justifyMode": "center"
       },
       "description": "succeeded means Kubernetes and the service's health check confirmed recovery. verification_failed and failed escalate to a human."
     },
     {
       "id": 19,
-      "type": "bargauge",
+      "type": "stat",
       "title": "Not run, and why",
       "datasource": {
         "type": "prometheus",
@@ -1026,7 +1032,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (reason) (remediation_skipped_total)",
+          "expr": "sum by (reason) (remediation_skipped_total) or on() label_replace(vector(0), \"reason\", \"none\", \"\", \"\")",
           "legendFormat": "{{reason}}",
           "refId": "A",
           "instant": true
@@ -1058,8 +1064,11 @@
           "fields": "",
           "values": false
         },
-        "orientation": "horizontal",
-        "displayMode": "basic"
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "orientation": "auto",
+        "justifyMode": "center"
       },
       "description": "escalated, cooldown and duplicate: the guardrails that kept the dispatcher from acting."
     },
