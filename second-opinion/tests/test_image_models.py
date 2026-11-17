@@ -1,9 +1,11 @@
-"""The image ships both scorer models, and the default stays the one that was validated until the retrained one is promoted on evidence."""
+﻿"""The image ships both scorer models, and the default stays the one that was validated until the retrained one is promoted on evidence."""
+import sys
 from pathlib import Path
 
 import joblib
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))              # the pickled models import scoring from the service folder
 
 
 def test_default_model_is_unchanged_and_the_retrained_one_is_opt_in():
