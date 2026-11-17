@@ -437,3 +437,54 @@ def test_a_missing_cluster_or_an_api_error_is_a_clear_failure_not_a_crash(monkey
 def test_the_kubernetes_client_ansible_uses_is_pinned():
     reqs = (ROOT / "remediation-dispatcher" / "requirements.txt").read_text()
     assert "kubernetes==31.0.0" in reqs and "kubernetes>=" not in reqs
+
+
+# ---------------------------------------------------------------- history survives a restart
+def _record(rid, finished_ago_s, status="succeeded", cause="db_connection_pool_exhaustion", target="transaction-service"):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    return {"id": rid, "status": status, "started_at": (now - timedelta(seconds=finished_ago_s + 30)).isoformat(timespec="seconds"),
+            "finished_at": (now - timedelta(seconds=finished_ago_s)).isoformat(timespec="seconds"), "playbook": "restart_service.yml",
+            "root_cause": cause, "target_service": target, "steps": [], "recovered": status == "succeeded"}
+
+
+def test_history_and_active_cooldowns_are_reloaded_after_a_restart(tmp_path, monkeypatch):
+    import json
+    log_file = tmp_path / "executions.jsonl"
+    old, fresh, failed_preflight = _record("old", 5000), _record("fresh", 100), _record("pf", 50, status="preflight_failed", cause="db_disk_full", target="database")
+    log_file.write_text("\n".join([json.dumps(old), "not json", json.dumps(fresh), json.dumps({"no": "id"}), json.dumps(failed_preflight)]) + "\n", encoding="utf-8")
+    monkeypatch.setenv("EXEC_LOG", str(log_file))
+    assert disp._load_history(disp.settings()) == 3
+    assert list(disp._executions) == ["old", "fresh", "pf"]                                   # history is back, oldest first, junk skipped
+    assert ("db_connection_pool_exhaustion", "transaction-service") in disp._cooldowns         # finished 100 s ago, cooldown is 600 s
+    remaining = disp._cooldowns[("db_connection_pool_exhaustion", "transaction-service")] - disp.time.monotonic()
+    assert 450 < remaining <= 500
+    assert ("db_disk_full", "database") not in disp._cooldowns                                  # a preflight failure never started a cooldown
+
+
+def test_a_restored_cooldown_blocks_the_same_fix_running_again(tmp_path, monkeypatch, isolated):
+    import json
+    log_file = tmp_path / "executions.jsonl"
+    log_file.write_text(json.dumps(_record("fresh", 60)) + chr(10), encoding="utf-8")
+    monkeypatch.setenv("EXEC_LOG", str(log_file))
+    disp._load_history(disp.settings())
+    again = client.post("/dispatch", json=POOL).json()                      # the same pool incident, right after a "restart"
+    assert again["status"] == "skipped" and again["reason"] == "cooldown" and isolated.ran == []
+    assert client.post("/dispatch", json=MEM).status_code == 202            # a different cause is not blocked
+
+
+def test_with_no_log_configured_or_a_missing_file_nothing_is_loaded(tmp_path, monkeypatch):
+    monkeypatch.delenv("EXEC_LOG", raising=False)
+    assert disp._load_history(disp.settings()) == 0
+    monkeypatch.setenv("EXEC_LOG", str(tmp_path / "absent.jsonl"))
+    assert disp._load_history(disp.settings()) == 0 and not disp._executions
+
+
+def test_the_manifest_gives_the_history_a_persistent_volume():
+    docs = list(yaml.safe_load_all((Path(__file__).resolve().parents[1] / "k8s" / "remediation-dispatcher.yaml").read_text(encoding="utf-8")))
+    dep = next(d for d in docs if d and d["kind"] == "Deployment")
+    pod = dep["spec"]["template"]["spec"]
+    assert pod["securityContext"]["fsGroup"] == 10001
+    assert {"name": "EXEC_LOG", "value": "/data/executions.jsonl"} in pod["containers"][0]["env"]
+    assert pod["volumes"][0]["persistentVolumeClaim"]["claimName"] == "remediation-dispatcher-history"
+    assert any(d and d["kind"] == "PersistentVolumeClaim" and d["metadata"]["name"] == "remediation-dispatcher-history" for d in docs)

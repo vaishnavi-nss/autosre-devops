@@ -52,6 +52,8 @@ kubectl -n autosre set env deploy/remediation-dispatcher AUTO_REMEDIATE=false CO
 kubectl -n autosre set env deploy/transaction-service CHAOS_ENABLED=false >/dev/null
 kubectl -n autosre set env deploy/database CHAOS_ENABLED=false >/dev/null
 kubectl -n autosre set env deploy/correlation-engine SECOND_OPINION_MODE=shadow ESCALATE_ON_AMBIGUITY- >/dev/null
+# A run starts with an empty execution history (and so no leftover cooldown from an earlier run). The history then survives the restarts inside the run.
+kubectl -n autosre exec deploy/remediation-dispatcher -- rm -f /data/executions.jsonl >/dev/null 2>&1 || true
 # Which scorer model to load. An override from an earlier run must not linger, so it is set or cleared explicitly every time.
 if [ -n "${1:-}" ]; then kubectl -n autosre set env deploy/second-opinion MODEL_PATH="models/$1" >/dev/null; else kubectl -n autosre set env deploy/second-opinion MODEL_PATH- >/dev/null; fi
 # Replace every pod so none carries a stale image or an environment override from an earlier session.

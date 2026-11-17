@@ -240,6 +240,45 @@ def _persist(record: dict, cfg: dict) -> None:
             log.warning("could not write execution log: %s", exc)
 
 
+def _load_history(cfg: dict) -> int:
+    """Reload finished executions from EXEC_LOG after a restart, so the dashboard keeps its history, and re-arm any cooldown that has not
+    run out (a restart must not let the same fix run again straight away). Unreadable lines are skipped. Returns how many were loaded."""
+    path = cfg["exec_log"]
+    if not path or not Path(path).is_file():
+        return 0
+    records = []
+    try:
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(rec, dict) and rec.get("id") and rec.get("started_at"):
+                records.append(rec)
+    except OSError as exc:
+        log.warning("could not read execution log: %s", exc)
+        return 0
+    records = records[-MAX_KEPT:]
+    now = datetime.now(timezone.utc)
+    with _lock:
+        for rec in records:
+            _executions[rec["id"]] = rec
+            try:
+                finished = datetime.fromisoformat(rec["finished_at"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            remaining = cfg["cooldown_s"] - (now - finished).total_seconds()
+            if remaining > 0 and rec.get("status") != "preflight_failed":
+                _cooldowns[(rec.get("root_cause"), rec.get("target_service"))] = time.monotonic() + remaining
+    log.info("reloaded %d executions from %s", len(records), path)
+    return len(records)
+
+
+@app.on_event("startup")
+def _restore_state() -> None:
+    _load_history(settings())
+
+
 def _service_url(cfg: dict, service: str) -> str:
     return cfg["service_url_template"].format(service=service, namespace=cfg["namespace"]).rstrip("/")
 

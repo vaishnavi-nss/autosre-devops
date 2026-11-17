@@ -60,6 +60,8 @@ spec:
         app.kubernetes.io/part-of: autosre
     spec:
       serviceAccountName: remediation-dispatcher
+      securityContext:
+        fsGroup: 10001                  # the image runs as uid 10001; the history volume must be writable by it
       containers:
         # Keep this name equal to the service name - the PodRestartsHigh rule turns the `container` label into `service`.
         - name: remediation-dispatcher
@@ -81,6 +83,12 @@ spec:
               value: "600"
             - name: TARGET_NAMESPACE
               value: "autosre"
+            # Finished executions are appended here and reloaded after a restart, so the dashboard keeps its history.
+            - name: EXEC_LOG
+              value: /data/executions.jsonl
+          volumeMounts:
+            - name: history
+              mountPath: /data
           resources:
             requests:
               cpu: 50m
@@ -100,6 +108,24 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 5
+      volumes:
+        - name: history
+          persistentVolumeClaim:
+            claimName: remediation-dispatcher-history
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: remediation-dispatcher-history
+  namespace: autosre
+  labels:
+    app: remediation-dispatcher
+    app.kubernetes.io/part-of: autosre
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 64Mi
 ---
 apiVersion: v1
 kind: Service
