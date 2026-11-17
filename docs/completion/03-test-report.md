@@ -85,10 +85,9 @@ numbers exactly (95.3 % service accuracy; 100 true claims agreed, 2 wrong claims
 | Independent real-fault windows, 8 trials (4 memory, 2 pool, 2 disk), 32 probes, **trained on by neither** | `docs/completion/real-fault-trials-2` | **32 of 32**, same | **32 of 32**, same |
 | Live verdicts, dry run with the current model loaded (10 faults, comp "coll1") | the cluster | agreed **10 of 10** (memory 5/5) | n/a |
 
-Counting every live run with the current model, the second opinion agreed on 8 of 9 real memory faults, and on every pool and disk fault. The retrained model also loaded and ran on
-the cluster (the pod log shows `loaded scorer from models/own_real.joblib`; run "coll2": 8 real faults with it loaded, decisions only). **Not yet read: coll2's live verdicts
-and its two-fault gate check** (`pair_gate`). The lab session ended before I could read them from `s3://autosre-validation-841736140404/results-coll2/`; the raw data is there.
-Those two results are the only open item of this experiment.
+Counting every live run with the current model, the second opinion agreed on 8 of 9 real memory faults, and on every pool and disk fault. The retrained model also loaded and ran on the cluster (the pod log shows `loaded scorer from models/own_real.joblib`; run "coll2", decisions only, 8 real faults).
+**Live verdicts with the retrained model: 8 of 8 agreed** (memory 4/4, pool 2/2, disk 2/2), and the two-fault `pair_gate` check **passed**; `auto_remediate: false` was
+confirmed after the run (`results-coll2/report.md`). So the retrained model is also fine live, and also not better.
 
 **What this means.** Retraining did not change anything measurable, because the current model is already right on every real-fault window I could record, including the weak-signal
 windows (a fault that follows another within 30 minutes has a polluted baseline, so memory shows as z of about 3 instead of 33) and the clean strong one. So I kept
@@ -134,6 +133,32 @@ Two honest limits: the dispatcher keeps its history and counters **in memory**, 
 cumulative count panels (the trend panels keep their history in Prometheus); and the `pickIncident` fix (3) was pushed after comp14 was deployed, so the deployed pod does not have
 it yet. It was verified in the browser through the locally served real page.
 
+### The cloud side, checked from a cold start (2026-11-17, run "cloud1")
+
+The AWS lab had been stopped and restarted, so this checks the whole AWS path from nothing. What it showed:
+
+| Check | Result |
+|---|---|
+| EC2 instance `i-04f8f4d75378a1aba` | `t3.large`, running, up 4 minutes when checked; 38 GB disk 36 % used; 7.8 GB RAM |
+| Systems Manager (how every command reached the instance) | **Online** (agent 3.3.4793.0, Ubuntu 24.04) |
+| S3 results bucket | reachable; every run's `report.md`, `scenarios.json`, `trials.jsonl` and log synced (checked for coll1, coll2, cloud1) |
+| Minikube after the cold boot | control plane `host: Running`, but **kubelet and apiserver stopped**; the launcher started it unaided and the namespace came back |
+| Images rebuilt and redeployed from the branch | all **8** deployments 1/1 |
+| Playbooks inside the running dispatcher pod | `kubernetes.core 6.6.0`; **all 3 playbooks pass `--syntax-check`** |
+| Second-opinion model | default `models/own.joblib` loaded (pod log), as intended |
+| Guardrails (dry) | 7 of 7 held |
+| **Pool, live** | passed: alert, diagnosis, second opinion, playbook and independent recovery |
+| **Memory, live** | passed, same five confirmations |
+| **Disk, live** | passed, same five confirmations |
+| Unknown cause | passed: escalated to a human, nothing executed |
+| Restore | `AUTO_REMEDIATE` switched off, chaos off, replicas back to 1: **confirmed false**, 8 of 8 deployments 1/1, no runner left |
+
+So the live path (Prometheus, Alertmanager, engine, second opinion, dispatcher, Ansible, Kubernetes recovery) works from a cold start on AWS, 5 of 5 scenarios.
+
+Two things the check turned up, neither a failure of the system:
+- The image-check step printed a Python `BrokenPipeError` traceback because it piped `ansible-playbook --version` into `head -1`. It was noise only (the playbook checks after it passed); fixed in the launcher.
+- **Three other EC2 instances were running** in the lab account (`t3.medium`, ids ending `...7ea`, `...a88c6`, `...1ed3519`, not part of AutoSRE), using lab budget. I left them alone as agreed earlier; stopping or terminating them is your call.
+
 ## Runs, in order
 
 | Run | Mode | What it showed |
@@ -151,6 +176,8 @@ it yet. It was verified in the browser through the locally served real page.
 | comp12 | live (stopped) | First run with the real memory slowness: trial 1 passed. Then it showed a runner bug (below): after the memory trial the scale-down kept the pod that still held the leak, the alert fired again and the dispatcher, correctly, scaled out a second time, which contaminated the next trial. Relaunched as comp13; the launcher's restore ran and safe defaults were confirmed |
 | **comp13** | live | memory x3, pool x2, disk x2: **6 passed, 1 escalated by policy** (ML disagree). Restore confirmed |
 | **comp14** | live | pool, cooldown, unknown cause, live guardrails: **4 of 4 passed**. Restore confirmed: `auto_remediate: false`, no errors, 8 of 8 deployments 1/1, no runner |
+| coll1, coll2 | dry, `--collect` | real-fault trial data for the scorer experiment (10 and 8 faults); coll2 ran the retrained model: 8/8 agree, `pair_gate` passed |
+| **cloud1** | live, cold start | pool, memory, disk live and unknown cause: **5 of 5 passed**, guardrails 7/7, default model, restore confirmed (see "The cloud side") |
 
 ## Bugs that only the real cluster showed (all fixed and covered by a test)
 
