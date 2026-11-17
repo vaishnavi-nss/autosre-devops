@@ -64,7 +64,7 @@ async def state():
                 _json(client, f"{DISPATCHER_URL}/deployments"),
                 _json(client, f"{DISPATCHER_URL}/health"),
                 _json(client, f"{DISPATCHER_URL}/state"),
-                _json(client, prom, {"query": 'ALERTS{alertstate="firing",namespace="autosre"}'}),
+                _json(client, prom, {"query": 'ALERTS{alertstate="firing",namespace="autosre",alertname!~"InfoInhibitor|Watchdog"}'}),     # meta alerts are not incidents
                 _json(client, prom, {"query": 'max(db_connection_pool_active{service="transaction-service"})'}),
                 _json(client, prom, {"query": 'max(db_connection_pool_max{service="transaction-service"})'}),
                 _json(client, prom, {"query": 'max(db_disk_usage_ratio{service="database"})'}))
@@ -224,7 +224,7 @@ async def serve_dashboard():
 
         /* Grids & Cards */
         .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem; margin-bottom: 2rem; }
-        .grid-2 { display: grid; grid-template-columns: 1.8fr 1.2fr; gap: 1.75rem; }
+        .grid-2 { display: grid; grid-template-columns: 1.8fr 1.2fr; gap: 1.75rem; align-items: start; }
 
         .card {
           background: var(--card-bg);

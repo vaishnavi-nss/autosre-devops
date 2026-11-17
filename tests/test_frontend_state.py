@@ -105,3 +105,9 @@ def test_the_page_shows_real_panels_and_no_placeholders():
     assert "/api/state" in html and "function esc(" in html            # values from services are escaped before they reach innerHTML
     for stale in ("awaiting_telemetry", "ENGAGED (10m)", "2 / 20", "&ge; 18 active"):
         assert stale not in html, stale
+
+
+def test_meta_alerts_are_not_shown_as_firing_incidents():
+    """Seen in the rendered page on the real cluster: InfoInhibitor (a meta alert) was listed as an active alert with a red badge."""
+    import inspect
+    assert 'alertname!~"InfoInhibitor|Watchdog"' in inspect.getsource(fe.state)
