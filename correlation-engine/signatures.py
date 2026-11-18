@@ -88,7 +88,9 @@ SIGNATURES: dict[str, dict] = {
     "api_gateway_down": {
         "owner": "api-gateway",
         "required_symptoms": ["DeploymentUnavailable"],
-        "weights": {"DeploymentUnavailable": 0.60, "ErrorRateHigh": 0.25, "APILatencyHigh": 0.15},
+        # The gateway is the front door: with no replica left, nothing exists to count a failed request, so no ErrorRateHigh or APILatencyHigh can ever fire for it
+        # (the live run showed the deciding alert alone for 9 minutes). Zero available replicas for 30 seconds is itself the whole evidence. See DEFINITIVE.
+        "weights": {"DeploymentUnavailable": 1.0},
         "playbook": "restore_service.yml",
         "description": "The API gateway has no available replica.",
     },
@@ -110,7 +112,9 @@ SIGNATURES: dict[str, dict] = {
     "api_gateway_unreachable": {
         "owner": "api-gateway",
         "required_symptoms": ["ServiceHasNoEndpoints"],
-        "weights": {"ServiceHasNoEndpoints": 0.60, "ErrorRateHigh": 0.25, "APILatencyHigh": 0.15},
+        # As for api_gateway_down: requests never reach the gateway, so it cannot report errors or latency. A Service with no ready endpoint while its Deployment has
+        # available pods for a minute is itself the whole evidence. See DEFINITIVE.
+        "weights": {"ServiceHasNoEndpoints": 1.0},
         "playbook": "fix_service_selector.yml",
         "description": "The API gateway pods are available but its Service has no endpoint.",
     },
@@ -177,9 +181,11 @@ SIGNATURES: dict[str, dict] = {
     },
 }
 
-#: Causes whose single deciding symptom is a definitive state (see the comment above them): the only ones allowed to clear the confidence gate on that symptom alone.
+#: Causes whose single deciding symptom is a definitive state: the only ones allowed to clear the confidence gate on that symptom alone. The six drift causes are wrong by
+#: themselves; the two gateway causes cannot have a second symptom, because a gateway with no pods or no endpoint cannot report its own failures.
 DEFINITIVE = frozenset({"deployment_paused_transaction_service", "deployment_paused_api_gateway", "service_type_changed_database",
-                        "service_type_changed_transaction_service", "service_type_changed_api_gateway", "replicas_above_baseline"})
+                        "service_type_changed_transaction_service", "service_type_changed_api_gateway", "replicas_above_baseline",
+                        "api_gateway_down", "api_gateway_unreachable"})
 
 # `expected_symptoms` is derived from the weights, never written by hand, so the
 # two can never drift apart.

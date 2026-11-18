@@ -109,7 +109,7 @@ def test_a_drifted_state_is_named_on_its_own_with_full_confidence(cause, spec):
 
 def test_only_the_documented_drift_causes_may_act_on_a_lone_symptom():
     from signatures import DEFINITIVE
-    assert DEFINITIVE == set(DRIFT)
+    assert DEFINITIVE == set(DRIFT) | {"api_gateway_down", "api_gateway_unreachable"}
     for cause, spec in SIGNATURES.items():
         if cause not in DEFINITIVE:
             assert max(spec["weights"][s] for s in spec["required_symptoms"]) < 0.75, cause
@@ -127,3 +127,13 @@ def test_drift_alerts_exist_with_their_hold_times_and_metrics():
 def test_a_drift_never_overlaps_a_resource_cause_on_the_same_service():
     both = fire(("DeploymentPaused", "transaction-service"), ("DBPoolNearExhaustion", "transaction-service"))
     assert set(ambiguous_causes(both)) == {"deployment_paused_transaction_service", "db_connection_pool_exhaustion"}      # two faults at once are two causes, never one
+
+
+def test_the_gateway_is_named_on_its_deciding_alert_alone_because_it_cannot_report_its_own_failure():
+    for alert, cause, playbook in (("DeploymentUnavailable", "api_gateway_down", "restore_service.yml"),
+                                   ("ServiceHasNoEndpoints", "api_gateway_unreachable", "fix_service_selector.yml")):
+        out = correlate(fire((alert, "api-gateway")))
+        assert out["root_cause"] == cause and out["playbook"] == playbook and out["confidence"] == 1.0
+    # the database and transaction service are different: errors surface above them, so their lone alert stays under the gate
+    assert correlate(fire(("DeploymentUnavailable", "database")))["confidence"] < 0.75
+    assert correlate(fire(("ServiceHasNoEndpoints", "transaction-service")))["confidence"] < 0.75
