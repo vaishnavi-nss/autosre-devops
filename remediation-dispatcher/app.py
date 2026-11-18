@@ -58,6 +58,14 @@ POLICY = {
 ALLOWED_PLAYBOOKS = set(POLICY)               # kept for callers that import it
 # Read-only: collects evidence (pod states, recent events, log tails) for a person to read. It changes nothing, so it needs neither AUTO_REMEDIATE nor a
 # confidence level, and it is kept out of POLICY on purpose: POLICY is the list of playbooks that may change the cluster.
+# Causes that are a wrong Kubernetes state, which the metric scorer cannot observe (second-opinion/opinion.py STATE_CAUSES; a test keeps both lists equal).
+STATE_CAUSES = frozenset({
+    "database_down", "transaction_service_down", "api_gateway_down",
+    "bad_rollout_transaction_service", "bad_rollout_api_gateway",
+    "database_unreachable", "transaction_service_unreachable", "api_gateway_unreachable",
+    "deployment_paused_transaction_service", "deployment_paused_api_gateway",
+    "service_type_changed_database", "service_type_changed_transaction_service", "service_type_changed_api_gateway",
+    "replicas_above_baseline"})
 READ_ONLY = {"collect_diagnostics.yml": {"targets": {"database", "transaction-service", "api-gateway", "frontend"}, "vars": {"target_service", "out_file", "tail_lines"}}}
 DIAG_MIN_INTERVAL_S = 60.0
 
@@ -236,6 +244,8 @@ def decide(payload: dict, cfg: dict | None = None) -> dict:
                 "playbook": playbook}
 
     verdict, policy = _verdict_of(payload), cfg["second_opinion_policy"]
+    if policy == "agree" and root_cause in STATE_CAUSES:
+        policy = "not_disagree"             # the scorer cannot observe a wrong Kubernetes state; it says no_opinion, which is not a veto
     if policy == "agree" and verdict != "agree":
         return {**base, "status": "escalated", "reason": f"Second opinion is {verdict or 'missing'}, policy requires agree",
                 "playbook": playbook, "second_opinion": verdict}

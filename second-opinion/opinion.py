@@ -13,6 +13,18 @@ from __future__ import annotations
 # on the service alone.
 CAUSE_FAULTS = {"high_memory_usage": {"mem"}}
 
+# Causes that are a wrong Kubernetes *state* (a service scaled to zero, a bad rollout, a Service that selects nothing or has the wrong type, a paused
+# Deployment, extra replicas). They leave no resource-metric signature the scorer was trained on (a service with no pods has no metrics at all), so asking it
+# would only produce a meaningless "disagree". It says so instead. The dispatcher knows the same list (remediation-dispatcher/app.py STATE_CAUSES) and a test
+# keeps the two in step with the rule engine.
+STATE_CAUSES = frozenset({
+    "database_down", "transaction_service_down", "api_gateway_down",
+    "bad_rollout_transaction_service", "bad_rollout_api_gateway",
+    "database_unreachable", "transaction_service_unreachable", "api_gateway_unreachable",
+    "deployment_paused_transaction_service", "deployment_paused_api_gateway",
+    "service_type_changed_database", "service_type_changed_transaction_service", "service_type_changed_api_gateway",
+    "replicas_above_baseline"})
+
 
 def judge(cause: str, service: str, scorer_service: str, scorer_fault: str,
           confidence: float, min_confidence: float, vocabulary=()) -> dict:
@@ -23,6 +35,9 @@ def judge(cause: str, service: str, scorer_service: str, scorer_fault: str,
     type too."""
     base = {"scorer_service": scorer_service, "scorer_fault": scorer_fault,
             "confidence": round(confidence, 3)}
+    if cause in STATE_CAUSES:
+        return {**base, "verdict": "no_opinion", "basis": "state fault",
+                "reason": "this is a Kubernetes state fault with no resource-metric signature; the scorer is not asked"}
     if confidence < min_confidence:
         return {**base, "verdict": "no_opinion",
                 "reason": f"scorer confidence {confidence:.2f} is below {min_confidence:.2f}"}

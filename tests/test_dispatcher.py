@@ -715,3 +715,26 @@ def test_scaling_back_to_the_baseline_is_verified_by_the_replica_count(isolated,
     monkeypatch.setattr(disp.subprocess, "run", lambda cmd, **kw: (isolated.scale_out(yaml_vars(cmd)["replicas"]), subprocess.CompletedProcess(cmd, 0, "ok", ""))[1])
     rec = disp.run_execution(_accept(EXTRA), sleep=lambda s: None)
     assert rec["status"] == "succeeded" and rec["after"]["replicas"] == 1 and "back to 1" in rec["reason"]
+
+
+# ---------------------------------------------------------------------------------- state faults and the metric scorer
+def test_a_state_fault_is_not_vetoed_by_a_scorer_that_cannot_see_it():
+    for verdict, status in (("no_opinion", "ready"), ("agree", "ready"), ("disagree", "escalated")):
+        d = disp.decide({**PAUSED_TX, "second_opinion": {"verdict": verdict}})
+        assert d["status"] == status, verdict
+
+
+def test_the_original_causes_still_need_the_scorer_to_agree():
+    assert disp.decide({**POOL, "second_opinion": {"verdict": "no_opinion"}})["status"] == "escalated"
+    assert disp.decide({**POOL, "second_opinion": {"verdict": "disagree"}})["status"] == "escalated"
+
+
+def test_the_state_cause_lists_of_the_dispatcher_the_scorer_and_the_rules_agree():
+    import importlib.util as iu
+    spec = iu.spec_from_file_location("opinion_mod", ROOT / "second-opinion" / "opinion.py")
+    op = iu.module_from_spec(spec); spec.loader.exec_module(op)
+    sig = iu.spec_from_file_location("signatures_mod", ROOT / "correlation-engine" / "signatures.py")
+    sg = iu.module_from_spec(sig); sig.loader.exec_module(sg)
+    originals = {"db_connection_pool_exhaustion", "high_memory_usage", "db_disk_full"}
+    assert disp.STATE_CAUSES == op.STATE_CAUSES == set(sg.SIGNATURES) - originals
+    assert op.judge("database_down", "database", "api-gateway", "x", 0.9, 0.3)["verdict"] == "no_opinion"
