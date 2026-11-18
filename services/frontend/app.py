@@ -214,6 +214,26 @@ async def serve_dashboard():
           width: 100%;
           padding: 2.5rem 1.5rem;
         }
+        /* Fault replay: the pipeline of stages and the activity log */
+        .pipe { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.9rem; }
+        .stage { position: relative; border: 1px solid var(--border-color); border-top: 4px solid var(--border-strong); border-radius: 8px; background: #fff; padding: 0.8rem 0.9rem; min-height: 112px; }
+        .stage .n { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.06em; color: var(--text-muted); text-transform: uppercase; }
+        .stage .t { font-size: 0.92rem; font-weight: 700; color: var(--navy-deep); margin: 0.15rem 0 0.3rem; }
+        .stage .d { font-size: 0.78rem; color: var(--text-secondary); word-break: break-word; }
+        .stage.done { border-top-color: var(--status-ok); background: var(--status-ok-bg); }
+        .stage.warn { border-top-color: var(--gold-accent); }
+        .stage.stop { border-top-color: var(--status-err); }
+        .stage.wait { opacity: 0.6; }
+        .stage .mark { position: absolute; top: 0.55rem; right: 0.7rem; font-size: 0.72rem; font-weight: 700; }
+        .stage.done .mark { color: var(--status-ok); }
+        .stage.warn .mark { color: var(--gold-accent); }
+        .stage.stop .mark { color: var(--status-err); }
+        .logbox { font-family: 'JetBrains Mono', monospace; font-size: 0.76rem; background: var(--navy-deep); color: #D8E3F2; border-radius: 6px; padding: 0.8rem 1rem; max-height: 340px; overflow-y: auto; line-height: 1.55; }
+        .logbox .ts { color: #8EA3C0; }
+        .logbox .k-inc { color: #F1C76B; }
+        .logbox .k-ok { color: #6FD3A5; }
+        .logbox .k-bad { color: #FF8F8F; }
+        @media (max-width: 900px) { .pipe { grid-template-columns: repeat(2, 1fr); } }
         .view-section { display: none; }
         .view-section.active { display: block; animation: fadeIn 0.3s ease-out forwards; }
 
@@ -394,6 +414,7 @@ async def serve_dashboard():
         <div class="nav-links">
           <button id="nav-dash" class="nav-btn active" onclick="switchView('dashboard')">Executive Overview</button>
           <button id="nav-status" class="nav-btn" onclick="switchView('status')">Telemetry & Deep-Dive</button>
+          <button id="nav-replay" class="nav-btn" onclick="switchView('replay')">Fault Replay</button>
         </div>
       </header>
 
@@ -580,22 +601,46 @@ async def serve_dashboard():
             </div>
           </div>
         </section>
+
+        <!-- ==================== VIEW 3: FAULT REPLAY ==================== -->
+        <section id="view-replay" class="view-section">
+          <div class="card" style="border-top: 3px solid var(--gold-accent); margin-bottom: 1.5rem;">
+            <div class="card-header-bar">
+              <span class="card-title">How the latest fault was identified and solved</span>
+              <span id="rp-badge" class="badge ok">No incident</span>
+            </div>
+            <p id="rp-why" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">Nothing to replay yet. When a fault raises alerts, each stage below lights up with what the system actually saw and decided.</p>
+            <div id="rp-pipe" class="pipe"></div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <div class="card-header-bar">
+                <span class="card-title">Activity log (oldest first)</span>
+                <span style="font-size: 0.72rem; color: var(--text-muted);">engine decisions and every dispatcher step</span>
+              </div>
+              <div id="rp-log" class="logbox">waiting for activity...</div>
+            </div>
+            <div class="card">
+              <div class="card-header-bar">
+                <span class="card-title">Recent incidents</span>
+                <span style="font-size: 0.72rem; color: var(--text-muted);">newest first</span>
+              </div>
+              <table>
+                <thead><tr><th>Time</th><th>Cause</th><th>Conf.</th><th>ML</th><th>Outcome</th></tr></thead>
+                <tbody id="rp-incidents"><tr><td colspan="5" style="color: var(--text-muted);">none yet</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
       </main>
 
       <script>
         function switchView(viewName) {
-          document.getElementById('view-dashboard').classList.remove('active');
-          document.getElementById('view-status').classList.remove('active');
-          document.getElementById('nav-dash').classList.remove('active');
-          document.getElementById('nav-status').classList.remove('active');
-
-          if (viewName === 'dashboard') {
-            document.getElementById('view-dashboard').classList.add('active');
-            document.getElementById('nav-dash').classList.add('active');
-          } else {
-            document.getElementById('view-status').classList.add('active');
-            document.getElementById('nav-status').classList.add('active');
-          }
+          ['dashboard', 'status', 'replay'].forEach(function (v) {
+            document.getElementById('view-' + v).classList.toggle('active', v === viewName);
+            document.getElementById({dashboard: 'nav-dash', status: 'nav-status', replay: 'nav-replay'}[v]).classList.toggle('active', v === viewName);
+          });
         }
 
         let totalAttempts = 0;
@@ -729,8 +774,93 @@ async def serve_dashboard():
           else if (al.length) rec = ['Alerts firing', 'fail'];
           badge('recovery-badge', rec[0], rec[1]);
 
+          renderReplay(st, inc);
+
           if (st.pool && st.pool.active !== null && st.pool.max !== null) setText('stat-pool', Math.round(st.pool.active) + ' / ' + Math.round(st.pool.max));
           if (st.disk !== null && st.disk !== undefined) setText('stat-disk', Math.round(st.disk * 100) + '%');
+        }
+
+        // ---- Fault replay. replayStages() is pure (data in, stage list out) so it can be tested without a browser.
+        function replayStages(inc, executions, alerts) {
+          const names = ['Fault noticed', 'Alerts grouped', 'Root cause diagnosed', 'ML second opinion', 'Dispatcher safety gate', 'Ansible playbook', 'Recovery verified', 'Back to normal'];
+          if (!inc) return names.map(function (t, i) { return {n: String(i + 1), t: t, s: 'wait', m: '', d: 'Waiting'}; });
+          const alertNames = (inc.alerts || []).map(a => a.alertname).filter(Boolean);
+          const escalated = inc.action === 'escalate_to_human';
+          const rm = inc.remediation;
+          const so = inc.second_opinion;
+          const exec = rm && rm.execution_id ? (executions || []).find(e => e.id === rm.execution_id) : null;
+          const out = [];
+          out.push({s: alertNames.length ? 'done' : 'warn', m: alertNames.length ? 'OK' : '?',
+                    d: alertNames.length ? 'Prometheus raised ' + alertNames.length + ' alert(s): ' + alertNames.join(', ') : 'No alert names recorded'});
+          out.push({s: 'done', m: 'OK', d: 'Alertmanager sent the alerts that arrived together as one incident to the correlation engine'});
+          out.push(inc.root_cause
+            ? {s: 'done', m: 'OK', d: inc.root_cause + (inc.service ? ' on ' + inc.service : '') + ', confidence ' + Math.round((inc.confidence || 0) * 100) + '%' + (inc.matched_symptoms ? ' (matched: ' + inc.matched_symptoms.join(', ') + ')' : '')}
+            : {s: 'stop', m: 'NO CAUSE', d: 'No known cause fits these symptoms' + (inc.reason ? ': ' + inc.reason : '')});
+          if (!inc.root_cause) out.push({s: 'wait', m: '', d: 'Not needed: nothing to double-check'});
+          else if (!so) out.push({s: 'warn', m: 'SKIPPED', d: 'The second opinion was not consulted'});
+          else out.push({s: so.verdict === 'agree' ? 'done' : (so.verdict === 'disagree' ? 'stop' : 'warn'), m: String(so.verdict).toUpperCase(),
+                         d: 'Raw metrics say ' + (so.scorer_fault || 'nothing clear') + (so.scorer_service ? ' on ' + so.scorer_service : '') + (so.reason ? '. ' + so.reason : '')});
+          if (rm) {
+            const go = ['accepted', 'ready', 'dry_run', 'running', 'succeeded'].indexOf(rm.status) >= 0;
+            out.push({s: go ? 'done' : 'stop', m: go ? 'PASSED' : 'HELD BACK',
+                      d: 'Checked confidence, second opinion, cooldown and the allow-list: ' + rm.status + (rm.reason ? ' (' + rm.reason + ')' : '')});
+          } else if (escalated) out.push({s: 'stop', m: 'ESCALATED', d: 'Handed to a human; nothing was run'});
+          else out.push({s: 'warn', m: '?', d: 'No dispatcher decision recorded'});
+          if (!exec) out.push({s: 'wait', m: '', d: (inc.playbook ? 'Chosen: ' + inc.playbook + '. ' : '') + 'Nothing was executed (live remediation off, held back, or escalated)'});
+          else out.push({s: exec.status === 'running' ? 'warn' : (exec.status === 'succeeded' ? 'done' : 'stop'), m: exec.status === 'running' ? 'RUNNING' : (exec.status === 'succeeded' ? 'DONE' : 'FAILED'),
+                         d: exec.playbook + ' ' + exec.status + (exec.duration_s !== undefined ? ' in ' + exec.duration_s + ' s' : '')});
+          const verified = !!exec && exec.status === 'succeeded';
+          const failedVerify = !!exec && exec.status === 'verification_failed';
+          out.push({s: verified ? 'done' : (failedVerify ? 'stop' : 'wait'), m: verified ? 'VERIFIED' : (failedVerify ? 'NOT VERIFIED' : ''),
+                    d: verified ? 'The dispatcher checked the Deployment itself (rollout complete, replicas ready), not just the playbook result' : (failedVerify ? 'The fix ran but recovery could not be confirmed; escalated' : 'Not reached')});
+          const quiet = !(alerts && alerts.length);
+          out.push({s: verified && quiet ? 'done' : (verified ? 'warn' : 'wait'), m: verified && quiet ? 'OK' : '',
+                    d: verified && quiet ? 'No alerts firing' : (verified ? 'Fix verified; alerts still clearing' : 'Waiting')});
+          return out.map(function (o, i) { return Object.assign({n: String(i + 1), t: names[i]}, o); });
+        }
+
+        function fmtTime(iso) { const t = Date.parse(iso); return isNaN(t) ? '-' : new Date(t).toLocaleTimeString(); }
+
+        function replayLog(st) {
+          const items = [];
+          (st.incidents || []).forEach(function (i) {
+            const so = i.second_opinion;
+            const rm = i.remediation;
+            const text = i.root_cause
+              ? 'incident: ' + i.root_cause + ' on ' + (i.service || '?') + ' (' + Math.round((i.confidence || 0) * 100) + '%), ML ' + (so ? so.verdict : 'not consulted') + ', dispatcher ' + (rm ? rm.status : (i.action || '-'))
+              : 'incident: no known cause, ' + (i.action || '-') + (i.reason ? ' (' + i.reason + ')' : '');
+            items.push({t: Date.parse(i.received_at), c: i.root_cause ? 'k-inc' : 'k-bad', text: text});
+          });
+          (st.executions || []).forEach(function (e) {
+            (e.steps || []).forEach(function (stp) {
+              const bad = /fail|timeout|rollback/.test(stp.step);
+              items.push({t: Date.parse(stp.t), c: stp.step === 'recovered' ? 'k-ok' : (bad ? 'k-bad' : ''), text: e.playbook + ': ' + stp.step + (stp.detail ? ' ' + stp.detail : '')});
+            });
+          });
+          items.sort(function (a, b) { return a.t - b.t; });
+          return items.slice(-60);
+        }
+
+        function renderReplay(st, inc) {
+          const stages = replayStages(inc, st.executions, st.alerts);
+          document.getElementById('rp-pipe').innerHTML = stages.map(function (s) {
+            return '<div class="stage ' + esc(s.s) + '"><span class="mark">' + esc(s.m) + '</span><div class="n">Step ' + esc(s.n) + '</div><div class="t">' + esc(s.t) + '</div><div class="d">' + esc(s.d) + '</div></div>';
+          }).join('');
+          if (inc) {
+            const verified = stages[6].s === 'done';
+            badge('rp-badge', verified ? 'Solved and verified' : (inc.action === 'escalate_to_human' ? 'Escalated to a human' : (inc.root_cause ? 'Diagnosed' : 'Unknown cause')), verified ? 'ok' : 'fail');
+            document.getElementById('rp-why').textContent = inc.explanation || (inc.root_cause ? 'Cause identified from the symptoms that fired.' : 'The symptoms did not match a known cause, so a person is asked to look.');
+          } else { badge('rp-badge', 'No incident', 'ok'); }
+          const log = replayLog(st);
+          document.getElementById('rp-log').innerHTML = log.length ? log.map(function (l) {
+            return '<div><span class="ts">' + esc(new Date(l.t).toLocaleTimeString()) + '</span> <span class="' + l.c + '">' + esc(l.text) + '</span></div>';
+          }).join('') : 'waiting for activity...';
+          const list = st.incidents || [];
+          document.getElementById('rp-incidents').innerHTML = list.length ? list.map(function (i) {
+            const rm = i.remediation;
+            return '<tr><td>' + esc(fmtTime(i.received_at)) + '</td><td>' + esc(i.root_cause || '(unknown)') + '</td><td>' + (i.confidence === null || i.confidence === undefined ? '-' : Math.round(i.confidence * 100) + '%') +
+              '</td><td>' + esc(i.second_opinion ? i.second_opinion.verdict : '-') + '</td><td>' + esc(rm ? rm.status : (i.action || '-')) + '</td></tr>';
+          }).join('') : '<tr><td colspan="5" style="color: var(--text-muted);">none yet</td></tr>';
         }
 
         async function pollState() {
