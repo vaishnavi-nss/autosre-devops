@@ -73,7 +73,8 @@ Only one run at a time. **Stop and restore safe settings** ends a run. A run tak
 * **Proven on the real cluster**: all three faults detected, diagnosed, checked by the ML, fixed by Ansible, and independently verified as recovered; unknown causes escalate; the history survives a restart.
 * **Proven through the fault console too (this session)**: three **Simulate** runs (alert, diagnosis, ML verdict, chosen playbook, nothing executed, not counted as recovery) and three **Live** runs that each **passed** (restart 29.2 s, scale-out 24.4 s, clear logs 23.9 s), with auto-remediation switched on only for each run and confirmed **OFF** afterwards. Screenshots `100` to `130`.
 * **Jenkins pipeline built (build #1, SUCCESS in about 9.5 min)**: preflight, unit tests with no failures, build the seven images, deploy, verify (smoke test). Safe defaults held throughout. Screenshots `141` to `143`.
-* **Known open items**: one ML disagreement on a real memory fault is unexplained; a memory scale-out does not remove the leak (a person must replace the pod); the lab is single-node, so timings are not production numbers; the console's status page called `kubectl` on every poll and hung once while the cluster was busy.
+* **Fixed since**: the memory fix now scales out **and replaces the pods** (passed live, 2026-11-18 03:55 UTC; replicas stay at 3 afterwards), and the console status page no longer waits on `kubectl`. Details in the test report, section "The three open items, followed up".
+* **Known open items**: one ML disagreement on a real memory fault is still unexplained (offline re-scoring never reproduces it; a hypothesis, not proven); the lab is single-node, so timings are not production numbers.
 * **Security to fix now**: the demo ports (3000, 8080, 8081, 8082, 9090) were found open to **0.0.0.0/0** in the security group (screenshot `94`). Restrict each to your own IP or delete the rules; Jenkins and the console both use the throwaway password `password` and can change the cluster.
 
 ### If the lab session ends
@@ -129,8 +130,8 @@ curl -fsS https://raw.githubusercontent.com/vaishnavi-nss/autosre-devops/devops-
    the cooldown is skipped; none starts an execution.
 
 What each scenario really is: the pool fault sets the pool gauge (injected, no real connections are held); the memory fault holds real memory
-in the container; the disk fault writes real bytes into the database's bounded log directory. A memory scale-out does not remove the leak in
-the original pod, so the memory alert is expected to persist; "recovered" there means the extra replicas are ready and the service is healthy.
+in the container; the disk fault writes real bytes into the database's bounded log directory. A scale-out alone does not remove the leak in
+the original pod, so the memory playbook also replaces the pods (`replace_pods`), and the dispatcher checks that the replacement really happened.
 
 ## The demo console (browser pages, lab instance)
 

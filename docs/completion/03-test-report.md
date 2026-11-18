@@ -233,6 +233,18 @@ Two weaknesses found while doing this, neither a failure of a run:
 - **The security group for the demo ports was open to 0.0.0.0/0** (found in the AWS console, screenshot `94`), although the guide says to allow only your own IP. Jenkins and the console both carry the throwaway password `password` and can change the cluster; restrict the rules to one IP or delete them. This is a network setting, so it was left for the owner to change.
 - **Jenkins**: it signed the browser out (screenshot `140`) and the owner signed in; the pipeline was then built (next section).
 
+### The three open items, followed up (2026-11-18)
+
+**1. The memory fix now replaces the pods (live, passed).** Adding pods through a playbook is what `scale_replicas.yml` already did, and it is not enough on its own: the leak lives in the existing pod, so more replicas leave the leaking one running.
+The playbook now takes `replace_pods: true` (set in `ansible/remediation_map.yml` for `high_memory_usage`). After scaling to 3 it patches the pod template (`kubectl.kubernetes.io/restartedAt`), which makes Kubernetes roll new pods and discard the leaking one, then waits until the rollout is complete.
+The dispatcher allow-list accepts only that one extra boolean, and its independent check fails the run unless the Deployment generation moved by the amount a scale-out plus a rollout must produce (so a scale-out alone can never be reported as recovered). Unit tests cover all of this; the full local suite is 312 passed.
+Live proof (via the console, 03:49 to 04:01 UTC, Jenkins build #2 had deployed the new image): median transaction 1.199 s with the fault in, then **`-> passed: alert, diagnosis, second opinion, playbook and independent recovery all confirmed` at 03:55:25**. At 03:55:35 the pod list showed the leaking pod `68d95859d4-4p48q` already terminated (`Completed`) and a new pod `58569ff9f-hcq74` Running for 10 s. The runner then restored `AUTO_REMEDIATE` off, chaos off, faults reset and replicas back to 1 (04:00:50), and finished `done: 1 passed, failed or not recovered: none`; the console read OFF (safe) afterwards.
+What this does not show: I did not capture the dispatcher's own execution record for this run (the command I used to read it did not run), so the proof is the runner's pass, which depends on the dispatcher's replacement check, plus the pod list above. It is one run, not a rate. Replicas stay at 3 after a real incident; a rollback only scales back, it cannot un-replace pods.
+
+**2. The unexplained ML disagreement: still not proven, narrowed down.** Re-scoring every recorded real memory window offline (36 windows) never flips the model's answer; the closest margin is in trial `coll1:memory-1`. Both memory runs this session (simulate and live) agreed. The most likely cause is the one already stated above (the live engine estimates the fault start from alert times, the offline windows use the true start), but that is a hypothesis. The step that would settle it is recording the scorer's inputs with the engine's own estimated start on the next live miss; until then it stays an open item.
+
+**3. The slow console status page: fixed.** `status()` used to run `kubectl` on the request thread, so a busy cluster could hang the page (it did once, over 20 s). A background thread now refreshes `AUTO_REMEDIATE` every 5 s (10 s `kubectl` timeout, last good value kept) and the page only reads the cached value. Two unit tests prove status never runs a subprocess and that a failing refresh keeps the last good value. Deployed to the instance and answering normally during the live run above.
+
 ## Runs, in order
 
 | Run | Mode | What it showed |
