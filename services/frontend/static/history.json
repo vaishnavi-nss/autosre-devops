@@ -1,0 +1,260 @@
+{
+ "runs": [
+  {
+   "name": "Run 1",
+   "mode": "validation session",
+   "text": "What the dispatcher would act on: the first webhook of each trial. REAL pipeline, INJECTED faults. trials run: 18; usable: 17; trials where an incident reached the engine: 17 of 17",
+   "when": "2026-10-31"
+  },
+  {
+   "name": "Run 2",
+   "mode": "validation session",
+   "text": "What the dispatcher would act on: the first webhook of each trial. REAL pipeline, INJECTED faults. trials run: 15; usable: 15; trials where an incident reached the engine: 15 of 15",
+   "when": ""
+  },
+  {
+   "name": "Run 4",
+   "mode": "validation session",
+   "text": "Run 4 (2026-11-11): the second-opinion service loaded the own-data model (second-opinion/models/own.joblib, trained on run 3) in shadow mode. trials run: 14; usable: 12; trials where an incident reached the engine: 12 of 12",
+   "when": "2026-11-11"
+  },
+  {
+   "name": "Run 7: live shadow test of the retrained own-data scorer",
+   "mode": "validation session",
+   "text": "2026-11-11, AWS Academy Learner Lab, one t3.large node, SECOND_OPINION_MODE=shadow, scorer = second-opinion/models/own.joblib (47 trials, 115 windows: runs 3, 4 and 5-early). Started 18:40 UTC, stopped at its 80 minute deadline after 7 of 11 planned trials (84 minutes): a stuck APILatencyHigh alert kept each trial waiting 10-25 minutes for quiet.",
+   "when": "2026-11-11"
+  },
+  {
+   "name": "Run 8: live shadow test with the fault-start fix",
+   "mode": "validation session",
+   "text": "2026-11-12, same AWS Academy Learner Lab instance as run 7, SECOND_OPINION_MODE=shadow, scorer = second-opinion/models/own.joblib (unchanged), engine and scorer rebuilt from the branch with the fix (estimate_fault_start: the start comes from the deciding alert minus its own for: delay, sent as fault_start). The pod printed new code: True before the harness started. All pods in autosre and monitoring were restarted fi",
+   "when": "2026-11-12"
+  },
+  {
+   "name": "Run 9: the stale-alert test (6 of 6 trials)",
+   "mode": "validation session",
+   "text": "2026-11-12, same instance as runs 7 and 8, --stale mode of live_validate.py, engine and scorer with the fault-start fix. Each trial first turns on gateway latency so APILatencyHigh fires (about 91 s later) and lets it age 120 s, then injects the real fault on top. Every incident is then put to the scorer twice, about the same incident: with the old start (earliest startsAt of every firing alert) and the new one (the ",
+   "when": "2026-11-12"
+  },
+  {
+   "name": "Run 10: void (a deployment mistake, no data)",
+   "mode": "validation session",
+   "text": "2026-11-12, planned as the third post-fix session: 3 trials per cause plus 5 unknown-cause, with the retrained model. It ran 11 trials from 03:52 to 06:29 UTC and recorded nothing: every trial says \"no incident received before the timeout\", 0 records each.",
+   "when": "2026-11-12"
+  },
+  {
+   "name": "Run 11",
+   "mode": "validation session",
+   "text": "Third post-fix session. Commit c6cb6ef, scorer model b565d77f (retrained on runs 3, 4, 5-early and 8), SECOND_OPINION_MODE=shadow. Harness started 07:54 UTC, finished 10:29 UTC (155 minutes), 14 trials (3 per known cause, 5 with no known cause). Results are in s3://autosre-validation-841736140404/results-run11/.",
+   "when": ""
+  },
+  {
+   "name": "Run 12",
+   "mode": "validation session",
+   "text": "Fourth post-fix session, run to close the volume gap left by run 11. Commit 72d91ec, scorer model b565d77f, SECOND_OPINION_MODE=shadow. Started 10:42 UTC, stopped at its 100-minute deadline at 12:24 UTC after 9 trials (planned 12: 4 per known cause, no unknown-cause trials because that criterion was already met). Results are in s3://autosre-validation-841736140404/results-run12/.",
+   "when": ""
+  },
+  {
+   "name": "Run 13",
+   "mode": "validation session",
+   "text": "Fifth post-fix session and the first run on the retrained scorer b565d77f alone, to build evidence for that model without pooling in older versions. Commit e9d588f, SECOND_OPINION_MODE=shadow. Harness started 13:43 UTC and stopped at its 190-minute deadline at 16:55 UTC after 16 trials (6 per cause planned; no unknown-cause trials). Results are in s3://autosre-validation-841736140404/results-run13/.",
+   "when": ""
+  },
+  {
+   "name": "Run 14",
+   "mode": "validation session",
+   "text": "Sixth post-fix session, run on a freshly started lab to top up the retrained scorer b565d77f after run 13 fell short. Commit bd3c797 (the harness with the contamination retry), SECOND_OPINION_MODE=shadow. Harness started 17:52 UTC and stopped at its 120-minute deadline at 19:53 UTC after 7 trials (3 per cause planned, no unknown-cause trials because that criterion was already met). Results are in s3://autosre-validat",
+   "when": ""
+  },
+  {
+   "name": "Run 15: Run 15 and the stuck-APILatencyHigh investigation",
+   "mode": "validation session",
+   "text": "Why trials were lost to \"contamination\" (an APILatencyHigh that would not clear), what was measured on the live cluster, and a short confirmation run. Session 2026-11-12, fresh lab, same instance, scorer b565d77f, SECOND_OPINION_MODE=shadow. Results of the confirmation run: s3://autosre-validation-841736140404/results-run15/.",
+   "when": "2026-11-12"
+  },
+  {
+   "name": "Run 16: the ambiguity rule and the gate, measured on and off",
+   "mode": "validation session",
+   "text": "Two open decisions, ESCALATE_ON_AMBIGUITY and SECOND_OPINION_MODE=gate, had only been judged from the simulator and from shadow-mode logs. These sessions ran them live, with two real faults injected together. Session 2026-11-12/13, fresh lab, scorer b565d77f, service CPU limit 1000m (see docs/live-validation-run15/summary.md), commit 1fd4eea. Raw results: s3://autosre-validation-841736140404/results-run16/ and result",
+   "when": "2026-11-12"
+  },
+  {
+   "name": "Real AWS validation",
+   "mode": "validation session",
+   "text": "The RCA pipeline tested against real failures of the lab's own resources, with no chaos endpoint and no event sent to the engine. Sessions 2026-11-13, lab instance i-04f8f4d75378a1aba, scorer b565d77f, as deployed: gate in shadow, ESCALATE_ON_AMBIGUITY off, services at the manifests' 200m CPU limits. Raw results: s3://autosre-validation-841736140404/results-real1/ to results-real7/. Driver: real_aws_validate.py; numb",
+   "when": "2026-11-13"
+  },
+  {
+   "name": "comp1, comp2",
+   "mode": "dry",
+   "text": "Stopped at preflight, by design: second-opinion manifest pinned an unbuildable image tag; then the runner's JSON POST was rejected (HTTP 422)",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "comp3",
+   "mode": "dry",
+   "text": "Every dispatcher answer was \"Confidence below threshold\"; the unknown-cause scenario saw no alert because the load generator produced no backend traffic",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "comp4",
+   "mode": "dry",
+   "text": "First full dry run with those fixes",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "comp5",
+   "mode": "live",
+   "text": "Dispatcher preflight stopped the run safely: its Kubernetes client was `system:anonymous` (403); nothing was changed",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "comp6",
+   "mode": "live",
+   "text": "pool and cooldown passed; disk failed on RBAC (`pods/exec` needs `get` as well as `create`)",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "comp7",
+   "mode": "live (cancelled)",
+   "text": "Cancelled before any fault when the lab had about 11 minutes left; safe defaults forced and confirmed",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "comp8",
+   "mode": "dry",
+   "text": "memory, two-fault ambiguity and gate scenarios (above)",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "comp9",
+   "mode": "live",
+   "text": "pool and cooldown passed again; stopped at memory on an HTTP 503 right after a restart (the runner now waits for a healthy pod and retries) and restored",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "comp10",
+   "mode": "live",
+   "text": "memory, disk and unknown cause passed (above)",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "comp11",
+   "mode": "live",
+   "text": "real pool and real disk faults, each twice: 4 of 4 passed (above). Restore confirmed: `auto_remediate: false`, no errors, all 8 deployments 1/1",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "comp12",
+   "mode": "live (stopped)",
+   "text": "First run with the real memory slowness: trial 1 passed. Then it showed a runner bug (below): after the memory trial the scale-down kept the pod that still held the leak, the alert fired again and the dispatcher, correctly, scaled out a second time, which contaminated the next trial. Relaunched as comp13; the launcher's restore ran and safe defaults were confirmed",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "comp13",
+   "mode": "live",
+   "text": "memory x3, pool x2, disk x2: 6 passed, 1 escalated by policy (ML disagree). Restore confirmed",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "comp14",
+   "mode": "live",
+   "text": "pool, cooldown, unknown cause, live guardrails: 4 of 4 passed. Restore confirmed: `auto_remediate: false`, no errors, 8 of 8 deployments 1/1, no runner",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "coll1, coll2",
+   "mode": "dry, `--collect`",
+   "text": "real-fault trial data for the scorer experiment (10 and 8 faults); coll2 ran the retrained model: 8/8 agree, `pair_gate` passed",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "cloud2",
+   "mode": "live",
+   "text": "pool and disk with the new dispatcher history volume: 2 passed; the restore restarted the dispatcher and the new pod kept both records and the disk cooldown (95 s left of 600 s); `AUTO_REMEDIATE=false` confirmed afterwards, 8 of 8 deployments 1/1",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "console-sim (pool, memory, disk)",
+   "mode": "simulate, via the fault console",
+   "text": "three dry runs: alert, diagnosis, ML agree, playbook chosen, nothing executed, not counted as recovery (see \"The fault console, run end to end\")",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "jenkins #1",
+   "mode": "CI/CD pipeline",
+   "text": "SUCCESS, about 9 min 26 s: preflight, tests (no failures), build, deploy, verify; safe defaults held",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "console-live (pool, memory, disk)",
+   "mode": "live, via the fault console",
+   "text": "3 of 3 passed (29.2 s, 24.4 s, 23.9 s); safe defaults restored and confirmed afterwards",
+   "when": "Nov 2026 (cloud completion)"
+  },
+  {
+   "name": "cloud1",
+   "mode": "live, cold start",
+   "text": "pool, memory, disk live and unknown cause: 5 of 5 passed, guardrails 7/7, default model, restore confirmed (see \"The cloud side\")",
+   "when": "Nov 2026 (cloud completion)"
+  }
+ ],
+ "changes": [
+  {
+   "t": "2026-11-18T02:42:27+00:00",
+   "setting": "live_remediation",
+   "value": "off",
+   "reason": "Restored by the runner after the simulated disk run",
+   "by": "fault console"
+  },
+  {
+   "t": "2026-11-18T03:17:41+00:00",
+   "setting": "live_remediation",
+   "value": "off",
+   "reason": "Restored by the runner after the live disk run",
+   "by": "fault console"
+  },
+  {
+   "t": "2026-11-18T03:24:00+00:00",
+   "setting": "deploy",
+   "value": "build 1",
+   "reason": "Jenkins build 1: preflight, tests, images, deploy with safe defaults, verify (SUCCESS)",
+   "by": "Jenkins"
+  },
+  {
+   "t": "2026-11-18T03:40:44+00:00",
+   "setting": "playbook",
+   "value": "d60e6cc",
+   "reason": "Memory fix scales out and replaces the pods; fault-console status no longer waits on kubectl",
+   "by": "devops-completion branch"
+  },
+  {
+   "t": "2026-11-18T03:51:11+00:00",
+   "setting": "live_remediation",
+   "value": "on",
+   "reason": "Switched on for one fault-console run (memory fix with pod replacement)",
+   "by": "fault console"
+  },
+  {
+   "t": "2026-11-18T04:00:50+00:00",
+   "setting": "live_remediation",
+   "value": "off",
+   "reason": "Restored by the runner after the run; AUTO_REMEDIATE=false confirmed",
+   "by": "fault console"
+  },
+  {
+   "t": "2026-11-18T09:13:07+00:00",
+   "setting": "console",
+   "value": "0133aeb",
+   "reason": "Fault console can switch the ML second opinion (shadow/gate) and the ambiguity rule; the runner restores the defaults after each run",
+   "by": "devops-completion branch"
+  },
+  {
+   "t": "2026-11-18T09:20:49+00:00",
+   "setting": "engine",
+   "value": "9782482",
+   "reason": "Every incident now records what each setting combination would have decided (transparency mode)",
+   "by": "devops-completion branch"
+  }
+ ]
+}

@@ -236,14 +236,57 @@ async def _dispatch_remediation(result: dict, opinion: dict | None = None) -> di
         return {"status": "unavailable", "reason": str(exc)}
 
 
-RECENT_INCIDENTS: deque = deque(maxlen=50)      # newest last; read by the front end through GET /incidents
+# History. Incidents and events (setting changes, scenario runs) are appended to files on a persistent volume and reloaded after a restart, and
+# the lab's sync script copies those files to the S3 bucket, because only the bucket survives a lab restart. Nothing here influences a decision.
+INCIDENT_LOG = os.getenv("INCIDENT_LOG", "")
+EVENT_LOG = os.getenv("EVENT_LOG", "")
+HISTORY_KEEP = int(os.getenv("INCIDENT_KEEP", "500"))
+RECENT_INCIDENTS: deque = deque(maxlen=HISTORY_KEEP)      # newest last; read by the front end through GET /incidents
+RECENT_EVENTS: deque = deque(maxlen=HISTORY_KEEP)
+_seq = {"incident": 0, "event": 0}
+EVENT_KEYS = ("t", "setting", "value", "reason", "by", "name", "mode", "scenario", "variant", "result", "text", "started", "finished", "seconds", "playbook", "cause")
+
+
+def _append(path: str, record: dict) -> None:
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + chr(10))
+    except OSError as exc:                                   # a full or read-only volume must never stop the engine
+        log.warning("could not persist to %s: %s", path, exc)
+
+
+def _restore_history() -> None:
+    for path, store, key in ((INCIDENT_LOG, RECENT_INCIDENTS, "incident"), (EVENT_LOG, RECENT_EVENTS, "event")):
+        if not path or not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                store.append(rec)
+                try:
+                    _seq[key] = max(_seq[key], int(str(rec.get("id", "")).split("-")[-1]))
+                except ValueError:
+                    pass
+    log.info("restored %d incidents and %d events from the history files", len(RECENT_INCIDENTS), len(RECENT_EVENTS))
+
+
+def _iso(epoch: float | None) -> str | None:
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds") if epoch else None
 
 
 def _remember(firing: list, response: dict) -> None:
     """Keep what the engine decided about the latest incidents, for the dashboard. Nothing here influences a decision."""
     so = response.get("second_opinion") or {}
     rem = response.get("remediation") or {}
-    RECENT_INCIDENTS.append({
+    _seq["incident"] += 1
+    record = {
+        "id": f"INC-{_seq['incident']:04d}",
+        "started_at": _iso(second_opinion.earliest_start(firing)),
         "received_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "status": response.get("status"),
         "action": response.get("action"),
@@ -261,14 +304,38 @@ def _remember(firing: list, response: dict) -> None:
         "second_opinion": {k: so.get(k) for k in ("verdict", "reason", "scorer_service", "scorer_fault", "confidence")} if so else None,
         "remediation": {k: rem.get(k) for k in ("status", "reason", "playbook", "target_service", "execution_id",
                                                  "cooldown_remaining_s", "second_opinion")} if rem else None,
-    })
+    }
+    RECENT_INCIDENTS.append(record)
+    _append(INCIDENT_LOG, record)
 
 
 @app.get("/incidents")
 async def incidents(limit: int = 20):
     """The most recent incident decisions, newest first (what the dashboard shows)."""
-    items = list(RECENT_INCIDENTS)[-max(1, min(limit, 50)):]
+    items = list(RECENT_INCIDENTS)[-max(1, min(limit, RECENT_INCIDENTS.maxlen or 50)):]
     return {"incidents": list(reversed(items))}
+
+
+@app.post("/events", status_code=201)
+async def add_event(body: dict):
+    """Record a setting change or a scenario run (sent by the fault console, the runner and the deploy pipeline). Whitelisted fields only."""
+    kind = body.get("kind")
+    if kind not in ("change", "run", "ack", "resolve"):
+        raise HTTPException(status_code=422, detail="kind must be 'change', 'run', 'ack' or 'resolve'")
+    if len(json.dumps(body)) > 4096:
+        raise HTTPException(status_code=413, detail="event too large")
+    _seq["event"] += 1
+    record = {"id": f"EVT-{_seq['event']:04d}", "kind": kind, **{k: body[k] for k in EVENT_KEYS if k in body and isinstance(body[k], (str, int, float, bool, type(None)))}}
+    record.setdefault("t", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    RECENT_EVENTS.append(record)
+    _append(EVENT_LOG, record)
+    return record
+
+
+@app.get("/events")
+async def events(kind: str | None = None, limit: int = 100):
+    items = [e for e in RECENT_EVENTS if kind is None or e.get("kind") == kind]
+    return {"events": list(reversed(items[-max(1, min(limit, RECENT_EVENTS.maxlen or 100)):]))}
 
 
 def _capture(payload: dict, response: dict) -> dict:
@@ -334,3 +401,6 @@ async def health():
 @app.get("/ready")
 async def ready():
     return {"status": "ready", "service": SERVICE_NAME}
+
+
+_restore_history()                       # after every definition above exists
