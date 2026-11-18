@@ -129,9 +129,7 @@ ML agree, playbook accepted, execution succeeded in 33.1 s, the 900 s cooldown c
 "Root causes identified: db_connection_pool_exhaustion 4", p95 latency and 5xx charts with every fault of the day as a spike, replicas going to 3 and back for the memory
 scale-outs, and dispatch decisions split into accepted, cooldown and escalated.
 
-Two honest limits: the dispatcher keeps its history and counters **in memory**, so restoring the safe settings (which restarts it) empties the execution list and zeroes the
-cumulative count panels (the trend panels keep their history in Prometheus); and the `pickIncident` fix (3) was pushed after comp14 was deployed, so the deployed pod does not have
-it yet. It was verified in the browser through the locally served real page.
+**Fixed afterwards (run "cloud2", 2026-11-18).** The dispatcher now appends each finished execution to a log on a small persistent volume (`EXEC_LOG=/data/executions.jsonl`, 64 Mi PVC) and reloads it, and any unexpired cooldown, at startup. Evidence from the cloud: pool and disk were run live (**2 passed, none failed**), the restore then restarted the dispatcher, and the new pod came back with `/data/executions.jsonl` holding 2 records and the disk-fix cooldown still counting down (95 s left of 600 s, matching a fix that finished at 00:05:41). `AUTO_REMEDIATE` was confirmed `false` afterwards and 8 of 8 deployments were 1/1. The `pickIncident` fix is also deployed now: the deployed Telemetry page shows the acted-on incident (db_disk_full, ML agree, clear_logs.yml, accepted) and both executions (clear_logs.yml 32 s, restart_service.yml 34.5 s). The cumulative count panels still start from zero after a restart; the trend panels use Prometheus.
 
 ### The cloud side, checked from a cold start (2026-11-17, run "cloud1")
 
@@ -223,7 +221,7 @@ Two things the check turned up, neither a failure of the system:
 
 New things this work found and did **not** fix:
 - The one scorer disagreement on a real memory fault (above). Retraining on real-fault trials was tried and changed nothing measurable; the open question is whether the engine's estimated `fault_start` window differs from the true-start windows I recorded.
-- The dispatcher's execution history and counters are in memory, so any dispatcher restart empties the dashboard's execution panels.
+- The dispatcher's cumulative counters (not the execution list or cooldowns) still reset on a restart.
 - Lab caveats: the instance runs a single-node Minikube on 2 vCPUs, so timings are not production numbers, and every fault is started by the runner.
 
 Cluster state at the end: `AUTO_REMEDIATE=false`, `MIN_CONFIDENCE=0.75`, 8 of 8 deployments 1/1, no runner process. The lab instance and the S3 bucket were left in place, as agreed.
