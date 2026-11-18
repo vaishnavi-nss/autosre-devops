@@ -1,0 +1,93 @@
+---
+# Remediation for: database_down, transaction_service_down, api_gateway_down
+#
+# Brings a service that has no available replica back to `replicas` ready replicas. If the Deployment was scaled to zero it scales it up; if it
+# wants replicas but none are available (every pod gone or failing) it rolls the pods with the same annotation patch as restart_service.yml.
+# Either way it only finishes once the replicas are available.
+#
+# Safe by construction: only the three approved application services, only the autosre namespace, and only 1 to max_replicas replicas.
+#
+#   ansible-playbook -i ../inventory/localhost.yml restore_service.yml \
+#     -e target_service=database -e replicas=1
+- name: Restore a service that has no available replica
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    k8s_namespace: autosre
+    target_service: database
+    replicas: 1
+    max_replicas: 3
+    allowed_services: [database, transaction-service, api-gateway]
+    allowed_namespaces: [autosre]
+
+  tasks:
+    - name: Refuse anything outside the approved targets and range
+      ansible.builtin.assert:
+        that:
+          - target_service in allowed_services
+          - k8s_namespace in allowed_namespaces
+          - replicas | int >= 1
+          - replicas | int <= max_replicas | int
+        fail_msg: "{{ k8s_namespace }}/{{ target_service }} x{{ replicas }} is not an approved restore."
+
+    - name: Read the deployment before restoring it
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+      register: before
+
+    - name: Fail early if the deployment does not exist
+      ansible.builtin.assert:
+        that: before.resources | length == 1
+        fail_msg: "{{ target_service }} not found in {{ k8s_namespace }}."
+
+    - name: Scale {{ target_service }} up to {{ replicas }} replica(s) when it was scaled down
+      kubernetes.core.k8s_scale:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+        replicas: "{{ replicas | int }}"
+        wait: true
+        wait_timeout: 150
+      when: before.resources[0].spec.replicas | int < replicas | int
+
+    - name: Roll the pods when the deployment already wants replicas but none are available
+      kubernetes.core.k8s:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+        state: patched
+        definition:
+          spec:
+            template:
+              metadata:
+                annotations:
+                  kubectl.kubernetes.io/restartedAt: "{{ '%Y-%m-%dT%H:%M:%SZ' | strftime }}"
+                  autosre.io/restarted-by: remediation-dispatcher
+      when: before.resources[0].spec.replicas | int >= replicas | int
+
+    - name: Wait until the replicas are available
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+      register: restored
+      until:
+        - restored.resources | length == 1
+        - restored.resources[0].status.observedGeneration | default(0) | int >= restored.resources[0].metadata.generation | int
+        - restored.resources[0].status.availableReplicas | default(0) | int >= replicas | int
+        - restored.resources[0].status.updatedReplicas | default(0) | int == restored.resources[0].spec.replicas | int
+      retries: 30
+      delay: 5
+
+    - name: Report the outcome
+      ansible.builtin.debug:
+        msg: >-
+          Restored {{ target_service }} in {{ k8s_namespace }}: it wanted {{ before.resources[0].spec.replicas }} replica(s), now
+          {{ restored.resources[0].status.availableReplicas | default(0) }} available.

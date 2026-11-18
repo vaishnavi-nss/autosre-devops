@@ -58,6 +58,12 @@ PLACEMENT: dict[str, dict[str, str]] = {
         "PodRestartsHigh": "transaction-service",
         "APILatencyHigh": "api-gateway",
     },
+    # causes added in the completion session; the simulator's incident mix does not generate them, but every signature must be placed
+    "database_down": {"ErrorRateHigh": "transaction-service", "APILatencyHigh": "api-gateway"},
+    "transaction_service_down": {"ErrorRateHigh": "api-gateway", "APILatencyHigh": "api-gateway"},
+    "api_gateway_down": {"ErrorRateHigh": "frontend", "APILatencyHigh": "frontend"},
+    "bad_rollout_transaction_service": {"PodRestartsHigh": "transaction-service"},
+    "bad_rollout_api_gateway": {"PodRestartsHigh": "api-gateway"},
 }
 
 #: Consequence-type alerts an unrelated fault could produce. None of them is a

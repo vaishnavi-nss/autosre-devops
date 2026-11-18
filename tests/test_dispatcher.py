@@ -94,6 +94,10 @@ def isolated(monkeypatch):
             fake.scale_out(int(yaml_vars(cmd)["replicas"]))
             if yaml_vars(cmd).get("replace_pods") and fake.__dict__.get("roll", True):
                 fake.restart()                                  # the playbook also rolls every pod
+        elif "restore" in play and fake.__dict__.get("restores", True):
+            fake.scale_out(max(int(yaml_vars(cmd).get("replicas", 1)), 1))
+        elif "rollback" in play and fake.__dict__.get("rolls_back", True):
+            fake.restart()                                      # going back to the previous template is a new generation
         return subprocess.CompletedProcess(cmd, fake.__dict__.get("rc", 0), "ok", "")
 
     monkeypatch.setattr(disp.subprocess, "run", fake_run)
@@ -107,8 +111,8 @@ def yaml_vars(cmd):
 
 
 # ------------------------------------------------------------------------------------------------ policy
-def test_all_three_approved_playbooks_are_allowed():
-    assert disp.ALLOWED_PLAYBOOKS == {"restart_service.yml", "scale_replicas.yml", "clear_logs.yml"}
+def test_all_approved_playbooks_are_allowed():
+    assert disp.ALLOWED_PLAYBOOKS == {"restart_service.yml", "scale_replicas.yml", "clear_logs.yml", "restore_service.yml", "rollback_deployment.yml"}
     mapping = yaml.safe_load((ROOT / "ansible" / "remediation_map.yml").read_text())["remediations"]
     for cause, entry in mapping.items():
         spec = disp.POLICY[entry["playbook"]]
@@ -522,3 +526,54 @@ def test_the_scale_playbook_replaces_pods_only_when_asked_and_waits_for_the_new_
     assert text.count("when: replace_pods | bool") == 3 and "restartedAt" in text
     assert "after_scale.resources[0].metadata.generation" in text                        # waits for a roll AFTER the scale, not the scale itself
     assert (ROOT / "ansible" / "remediation_map.yml").read_text().count("replace_pods: true") == 1       # only the memory cause uses it
+
+
+# ------------------------------------------------------------------------------------------------ the playbooks added in the completion session
+DB_DOWN = {"root_cause": "database_down", "confidence": 0.85, "service": "database", "second_opinion": AGREE}
+TX_DOWN = {"root_cause": "transaction_service_down", "confidence": 0.85, "service": "transaction-service", "second_opinion": AGREE}
+GW_DOWN = {"root_cause": "api_gateway_down", "confidence": 0.85, "service": "api-gateway", "second_opinion": AGREE}
+BAD_TX = {"root_cause": "bad_rollout_transaction_service", "confidence": 1.0, "service": "transaction-service", "second_opinion": AGREE}
+BAD_GW = {"root_cause": "bad_rollout_api_gateway", "confidence": 1.0, "service": "api-gateway", "second_opinion": AGREE}
+
+
+@pytest.mark.parametrize("payload,playbook,target", [(DB_DOWN, "restore_service.yml", "database"), (TX_DOWN, "restore_service.yml", "transaction-service"),
+                                                      (GW_DOWN, "restore_service.yml", "api-gateway"), (BAD_TX, "rollback_deployment.yml", "transaction-service"),
+                                                      (BAD_GW, "rollback_deployment.yml", "api-gateway")])
+def test_each_new_cause_maps_to_its_playbook_and_target(payload, playbook, target):
+    d = disp.decide(payload)
+    assert d["status"] == "ready" and d["playbook"] == playbook and d["target_service"] == target
+    if playbook == "restore_service.yml":
+        assert d["extra_vars"] == {"target_service": target, "replicas": 1}
+
+
+def test_a_new_cause_is_still_refused_without_agreement_or_for_the_wrong_service():
+    assert disp.decide(dict(DB_DOWN, second_opinion={"verdict": "disagree"}))["status"] == "escalated"
+    assert disp.decide(dict(DB_DOWN, service="transaction-service"))["status"] == "escalated"                 # diagnosed service must be the target
+    assert disp.decide(dict(BAD_GW, confidence=0.6))["status"] == "escalated"                                  # lone deciding symptom stays below the gate
+
+
+def test_restore_brings_a_scaled_down_service_back_and_is_verified(isolated):
+    isolated.state.update(replicas=0, updated=0, ready=0, available=0)
+    rec = disp.run_execution(_accept(DB_DOWN), sleep=lambda s: None)
+    assert rec["status"] == "succeeded" and rec["after"]["available"] == 1 and "restored" in rec["reason"]
+    assert isolated.ran[0][3] == "playbooks/restore_service.yml" and yaml_vars(isolated.ran[0])["target_service"] == "database"
+
+
+def test_restore_that_never_becomes_available_is_a_failure_and_other_playbooks_still_refuse_zero_replicas(isolated):
+    isolated.state.update(replicas=0, updated=0, ready=0, available=0)
+    isolated.restores = False                                    # the playbook exits 0 but nothing came back
+    rec = disp.run_execution(_accept(TX_DOWN), sleep=lambda s: None)
+    assert rec["status"] == "verification_failed" and rec["recovered"] is False
+    disp._cooldowns.clear(); disp._inflight.clear()
+    isolated.state.update(replicas=0, updated=0, ready=0, available=0)
+    rec = disp.run_execution(_accept(BAD_TX), sleep=lambda s: None)
+    assert rec["status"] == "preflight_failed" and "no replicas" in rec["reason"]
+
+
+def test_rollback_counts_only_when_a_new_generation_is_complete(isolated):
+    rec = disp.run_execution(_accept(BAD_TX), sleep=lambda s: None)
+    assert rec["status"] == "succeeded" and rec["after"]["generation"] == rec["before"]["generation"] + 1 and "rolled back" in rec["reason"]
+    disp._cooldowns.clear(); disp._inflight.clear()
+    isolated.rolls_back = False                                  # the playbook exits 0 but the template was not changed
+    rec = disp.run_execution(_accept(BAD_GW), sleep=lambda s: None)
+    assert rec["status"] == "verification_failed" and "rollback not complete" in rec["reason"]

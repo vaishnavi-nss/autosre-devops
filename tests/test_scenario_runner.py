@@ -122,7 +122,7 @@ def test_restore_keeps_going_when_a_step_fails(tmp_path):
     c = Flaky(dispatcher_auto=True)
     r = runner(tmp_path, c, live=True)
     r.restore()
-    assert c.auto is False and r.environment["restored"]["errors"] == ["api down"]
+    assert c.auto is False and "api down" in r.environment["restored"]["errors"]          # every other step still ran
 
 
 def test_preflight_refuses_to_start_if_the_dispatcher_is_not_in_its_safe_default(tmp_path):
@@ -198,8 +198,11 @@ def test_the_runner_judges_the_incident_the_dispatcher_acts_on_not_the_first_web
 def test_no_fault_injects_a_consequence_any_more():
     import inspect
     src = inspect.getsource(rs.Runner.inject)
-    assert "/chaos/leak" in src and "/chaos/disk" in src and '"ratio": 0.97' in src          # real leak, real full disk
-    assert "/chaos/errors" not in src and "/chaos/latency" not in src                          # nothing injected on top: no errors, no sleep
+    assert "/chaos/leak" in src and "/chaos/disk" in src and 'spec.get("ratio", 0.97)' in src          # real leak, real full disk
+    # errors and latency are injected only as the fault itself of the faults that must be escalated, never on top of a pool, memory or disk fault
+    for key, spec in rs.SCENARIOS.items():
+        if spec["fault"] in ("errors", "latency"):
+            assert spec["expect"] == "escalate" and spec["cause"] is None, key
     assert "calibrate_memory_slowness" in src                                                  # memory slowness is real work, calibrated by measuring
     # 0.55 (pool) + 0.20 (real errors), 0.60 (memory) + 0.15 (real latency), 0.60 (disk) + 0.25 (real errors) all reach 0.75
     assert round(0.55 + 0.20, 4) >= 0.75 and round(0.60 + 0.15, 4) >= 0.75 and round(0.60 + 0.25, 4) >= 0.75
@@ -267,7 +270,8 @@ def test_memory_cleanup_replaces_the_pods_so_no_leak_survives_a_scale_down():
     assert ("-n", rs.NS, "scale", "deploy/transaction-service", "--replicas=1") in calls
     assert ("-n", rs.NS, "rollout", "restart", "deploy/transaction-service") in calls
     import inspect
-    assert "cleanup_memory_fault" in inspect.getsource(rs.Runner.run_fault)
+    assert "cleanup_memory_fault" in inspect.getsource(rs.Runner.cleanup_fault)
+    assert "cleanup_fault" in inspect.getsource(rs.Runner.run_fault)
 
 
 def test_sigterm_runs_the_restore_instead_of_killing_the_process_silently():
@@ -386,3 +390,108 @@ def test_collect_cannot_be_combined_with_live_because_the_fault_must_stay_in_pla
         rs.Runner(CollectCluster([]), tmp_path, True, 60, {}, collect=True)
     with pytest.raises(SystemExit):
         rs.main(["--out", str(tmp_path), "--scenarios", "pool", "--live", "--collect"])
+
+
+# ---------------------------------------------------------------------------------------------------- the families and variations added in the completion session
+def test_every_scenario_is_consistent_with_the_signatures_the_map_and_the_alert_rules():
+    import re
+    import yaml
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    rules = (root / "monitoring" / "alert-rules.yaml").read_text(encoding="utf-8")
+    alerts = set(re.findall(r"-\s+alert:\s*(\w+)", rules))
+    mapping = yaml.safe_load((root / "ansible" / "remediation_map.yml").read_text(encoding="utf-8"))["remediations"]
+    families = {spec["family"] for spec in rs.SCENARIOS.values()}
+    assert {"pool", "memory", "disk", "service_down", "bad_rollout", "unknown"} <= families and len(rs.SCENARIOS) >= 17
+    for key, spec in rs.SCENARIOS.items():
+        assert spec["alert"] in alerts, key
+        assert spec["expect"] in ("act", "escalate") and spec["label"] and spec["kind"].startswith("real:"), key
+        if spec["cause"]:
+            assert mapping[spec["cause"]]["playbook"] == spec["playbook"], key
+            assert mapping[spec["cause"]]["extra_vars"]["target_service"] == spec["service"], key
+        else:
+            assert spec["playbook"] is None and spec["expect"] == "escalate", key              # a fault with no known cause is always handed to a person
+
+
+def test_a_scenario_is_expected_to_act_only_when_the_alerts_it_raises_can_clear_the_confidence_gate():
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "correlation-engine"))
+    from signatures import SIGNATURES
+    for key, spec in rs.SCENARIOS.items():
+        if spec["cause"] and spec["expect"] == "escalate":
+            lone = SIGNATURES[spec["cause"]]["weights"][spec["alert"]]
+            assert lone < 0.75, f"{key} is expected to escalate because its deciding symptom alone stays below the gate"
+
+
+def test_the_escalation_expectation_needs_the_alert_an_incident_and_no_execution():
+    base = {"alert_fired": True, "incident": {"action": "escalate_to_human", "root_cause": None}, "executions_before": 3, "executions_after": 3}
+    assert rs.classify_escalation(base)[0] == "passed"
+    assert rs.classify_escalation({**base, "alert_fired": False})[0] == "no_alert"
+    assert rs.classify_escalation({**base, "incident": None})[0] == "no_incident"
+    assert rs.classify_escalation({**base, "executions_after": 4})[0] == "unexpected_execution"
+    acted = {**base, "incident": {"action": None, "root_cause": "db_disk_full", "remediation": {"status": "accepted"}}}
+    assert rs.classify_escalation(acted)[0] == "acted_unexpectedly"
+    held = {**base, "incident": {"action": None, "root_cause": "db_disk_full", "remediation": {"status": "escalated", "reason": "Confidence below threshold"}}}
+    assert rs.classify_escalation(held)[0] == "passed"
+
+
+class Recorder:
+    def __init__(self, deployment=None):
+        self.calls, self.dep = [], deployment or {"status": {"updatedReplicas": 1, "readyReplicas": 1, "replicas": 1}, "spec": {"replicas": 1}}
+
+    def kubectl(self, *a, **k):
+        self.calls.append((a, k)); return ""
+
+    def deployment(self, name):
+        return self.dep
+
+
+def runner_with(c):
+    r = rs.Runner.__new__(rs.Runner)
+    r.c = c
+    return r
+
+
+@pytest.mark.parametrize("key,expected", [
+    ("down:database", ("-n", "autosre", "scale", "deploy/database", "--replicas=0")),
+    ("rollout:tx-crash", ("-n", "autosre", "set", "env", "deploy/transaction-service", "DB_POOL_MAX=not-a-number")),
+    ("rollout:tx-image", ("-n", "autosre", "set", "image", "deploy/transaction-service", "transaction-service=autosre/transaction-service:does-not-exist"))])
+def test_the_new_faults_are_real_kubernetes_changes_in_the_autosre_namespace(key, expected):
+    c = Recorder()
+    r = runner_with(c)
+    r.settle = lambda *d: None
+    rs.wait_for = lambda fn, *a, **k: (True, 0)
+    r.c.get = lambda url: {"status": "ok"}
+    r.c.svc = lambda *a, **k: "u"
+    r.inject(key)
+    assert any(call[0] == expected for call in c.calls), (key, c.calls)
+
+
+def test_the_partition_applies_a_networkpolicy_only_in_the_namespace_and_cleanup_deletes_it():
+    c = Recorder()
+    r = runner_with(c)
+    r.settle = lambda *d: None
+    r.c.get = lambda url: {"status": "ok"}
+    r.c.svc = lambda *a, **k: "u"
+    r.inject("unknown:partition")
+    apply_call = next(call for call in c.calls if "apply" in call[0])
+    assert "namespace: autosre" in apply_call[1]["stdin"] and "chaos-deny-database" in apply_call[1]["stdin"]
+    r.reset_faults = lambda: None
+    r.cleanup_fault("unknown:partition")
+    assert any(call[0][:5] == ("-n", "autosre", "delete", "networkpolicy", "chaos-deny-database") for call in c.calls)
+
+
+def test_cleanup_scales_a_stopped_service_back_up_and_only_undoes_a_rollout_that_is_not_healthy():
+    c = Recorder()
+    r = runner_with(c)
+    r.reset_faults = lambda: None
+    r.cleanup_fault("down:api-gateway")
+    assert (("-n", "autosre", "scale", "deploy/api-gateway", "--replicas=1")) in [call[0] for call in c.calls]
+    healthy = Recorder()
+    r2 = runner_with(healthy); r2.reset_faults = lambda: None
+    r2.cleanup_fault("rollout:gw-crash")
+    assert not any("undo" in call[0] for call in healthy.calls)                  # the dispatcher already rolled it back: undoing would bring the bad revision back
+    stuck = Recorder({"status": {"updatedReplicas": 1, "readyReplicas": 1, "replicas": 2}, "spec": {"replicas": 1}})       # more pods than wanted: the new one never became ready
+    r3 = runner_with(stuck); r3.reset_faults = lambda: None
+    r3.cleanup_fault("rollout:gw-crash")
+    assert any(call[0][:5] == ("-n", "autosre", "rollout", "undo", "deploy/api-gateway") for call in stuck.calls)

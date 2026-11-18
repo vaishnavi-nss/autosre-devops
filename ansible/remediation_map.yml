@@ -25,6 +25,39 @@ remediations:
     extra_vars:
       target_service: database
 
+  database_down:
+    playbook: restore_service.yml
+    description: Bring the database back to one ready replica
+    extra_vars:
+      target_service: database
+      replicas: 1
+
+  transaction_service_down:
+    playbook: restore_service.yml
+    description: Bring the transaction service back to one ready replica
+    extra_vars:
+      target_service: transaction-service
+      replicas: 1
+
+  api_gateway_down:
+    playbook: restore_service.yml
+    description: Bring the API gateway back to one ready replica
+    extra_vars:
+      target_service: api-gateway
+      replicas: 1
+
+  bad_rollout_transaction_service:
+    playbook: rollback_deployment.yml
+    description: Go back to the previous working revision of the transaction service
+    extra_vars:
+      target_service: transaction-service
+
+  bad_rollout_api_gateway:
+    playbook: rollback_deployment.yml
+    description: Go back to the previous working revision of the API gateway
+    extra_vars:
+      target_service: api-gateway
+
 # Fallback for unmapped root causes.
 default:
   action: notify_human

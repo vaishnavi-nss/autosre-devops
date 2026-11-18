@@ -39,15 +39,56 @@ NS, MON = "autosre", "monitoring"
 PROM = f"/api/v1/namespaces/{MON}/services/monitoring-kube-prometheus-prometheus:9090/proxy"
 AM = f"/api/v1/namespaces/{MON}/services/monitoring-kube-prometheus-alertmanager:9093/proxy"
 DEPLOYMENTS = ("frontend", "api-gateway", "transaction-service", "database", "correlation-engine", "second-opinion", "remediation-dispatcher")
-SYMPTOMS = "APILatencyHigh|ErrorRateHigh|DBPoolNearExhaustion|DBDiskNearFull|PodRestartsHigh|ContainerMemoryHigh"
+SYMPTOMS = "APILatencyHigh|ErrorRateHigh|DBPoolNearExhaustion|DBDiskNearFull|PodRestartsHigh|ContainerMemoryHigh|DeploymentUnavailable|RolloutStalled"
+
+def _s(family, label, alert, cause, playbook, service, kind, fault, expect="act", **params):
+    """One scenario. `expect` is 'act' (the pipeline must fix it and an independent check must confirm) or 'escalate' (a person must be asked and
+    nothing may be executed: the fault is real but the system is meant to leave it alone)."""
+    return {"family": family, "label": label, "alert": alert, "cause": cause, "playbook": playbook, "service": service, "kind": kind, "fault": fault,
+            "expect": expect, **params}
+
 
 SCENARIOS = {
-    "pool": {"alert": "DBPoolNearExhaustion", "cause": "db_connection_pool_exhaustion", "playbook": "restart_service.yml",
-             "service": "transaction-service", "kind": "real: every slot of the service's bounded pool is leaked, so requests really time out"},
-    "memory": {"alert": "ContainerMemoryHigh", "cause": "high_memory_usage", "playbook": "scale_replicas.yml",
-               "service": "transaction-service", "kind": "real: the container holds real memory and every request does work proportional to it (slow, no sleep)"},
-    "disk": {"alert": "DBDiskNearFull", "cause": "db_disk_full", "playbook": "clear_logs.yml",
-             "service": "database", "kind": "real: real bytes fill the database's bounded log directory until writes really fail (HTTP 507)"},
+    # ---- the original three faults, now with milder variations
+    "pool": _s("pool", "Every pool slot leaked", "DBPoolNearExhaustion", "db_connection_pool_exhaustion", "restart_service.yml", "transaction-service",
+               "real: every slot of the service's bounded pool is leaked, so requests really time out", "pool_leak", fraction=1.0),
+    "pool:partial": _s("pool", "95% of the slots leaked (the alert fires, requests still succeed)", "DBPoolNearExhaustion", "db_connection_pool_exhaustion",
+                       "restart_service.yml", "transaction-service", "real: 19 of 20 pool slots are leaked; one is left, so requests keep working", "pool_leak",
+                       expect="escalate", fraction=0.95),
+    "memory": _s("memory", "Memory held and every request slowed", "ContainerMemoryHigh", "high_memory_usage", "scale_replicas.yml", "transaction-service",
+                 "real: the container holds real memory and every request does work proportional to it (slow, no sleep)", "memory", profile="slow"),
+    "memory:light": _s("memory", "Memory held, requests still fast", "ContainerMemoryHigh", "high_memory_usage", "scale_replicas.yml", "transaction-service",
+                       "real: the container holds real memory above 90% of its limit, but requests are not slowed", "memory", expect="escalate", profile="light"),
+    "disk": _s("disk", "Log directory filled until writes fail", "DBDiskNearFull", "db_disk_full", "clear_logs.yml", "database",
+               "real: real bytes fill the database's bounded log directory until writes really fail (HTTP 507)", "disk", ratio=0.97),
+    "disk:threshold": _s("disk", "Disk just over the alert threshold (writes still work)", "DBDiskNearFull", "db_disk_full", "clear_logs.yml", "database",
+                         "real: the log directory is filled to 92%, above the alert threshold but below the point where writes fail", "disk", expect="escalate", ratio=0.92),
+    # ---- a service that is gone
+    "down:database": _s("service_down", "Database scaled to zero", "DeploymentUnavailable", "database_down", "restore_service.yml", "database",
+                        "real: the database Deployment is scaled to zero replicas, so every transaction fails", "scale_zero"),
+    "down:transaction-service": _s("service_down", "Transaction service scaled to zero", "DeploymentUnavailable", "transaction_service_down", "restore_service.yml",
+                                   "transaction-service", "real: the transaction service Deployment is scaled to zero replicas", "scale_zero"),
+    "down:api-gateway": _s("service_down", "API gateway scaled to zero", "DeploymentUnavailable", "api_gateway_down", "restore_service.yml", "api-gateway",
+                           "real: the API gateway Deployment is scaled to zero replicas", "scale_zero"),
+    # ---- a rollout that went wrong
+    "rollout:tx-crash": _s("bad_rollout", "Bad configuration: the new transaction-service pod crashes at start", "RolloutStalled", "bad_rollout_transaction_service",
+                           "rollback_deployment.yml", "transaction-service", "real: DB_POOL_MAX is set to a value that is not a number, so the new pod crash-loops",
+                           "bad_env", env="DB_POOL_MAX", value="not-a-number"),
+    "rollout:gw-crash": _s("bad_rollout", "Bad start command: the new gateway pod exits at start", "RolloutStalled", "bad_rollout_api_gateway", "rollback_deployment.yml",
+                           "api-gateway", "real: the gateway container's command is replaced by one that exits at once, so the new pod crash-loops", "bad_command"),
+    "rollout:tx-image": _s("bad_rollout", "Bad image tag: the new pod can never start", "RolloutStalled", "bad_rollout_transaction_service", "rollback_deployment.yml",
+                           "transaction-service", "real: the image is set to a tag that does not exist; the new pod never starts and never restarts", "bad_image", expect="escalate"),
+    "rollout:gw-probe": _s("bad_rollout", "Bad readiness probe: the new gateway pod never becomes ready", "RolloutStalled", "bad_rollout_api_gateway", "rollback_deployment.yml",
+                           "api-gateway", "real: the readiness probe path is changed to one that does not exist; the new pod runs but never becomes ready", "bad_probe", expect="escalate"),
+    # ---- faults with no known cause: the system must hand them to a person
+    "unknown:errors": _s("unknown", "Half of the transactions fail", "ErrorRateHigh", None, None, "transaction-service",
+                         "real: the transaction service fails 50% of requests (no signature fits)", "errors", expect="escalate", rate=0.5),
+    "unknown:latency": _s("unknown", "Every transaction is slow", "APILatencyHigh", None, None, "transaction-service",
+                          "real: the transaction service adds 1.5 s to every request (no signature fits)", "latency", expect="escalate", seconds=1.5),
+    "unknown:partition": _s("unknown", "Network partition between the service and the database", "ErrorRateHigh", None, None, "database",
+                            "real: a NetworkPolicy denies all traffic into the database pod", "partition", expect="escalate"),
+    "unknown:podkill": _s("unknown", "The service process is killed repeatedly", "PodRestartsHigh", None, None, "transaction-service",
+                          "real: the transaction service's main process is killed three times", "podkill", expect="escalate"),
 }
 DEFAULT_ORDER = ["guardrails_dry", "pool", "cooldown", "memory", "disk", "unknown", "guardrails_live"]
 
@@ -228,6 +269,21 @@ def classify(spec: dict, ev: dict) -> tuple[str, str]:
     return "passed", "alert, diagnosis, second opinion, playbook and independent recovery all confirmed"
 
 
+def classify_escalation(ev: dict) -> tuple[str, str]:
+    """For a fault the system is meant to leave alone: `passed` needs the alert, an incident that ends in a person being asked, and NO execution."""
+    if not ev.get("alert_fired"):
+        return "no_alert", "the expected alert did not fire"
+    inc = ev.get("incident")
+    if not inc:
+        return "no_incident", "the engine received no incident for this fault"
+    if ev.get("executions_after") != ev.get("executions_before"):
+        return "unexpected_execution", "a playbook ran for a fault that should have been left to a person"
+    rem = inc.get("remediation") or {}
+    if inc.get("action") == "escalate_to_human" or rem.get("status") == "escalated":
+        return "passed", "escalated to a person; nothing was executed (by design)" + (f": {rem.get('reason')}" if rem.get("reason") else "")
+    return "acted_unexpectedly", f"the dispatcher answered {rem.get('status')} for a fault that should have been escalated"
+
+
 # ----------------------------------------------------------------------------------------------- the run
 class Runner:
     def __init__(self, c: Cluster, out: Path, live: bool, cooldown: int, timeouts: dict, collect: bool = False):
@@ -311,6 +367,9 @@ class Runner:
             lambda: self.set_env("remediation-dispatcher", AUTO_REMEDIATE="false", COOLDOWN_SECONDS=None, VERIFY_TIMEOUT_SECONDS=None),
             lambda: self.reset_faults(),
             lambda: self.c.kubectl("-n", NS, "scale", "deploy/transaction-service", "--replicas=1"),
+            lambda: self.c.kubectl("-n", NS, "scale", "deploy/database", "deploy/api-gateway", "--replicas=1", check=False),
+            lambda: self.c.kubectl("-n", NS, "delete", "networkpolicy", "chaos-deny-database", "--ignore-not-found", check=False),
+            lambda: [self.heal_rollout(d) for d in ("transaction-service", "api-gateway")],
             lambda: self.set_env("transaction-service", CHAOS_ENABLED="false"),
             lambda: self.set_env("database", CHAOS_ENABLED="false"),
             lambda: self.set_env("correlation-engine", SECOND_OPINION_MODE="shadow", ESCALATE_ON_AMBIGUITY=None),
@@ -326,17 +385,61 @@ class Runner:
             log("!!! AUTO_REMEDIATE is NOT confirmed off: switch it off by hand")
 
     # -- faults
+    CHAOS_POLICY = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chaos-deny-database
+  namespace: autosre
+  labels: {autosre.io/chaos: "true"}
+spec:
+  podSelector: {matchLabels: {app: database}}
+  policyTypes: [Ingress]
+  ingress: []
+"""
+
     def inject(self, name: str) -> dict:
-        self.settle("transaction-service", "database")                      # a pod replaced by the previous scenario may still be starting
+        self.settle("transaction-service", "database", "api-gateway")       # a pod replaced by the previous scenario may still be starting
         wait_for(lambda: self.c.get(self.c.svc("transaction-service", "/health")).get("status") == "ok", 120, 5, "transaction-service health")
-        if name == "pool":
+        spec = SCENARIOS[name]
+        fault, svc = spec["fault"], spec["service"]
+        if fault == "scale_zero":
+            self.c.kubectl("-n", NS, "scale", f"deploy/{svc}", "--replicas=0")
+            return {"fault": fault, "service": svc, "consequence": f"real: {svc} has no replica"}
+        if fault == "bad_env":
+            self.c.kubectl("-n", NS, "set", "env", f"deploy/{svc}", f"{spec['env']}={spec['value']}")
+            return {"fault": fault, "service": svc, "env": spec["env"], "consequence": "real: the new pod crash-loops and the old pod is kept"}
+        if fault == "bad_command":
+            patch = json.dumps({"spec": {"template": {"spec": {"containers": [{"name": svc, "command": ["sh", "-c", "exit 1"]}]}}}})
+            self.c.kubectl("-n", NS, "patch", f"deploy/{svc}", "--type=strategic", "-p", patch)
+            return {"fault": fault, "service": svc, "consequence": "real: the new pod exits at once and crash-loops"}
+        if fault == "bad_image":
+            self.c.kubectl("-n", NS, "set", "image", f"deploy/{svc}", f"{svc}=autosre/{svc}:does-not-exist")
+            return {"fault": fault, "service": svc, "consequence": "real: the new pod can never start"}
+        if fault == "bad_probe":
+            patch = json.dumps({"spec": {"template": {"spec": {"containers": [{"name": svc, "readinessProbe": {"httpGet": {"path": "/does-not-exist", "port": "http"}}}]}}}})
+            self.c.kubectl("-n", NS, "patch", f"deploy/{svc}", "--type=strategic", "-p", patch)
+            return {"fault": fault, "service": svc, "consequence": "real: the new pod runs but never becomes ready"}
+        if fault == "errors":
+            return {"errors": self.c.post(self.c.svc("transaction-service", "/chaos/errors"), {"rate": spec["rate"]}), "consequence": "real: that share of requests fails with 5xx"}
+        if fault == "latency":
+            return {"latency": self.c.post(self.c.svc("transaction-service", "/chaos/latency"), {"seconds": spec["seconds"]}), "consequence": "real: every request is slower"}
+        if fault == "partition":
+            self.c.kubectl("-n", NS, "apply", "-f", "-", stdin=self.CHAOS_POLICY)
+            return {"policy": "chaos-deny-database", "consequence": "real: the transaction service can no longer reach the database"}
+        if fault == "podkill":
+            for k in range(3):
+                self.c.kubectl("-n", NS, "exec", "deploy/transaction-service", "--", "sh", "-c", "kill 1", check=False)
+                if k < 2:
+                    time.sleep(45)
+            return {"kills": 3, "consequence": "real: the container restarts three times"}
+        if name.split(":")[0] == "pool" or fault == "pool_leak":
             maximum = self.c.prom_scalar('max(db_connection_pool_max{service="transaction-service"})', 20) or 20
-            n = int(maximum)
+            n = int(math.ceil(maximum * spec.get("fraction", 1.0)))
             # The pool is real: leaking every slot makes every request really wait DB_POOL_TIMEOUT and fail with 503, so the errors and
             # the latency that raise confidence to the 0.75 gate arise by themselves; nothing else is injected.
             out = self.c.post(self.c.svc("transaction-service", "/chaos/leak"), {"connections": n})
-            return {"leak": out, "pool_max": maximum, "consequence": "real: requests time out waiting for a pool slot (503)"}
-        if name == "memory":
+            return {"leak": out, "pool_max": maximum, "leaked": n, "consequence": "real: requests time out waiting for a pool slot (503)" if n >= maximum else "real: one slot is left, requests keep working"}
+        if fault == "memory":
             limit_mib = int(self.c.deployment("transaction-service")["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["memory"].rstrip("Mi"))
             held = 0
             for _ in range(4):
@@ -350,11 +453,14 @@ class Runner:
             # Memory pressure slows the service for real: each request reads the leaked heap `scan_passes` times (no sleep). The slowdown depends on the CPU
             # the pod gets, so the intensity is calibrated by measuring: raise the passes until a transaction takes at least TARGET_LATENCY_S (the load
             # generator is one sequential client, so this cannot saturate the service; 0.15 s and 0.3 s were too small to fire APILatencyHigh).
+            if spec.get("profile") == "light":
+                self.c.post(self.c.svc("transaction-service", "/chaos/memory"), {"megabytes": 0, "scan_passes": 0})
+                return {"held_mb": held, "memory_ratio": self.memory_ratio(), "limit_mib": limit_mib, "consequence": "real: memory is above 90% of the limit but requests are not slowed"}
             passes, med = self.calibrate_memory_slowness()
             return {"held_mb": held, "memory_ratio": self.memory_ratio(), "limit_mib": limit_mib, "scan_passes": passes,
                     "median_transaction_s": med, "consequence": "real: every request reads the leaked heap, so it is really slower"}
-        if name == "disk":
-            out = self.c.post(self.c.svc("database", "/chaos/disk"), {"ratio": 0.97})       # above the 0.95 at which writes fail
+        if fault == "disk":
+            out = self.c.post(self.c.svc("database", "/chaos/disk"), {"ratio": spec.get("ratio", 0.97)})       # above 0.95 writes fail
             return {"response": out, "disk": self.c.get(self.c.svc("database", "/disk")), "consequence": "real: the full disk fails writes (HTTP 507), so transactions fail"}
         raise ValueError(name)
 
@@ -461,10 +567,19 @@ class Runner:
         rec["timeline"]["injected_at"] = since
         rec["evidence"]["injection"] = self.inject(name)
         ev = {}
-        alert, w = wait_for(lambda: self.c.firing(spec["alert"]), self.t["alert"], 5, f"{spec['alert']}")
+        alert, w = wait_for(lambda: self.c.firing(spec["alert"]), self.t["alert"] * (2 if spec["alert"] in ("RolloutStalled", "ErrorRateHigh", "PodRestartsHigh") else 1), 5, f"{spec['alert']}")
         ev["alert_fired"] = bool(alert); ev["alert"] = alert[0]["metric"] if alert else None
         rec["timeline"]["alert_after_s"] = w
-        if alert:
+        if alert and spec["expect"] == "escalate":
+            executions_before = len(self.executions())
+            got, w2 = wait_for(lambda: find_incident_with(self.engine_incidents(), since, {spec["alert"]}), self.t["engine"], 5, "an incident for this fault")
+            time.sleep(60)                                          # let the consequences fire, so a lone symptom cannot be corroborated unnoticed
+            mine = [i for i in self.engine_incidents() if i.get("received_at", "") >= since and spec["alert"] in {a.get("alertname") for a in i.get("alerts", [])}]
+            ev["incident"] = mine[0] if mine else got                 # the incidents are newest first: the newest one carrying the alert
+            ev["first_incident"] = got
+            ev["executions_before"], ev["executions_after"] = executions_before, len(self.executions())
+            rec["timeline"]["incident_after_s"] = round(w + w2, 1) if got else None
+        elif alert:
             am, _ = wait_for(lambda: [a for a in self.c.get(f"{AM}/api/v2/alerts") if a["labels"].get("alertname") == spec["alert"]],
                              self.t["engine"], 5, "Alertmanager")
             ev["alertmanager"] = bool(am)
@@ -486,16 +601,41 @@ class Runner:
         if self.collect and alert:
             rec["trial"] = self.collect_trial(name, t0.timestamp(), dirty)["trial"]
         rec["evidence"].update(ev)
-        rec["outcome"], rec["why"] = classify(spec, ev)
+        rec["outcome"], rec["why"] = classify_escalation(ev) if spec["expect"] == "escalate" else classify(spec, ev)
         rec["passed"] = rec["outcome"] == "passed"
         log(f"    -> {rec['outcome']}: {rec['why']}")
-        self.reset_faults()
-        if name == "memory":
-            self.cleanup_memory_fault()
-        self.settle("transaction-service", "database")
+        self.cleanup_fault(name)
+        self.settle("transaction-service", "database", "api-gateway")
         if not self.quiet(self.t["quiet"]):
             rec["warning"] = "alerts had not cleared by the time the next scenario was due"
         return rec
+
+    def heal_rollout(self, svc: str) -> None:
+        """Undo a bad rollout the dispatcher did not undo. Only when the Deployment is NOT healthy: undoing a healthy one would bring the bad revision back."""
+        try:
+            d = self.c.deployment(svc)
+            st, want = d["status"], d["spec"]["replicas"]
+        except Exception as exc:                                # noqa: BLE001 - restore must go on; a deployment that cannot be read is reported, not fatal
+            log(f"    could not read {svc} to check its rollout: {exc}")
+            return
+        healthy = st.get("updatedReplicas", 0) == want and st.get("readyReplicas", 0) == want and st.get("replicas", 0) == want
+        if not healthy:
+            log(f"    healing {svc}: the rollout is not healthy, undoing it")
+            self.c.kubectl("-n", NS, "rollout", "undo", f"deploy/{svc}", check=False)
+
+    def cleanup_fault(self, name: str) -> None:
+        """Put back whatever the fault changed. Safe to run when the dispatcher already fixed it."""
+        spec = SCENARIOS.get(name) or {}
+        fault, svc = spec.get("fault"), spec.get("service")
+        if fault == "scale_zero":
+            self.c.kubectl("-n", NS, "scale", f"deploy/{svc}", "--replicas=1")
+        elif fault in ("bad_env", "bad_command", "bad_image", "bad_probe"):
+            self.heal_rollout(svc)
+        elif fault == "partition":
+            self.c.kubectl("-n", NS, "delete", "networkpolicy", "chaos-deny-database", "--ignore-not-found", check=False)
+        self.reset_faults()
+        if fault == "memory":
+            self.cleanup_memory_fault()
 
     def cleanup_memory_fault(self) -> None:
         """A reset reaches one pod only, and scaling down keeps an arbitrary pod, which may be the one holding the leak (found in comp12: the alert

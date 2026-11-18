@@ -47,6 +47,8 @@ POLICY = {
     "restart_service.yml": {"targets": {"transaction-service"}, "vars": {"target_service"}},
     "scale_replicas.yml": {"targets": {"transaction-service"}, "vars": {"target_service", "replicas", "replace_pods"}},
     "clear_logs.yml": {"targets": {"database"}, "vars": {"target_service"}},
+    "restore_service.yml": {"targets": {"database", "transaction-service", "api-gateway"}, "vars": {"target_service", "replicas"}},
+    "rollback_deployment.yml": {"targets": {"transaction-service", "api-gateway"}, "vars": {"target_service"}},
 }
 ALLOWED_PLAYBOOKS = set(POLICY)               # kept for callers that import it
 
@@ -325,6 +327,13 @@ def verify(record: dict, before: dict, cfg: dict, sleep=time.sleep) -> tuple[boo
                     needed = before["generation"] + (2 if before["replicas"] != want else 1)
                     if now["generation"] < needed:
                         ok, why = False, f"the pods were not replaced (generation {before['generation']} -> {now['generation']})"
+            elif playbook == "restore_service.yml":
+                want = record["extra_vars"].get("replicas", 1)
+                ok = settled and now["replicas"] >= want and now["available"] >= want
+                why = f"{now['available']}/{want} replicas available" if not ok else f"restored: {now['available']} replica(s) available"
+            elif playbook == "rollback_deployment.yml":
+                ok = settled and now["generation"] > before["generation"] and now["replicas"] >= 1
+                why = "rolled back and complete" if ok else f"rollback not complete: {now} (generation before {before['generation']})"
             else:                                               # clear_logs.yml: the deployment must be untouched and healthy
                 ok = settled and now["generation"] == before["generation"]
                 why = "deployment healthy" if ok else f"deployment not settled: {now}"
@@ -362,7 +371,7 @@ def run_execution(record: dict, sleep=time.sleep) -> dict:
             before = cluster.deployment(target, ns)
         except Exception as exc:                                # noqa: BLE001
             raise RuntimeError(f"cannot read deployment {ns}/{target}: {exc}") from exc
-        if before["replicas"] < 1 and playbook != "scale_replicas.yml":
+        if before["replicas"] < 1 and playbook not in ("scale_replicas.yml", "restore_service.yml"):
             raise RuntimeError(f"{target} has no replicas to remediate")
         record["before"] = before
 

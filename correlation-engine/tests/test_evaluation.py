@@ -43,7 +43,8 @@ def test_simulation_yields_exactly_n_nonempty_incidents():
 def test_simulated_labels_are_known_causes_or_none():
     labels = {r["label"] for r in simulate.generate(500, simulate.PRESETS["moderate"], seed=2)}
     assert labels <= set(SIGNATURES) | {None}
-    assert labels == set(SIGNATURES) | {None}        # every class is represented
+    # every class the simulator generates is represented; the causes added in the completion session are exercised in tests/test_new_causes.py
+    assert labels == {"db_connection_pool_exhaustion", "high_memory_usage", "db_disk_full", None}
 
 
 def test_deep_fault_incidents_are_labelled_unknown():

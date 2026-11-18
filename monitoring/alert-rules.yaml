@@ -104,3 +104,30 @@ spec:
             service: "{{ $labels.container }}"
           annotations:
             summary: "{{ $labels.container }} is above 90% of its memory limit"
+
+        # A deployment with no available replica: someone scaled it to zero, or every pod is gone. kube-state-metrics labels this by `deployment`, so the
+        # `service` label is synthesised (every deployment is named after its service). Only the three application services that can be restored.
+        - alert: DeploymentUnavailable
+          expr: >-
+            kube_deployment_status_replicas_available{namespace="autosre", deployment=~"database|transaction-service|api-gateway"} == 0
+          for: 30s
+          labels:
+            namespace: autosre
+            severity: critical
+            service: "{{ $labels.deployment }}"
+          annotations:
+            summary: "{{ $labels.deployment }} has no available replica"
+
+        # A rollout that does not finish: during a rolling update more pods exist than the Deployment wants, and while the new pods never become
+        # ready the old ones are kept, so the total stays above the wanted count. A normal restart passes through this state for well under 2 minutes.
+        - alert: RolloutStalled
+          expr: >-
+            kube_deployment_status_replicas{namespace="autosre", deployment=~"transaction-service|api-gateway"}
+            > kube_deployment_spec_replicas{namespace="autosre", deployment=~"transaction-service|api-gateway"}
+          for: 2m
+          labels:
+            namespace: autosre
+            severity: critical
+            service: "{{ $labels.deployment }}"
+          annotations:
+            summary: "{{ $labels.deployment }} rollout has not finished: the new pods are not becoming ready"

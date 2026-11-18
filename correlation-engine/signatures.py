@@ -70,6 +70,45 @@ SIGNATURES: dict[str, dict] = {
         "playbook": "clear_logs.yml",
         "description": "The database data volume is nearly full, so writes are failing.",
     },
+    # ---- added in the completion session: a service that is gone, and a rollout that went wrong
+    "database_down": {
+        "owner": "database",
+        "required_symptoms": ["DeploymentUnavailable"],
+        "weights": {"DeploymentUnavailable": 0.60, "ErrorRateHigh": 0.25, "APILatencyHigh": 0.15},
+        "playbook": "restore_service.yml",
+        "description": "The database has no available replica (scaled to zero or every pod gone).",
+    },
+    "transaction_service_down": {
+        "owner": "transaction-service",
+        "required_symptoms": ["DeploymentUnavailable"],
+        "weights": {"DeploymentUnavailable": 0.60, "ErrorRateHigh": 0.25, "APILatencyHigh": 0.15},
+        "playbook": "restore_service.yml",
+        "description": "The transaction service has no available replica.",
+    },
+    "api_gateway_down": {
+        "owner": "api-gateway",
+        "required_symptoms": ["DeploymentUnavailable"],
+        "weights": {"DeploymentUnavailable": 0.60, "ErrorRateHigh": 0.25, "APILatencyHigh": 0.15},
+        "playbook": "restore_service.yml",
+        "description": "The API gateway has no available replica.",
+    },
+    # As everywhere, the deciding symptom alone stays below the 0.75 gate. A crash-looping revision also restarts its pods (PodRestartsHigh), so it
+    # reaches 1.0 and is rolled back by itself; a revision that only fails its readiness probe or its image pull never restarts, stays at 0.60 and
+    # is left to a person.
+    "bad_rollout_transaction_service": {
+        "owner": "transaction-service",
+        "required_symptoms": ["RolloutStalled"],
+        "weights": {"RolloutStalled": 0.60, "PodRestartsHigh": 0.40},
+        "playbook": "rollback_deployment.yml",
+        "description": "A new revision of the transaction service never became ready (bad configuration, bad image or failing probe).",
+    },
+    "bad_rollout_api_gateway": {
+        "owner": "api-gateway",
+        "required_symptoms": ["RolloutStalled"],
+        "weights": {"RolloutStalled": 0.60, "PodRestartsHigh": 0.40},
+        "playbook": "rollback_deployment.yml",
+        "description": "A new revision of the API gateway never became ready.",
+    },
 }
 
 # `expected_symptoms` is derived from the weights, never written by hand, so the

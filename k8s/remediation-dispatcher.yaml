@@ -5,7 +5,7 @@ metadata:
   name: remediation-dispatcher
   namespace: autosre
 ---
-# Least privilege for the three approved playbooks, in the autosre namespace only:
+# Least privilege for the five approved playbooks, in the autosre namespace only:
 #   restart_service.yml / scale_replicas.yml : read and patch deployments, scale them
 #   clear_logs.yml                          : find the database pod and run a command in it (pods/exec)
 #   verification                            : read deployments and pods
@@ -18,6 +18,9 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "deployments/scale"]
     verbs: ["get", "list", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list"]                # rollback_deployment.yml reads the previous revision's pod template
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
