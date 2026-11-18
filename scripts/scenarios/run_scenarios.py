@@ -294,6 +294,14 @@ class Runner:
         self.environment: dict = {}
         self.trial_count = 0
 
+    def emit(self, **fields) -> None:
+        """Tell the engine about a setting change or a finished scenario, so the website's change log and run list (kept on the engine's history volume and
+        copied to the S3 bucket) show it. Never lets a recording problem touch the run."""
+        try:
+            self.c.post(self.c.svc("correlation-engine", "/events"), fields, timeout=15, tries=1)
+        except Exception as exc:                                # noqa: BLE001
+            log(f"  (could not record the event: {exc})")
+
     # -- cluster state
     def set_env(self, deploy: str, **env: str) -> None:
         args = [f"{k}={v}" if v is not None else f"{k}-" for k, v in env.items()]
@@ -359,6 +367,7 @@ class Runner:
         health = self.c.get(self.c.svc("remediation-dispatcher", "/health"))
         if health.get("auto_remediate") is not True:
             raise RuntimeError("could not confirm AUTO_REMEDIATE=true")
+        self.emit(kind="change", setting="live_remediation", value="on", by="scenario runner", reason="switched on for this run only; the runner switches it off at the end")
 
     def restore(self) -> None:
         log("restoring: AUTO_REMEDIATE off, chaos off, faults reset, replicas back to 1")
@@ -381,6 +390,8 @@ class Runner:
                 errors.append(str(exc))
         health = self.c.get(self.c.svc("remediation-dispatcher", "/health"))
         self.environment["restored"] = {"auto_remediate": health.get("auto_remediate"), "errors": errors}
+        if health.get("auto_remediate") is False:
+            self.emit(kind="change", setting="live_remediation", value="off", by="scenario runner", reason="restored at the end of the run; AUTO_REMEDIATE=false confirmed")
         if health.get("auto_remediate") is not False:
             log("!!! AUTO_REMEDIATE is NOT confirmed off: switch it off by hand")
 
@@ -602,6 +613,9 @@ spec:
             rec["trial"] = self.collect_trial(name, t0.timestamp(), dirty)["trial"]
         rec["evidence"].update(ev)
         rec["outcome"], rec["why"] = classify_escalation(ev) if spec["expect"] == "escalate" else classify(spec, ev)
+        self.emit(kind="run", name=spec["family"], scenario=name, variant=spec["label"], mode="live" if self.live else "simulate", result=rec["outcome"],
+                  text=rec["why"][:300], playbook=spec["playbook"], cause=spec["cause"], started=since, finished=iso(),
+                  seconds=(rec["timeline"].get("execution_s") if isinstance(rec["timeline"].get("execution_s"), (int, float)) else None))
         rec["passed"] = rec["outcome"] == "passed"
         log(f"    -> {rec['outcome']}: {rec['why']}")
         self.cleanup_fault(name)

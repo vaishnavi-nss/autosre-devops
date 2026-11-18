@@ -26,6 +26,21 @@ for d in frontend api-gateway transaction-service database correlation-engine se
 done
 say "monitoring: $(as kubectl -n monitoring get pods --no-headers 2>&1 | awk '{print $1":"$3}' | cut -c1-40 | tr '\n' ' ')"
 
+# History: after a lab restart only the S3 bucket survives, so pull the incidents, events and playbook runs back into the engine and the dispatcher
+# (they reload their files at start), restore the run logs, and make sure the timer that copies new history to the bucket is running.
+BUCKET="${BUCKET:-autosre-validation-841736140404}"
+CONSOLE_DIR="/home/$OWNER/autosre-console"
+if [ -d "$CONSOLE_DIR/.git" ]; then as git -C "$CONSOLE_DIR" pull -q 2>&1 | tail -1; fi
+if [ -f "$CONSOLE_DIR/scripts/aws/history_sync.py" ]; then
+  PULL=$(as env BUCKET="$BUCKET" python3 "$CONSOLE_DIR/scripts/aws/history_sync.py" pull 2>&1 | tail -1)
+  say "history pull: $PULL"
+  if echo "$PULL" | grep -q '"restart_needed": true'; then
+    as kubectl -n autosre rollout restart deploy/correlation-engine deploy/remediation-dispatcher >/dev/null 2>&1
+    for d in correlation-engine remediation-dispatcher; do as kubectl -n autosre rollout status "deploy/$d" --timeout=180s 2>&1 | tail -1; done
+  fi
+  BUCKET="$BUCKET" OWNER="$OWNER" bash "$CONSOLE_DIR/scripts/aws/install-history-sync.sh" 2>&1 | tail -1
+fi
+
 systemctl restart autosre-pf-frontend autosre-pf-grafana autosre-pf-prometheus autosre-fault-console 2>&1 | tail -1
 sleep 8
 for p in 8081 3000 9090 8082 8080; do printf "port %s -> HTTP " "$p"; curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:$p/" || echo fail; done

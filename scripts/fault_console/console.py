@@ -28,11 +28,33 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-SCENARIOS = {
-    "pool": "Database pool exhaustion: every slot of the service's bounded pool is leaked, so requests really time out",
-    "memory": "High memory: the container holds real memory and every request does work proportional to it",
-    "disk": "Database disk full: real bytes fill the database's bounded log directory until writes fail (HTTP 507)",
+def _load_scenarios() -> dict:
+    """The scenario table lives in the runner, which is the only thing that injects faults; the console just offers what the runner knows."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / "scenarios" / "run_scenarios.py"
+    spec = importlib.util.spec_from_file_location("run_scenarios_for_console", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["run_scenarios_for_console"] = mod
+    spec.loader.exec_module(mod)
+    return mod.SCENARIOS
+
+
+SCENARIOS = _load_scenarios()
+FAMILIES = {
+    "pool": "Database pool exhaustion", "memory": "High memory", "disk": "Database disk full", "service_down": "A service is down",
+    "bad_rollout": "A bad rollout", "unknown": "Faults with no known cause (must be handed to a person)",
 }
+
+
+def families() -> list[dict]:
+    """The cards of the page: one per family, with its variations in the order the runner lists them."""
+    out: dict[str, dict] = {}
+    for key, spec in SCENARIOS.items():
+        fam = out.setdefault(spec["family"], {"family": spec["family"], "title": FAMILIES.get(spec["family"], spec["family"]), "variants": []})
+        fam["variants"].append({"key": key, "label": spec["label"], "kind": spec["kind"], "expect": spec["expect"], "playbook": spec.get("playbook")})
+    return list(out.values())
+
+
 MODES = ("simulate", "live")
 COOLDOWN_S = 60
 # The two switches of the correlation engine that the team may change on purpose. Both default to the safe value.
@@ -178,7 +200,18 @@ class Console:
             if done.returncode != 0:
                 return False, "kubectl refused the change: " + (done.stderr or "").strip()[:200]
             self._engine = {**self._engine, setting: value}
-            return True, f"{setting} is now {value}. The engine restarts (a few seconds) and forgets its recent-incident list."
+            self.record_change(setting, value)
+            return True, f"{setting} is now {value}. The engine restarts (a few seconds); its history is reloaded from its volume."
+
+    def record_change(self, setting: str, value: str) -> None:
+        """Add the change to the engine's event log (shown on the website's Settings page and copied to the S3 bucket). Best effort."""
+        body = json.dumps({"kind": "change", "setting": {"second_opinion": "second_opinion_mode", "ambiguity": "ambiguity_rule"}[setting], "value": value,
+                           "by": "fault console", "reason": "changed from the fault console; the runner restores the defaults after its next run"})
+        try:
+            subprocess.run(["kubectl", "create", "--raw", "/api/v1/namespaces/autosre/services/correlation-engine:8000/proxy/events", "-f", "-"],
+                           input=body, capture_output=True, text=True, timeout=20)
+        except Exception:                                       # noqa: BLE001 - the switch itself already worked
+            pass
 
     def start_refresher(self, every_s: float = 5.0) -> threading.Thread:
         def loop():
@@ -225,7 +258,7 @@ class Console:
                 lines = []
         running = self.running()
         return {"running": running, "job": self.job, "auto_remediate": self.auto_remediate(), "engine": self.engine_switches(), "allow_live": self.allow_live,
-                "scenarios": SCENARIOS, "log": lines[-60:], **summarize_log(lines)}
+                "scenarios": {k: v["kind"] for k, v in SCENARIOS.items()}, "families": families(), "log": lines[-60:], **summarize_log(lines)}
 
 
 PAGE = (Path(__file__).with_name("page.html")).read_text(encoding="utf-8") if Path(__file__).with_name("page.html").exists() else "<h1>page.html missing</h1>"

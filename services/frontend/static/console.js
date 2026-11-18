@@ -83,7 +83,9 @@
     oncall: [['incidents', 'Incidents'], ['replay', 'Fault Replay'], ['services', 'Services'], ['playbooks', 'Playbooks'], ['settings', 'Settings & changes'], ['runs', 'Validation runs'], ['telemetry', 'Telemetry']],
   };
   const SECTION = { overview: 'view-dashboard', telemetry: 'view-status' };
-  const CAUSE = { db_connection_pool_exhaustion: 'DB connection pool exhausted', high_memory_usage: 'High memory usage', db_disk_full: 'Database disk full' };
+  const CAUSE = { db_connection_pool_exhaustion: 'DB connection pool exhausted', high_memory_usage: 'High memory usage', db_disk_full: 'Database disk full',
+    database_down: 'Database is down', transaction_service_down: 'Transaction service is down', api_gateway_down: 'API gateway is down',
+    bad_rollout_transaction_service: 'Bad rollout: transaction service', bad_rollout_api_gateway: 'Bad rollout: API gateway' };
   const cname = c => c ? (CAUSE[c] || String(c).replace(/_/g, ' ')) : 'Unknown cause';
   const ACTION = { auto_fixed: ['Auto-fixed', 'p-auto'], escalated: ['Escalated', 'p-esc'], dry_run: ['Dry run', 'p-dry'], vetoed: ['Held by ML gate', 'p-veto'], skipped: ['Skipped (cooldown)', 'p-dry'], running: ['Fixing now', 'p-run'], decision: ['Decision only', 'p-dry'] };
   const label = i => i.open ? ['Open', 'p-open'] : (ACTION[i.action] || [i.action, 'p-dry']);
@@ -321,7 +323,9 @@
       return '<div class="card cx-sec"><h3 style="font-size:0.95rem;text-transform:none;letter-spacing:0;color:var(--title-ink)">' + s + ' ' + (open ? '<span class="cx-pill p-open">' + open + ' open</span>' : '<span class="cx-pill p-auto">no open incidents</span>') + '</h3><div class="cx-kv" style="grid-template-columns:130px 1fr"><div>Replicas ready</div><div>' + (d && !d.error ? d.ready + ' / ' + d.replicas : '-') + '</div><div>Incidents</div><div>' + set.length + '</div><div>Escalated</div><div>' + esc_.length + ' (' + pct(esc_.length, set.length) + ')</div><div>Last incident</div><div>' + (set[0] ? ago(ms(set[0].t)) : '-') + '</div><div>Most common cause</div><div>' + (top ? esc(top[0]) + ' (' + top[1] + ')' : '-') + '</div></div><button class="cx-btn" style="margin-top:0.6rem" data-svc="' + s + '">View its incidents</button></div>'; }).join('');
     return '<h1>Services</h1><p class="sub">The dependency chain: a failure lower in the chain makes everything above it alert, so the engine names the deepest failing service.</p><div class="cx-chain"><span class="node">frontend</span>&rarr;<span class="node">api-gateway</span>&rarr;<span class="node">transaction-service</span>&rarr;<span class="node">database</span></div><div class="cx-cards">' + cards + '</div>';
   }
-  const CATALOG = [['restart_service.yml', 'Rolling restart of a service', 'transaction-service'], ['scale_replicas.yml', 'Scale out, optionally replace the pods (memory leak)', 'transaction-service'], ['clear_logs.yml', 'Clear old database logs', 'database']];
+  const CATALOG = [['restart_service.yml', 'Rolling restart of a service', 'transaction-service'], ['scale_replicas.yml', 'Scale out, optionally replace the pods (memory leak)', 'transaction-service'],
+    ['clear_logs.yml', 'Clear old database logs', 'database'], ['restore_service.yml', 'Bring a service with no replica back to a ready replica', 'database, transaction-service, api-gateway'],
+    ['rollback_deployment.yml', 'Go back to the previous working revision (kubernetes.core.k8s_rollback)', 'transaction-service, api-gateway']];
   window.CX_PLAYBOOKS = CATALOG;
   function pagePlaybooks() {
     const all = incs();

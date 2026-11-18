@@ -19,6 +19,8 @@ spec:
         app: correlation-engine
         app.kubernetes.io/part-of: autosre
     spec:
+      securityContext:
+        fsGroup: 10001                  # the image runs as uid 10001; the history volume must be writable by it
       containers:
         # Keep this name equal to the service name - the PodRestartsHigh rule
         # turns the `container` label into the `service` label.
@@ -45,6 +47,15 @@ spec:
               value: "true"
             - name: DISPATCHER_TIMEOUT
               value: "5"
+            # Incidents and events (setting changes, scenario runs) are appended here and reloaded after a restart. scripts/aws/history_sync.py copies
+            # these files to the S3 bucket, because only the bucket survives a lab restart.
+            - name: INCIDENT_LOG
+              value: /data/incidents.jsonl
+            - name: EVENT_LOG
+              value: /data/events.jsonl
+          volumeMounts:
+            - name: history
+              mountPath: /data
           resources:
             # Deliberately low so symptoms can be triggered on demand (brief section 4).
             requests:
@@ -67,6 +78,24 @@ spec:
               port: http
             initialDelaySeconds: 3
             periodSeconds: 5
+      volumes:
+        - name: history
+          persistentVolumeClaim:
+            claimName: correlation-engine-history
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: correlation-engine-history
+  namespace: autosre
+  labels:
+    app: correlation-engine
+    app.kubernetes.io/part-of: autosre
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 64Mi
 ---
 apiVersion: v1
 kind: Service

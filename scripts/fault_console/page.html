@@ -20,6 +20,7 @@
   .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(250px, 1fr)); gap:12px; }
   .fault { border:1px solid var(--line); border-radius:8px; padding:12px; display:flex; flex-direction:column; gap:8px; }
   .fault p { margin:0; color:var(--mute); font-size:13px; flex:1; }
+  .fault select { font:inherit; font-size:13px; color:var(--ink); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:6px 8px; }
   button { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--navy); color:#fff; cursor:pointer; }
   button.live { background:var(--bad); border-color:var(--bad); }
   button.stop { background:transparent; color:var(--bad); border-color:var(--bad); }
@@ -121,15 +122,19 @@ $('stop').addEventListener('click', () => call('/api/stop'));
 document.querySelectorAll('.seg').forEach(seg => seg.querySelectorAll('button').forEach(b =>
   b.addEventListener('click', () => call('/api/engine', { setting: seg.id.replace('sw-', ''), value: b.dataset.v }))));
 
-function buildFaults(scenarios) {
+function buildFaults(families) {
   if ($('faults').children.length) return;
-  for (const [key, text] of Object.entries(scenarios)) {
+  for (const fam of families) {
     const d = document.createElement('div'); d.className = 'fault';
-    const h = document.createElement('b'); h.textContent = key;
-    const p = document.createElement('p'); p.textContent = text;
-    const b = document.createElement('button'); b.dataset.key = key;
-    b.addEventListener('click', () => call('/api/run', { scenario: key, mode: mode(), confirm: $('confirm').value.trim() }));
-    d.append(h, p, b); $('faults').append(d);
+    const h = document.createElement('b'); h.textContent = fam.title;
+    const sel = document.createElement('select'); sel.setAttribute('aria-label', 'Variation of ' + fam.title);
+    for (const v of fam.variants) { const o = document.createElement('option'); o.value = v.key; o.textContent = v.label + (v.expect === 'escalate' ? ' (to be escalated)' : ''); sel.append(o); }
+    const p = document.createElement('p');
+    const note = () => { const v = fam.variants.find(x => x.key === sel.value); p.textContent = v.kind.replace(/^real: /, '') + (v.expect === 'escalate' ? ' Expected: the system hands it to a person and runs nothing.' : ' Expected: the system diagnoses it and fixes it' + (v.playbook ? ' with ' + v.playbook : '') + '.'); };
+    sel.addEventListener('change', note); note();
+    const b = document.createElement('button');
+    b.addEventListener('click', () => call('/api/run', { scenario: sel.value, mode: mode(), confirm: $('confirm').value.trim() }));
+    d.append(h, sel, p, b); $('faults').append(d);
   }
   refreshModeUI();
 }
@@ -137,7 +142,7 @@ function buildFaults(scenarios) {
 async function poll() {
   try {
     const s = await (await fetch('/api/status')).json(); state = s;
-    buildFaults(s.scenarios);
+    buildFaults(s.families);
     setPill($('run'), s.running ? 'running' : 'idle', s.running ? 'warn' : 'ok');
     setPill($('phase'), s.phase, '');
     setPill($('auto'), s.auto_remediate === 'false' ? 'OFF (safe)' : s.auto_remediate === 'true' ? 'ON' : s.auto_remediate, s.auto_remediate === 'false' ? 'ok' : 'bad');

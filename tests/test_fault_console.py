@@ -28,7 +28,9 @@ _spec.loader.exec_module(fc)
     ({"scenario": "memory", "mode": "live"}, True, "confirmation word"),            # no typed confirmation
     ({"scenario": "memory", "mode": "live", "confirm": "live"}, True, "confirmation word"),
     ({"scenario": "rm -rf /"}, True, "unknown scenario"),
-    ({"scenario": "unknown"}, True, "unknown scenario"),                            # only the three real faults can be started
+    ({"scenario": "unknown"}, True, "unknown scenario"),                            # only the faults the runner lists can be started
+    ({"scenario": "down:database", "mode": "live", "confirm": "LIVE"}, True, None),   # a variation is a scenario like any other
+    ({"scenario": "rollout:gw-probe"}, False, None), ({"scenario": "unknown:partition; rm -rf /"}, True, "unknown scenario"),
     ({"scenario": "pool", "mode": "yolo"}, True, "unknown mode"),
 ])
 def test_requests_are_validated(body, allow, err):
@@ -113,7 +115,8 @@ def test_a_simulated_run_starts_and_a_live_one_is_refused_by_default(server):
 def test_status_reports_the_safe_state_and_the_page_is_served(server):
     base, _, _ = server
     code, body = call(base, "/api/status")
-    assert code == 200 and body["auto_remediate"] == "false" and body["running"] is False and set(body["scenarios"]) == {"pool", "memory", "disk"}
+    assert code == 200 and body["auto_remediate"] == "false" and body["running"] is False and {"pool", "memory", "disk"} <= set(body["scenarios"])
+    assert {f["family"] for f in body["families"]} >= {"pool", "memory", "disk", "service_down", "bad_rollout", "unknown"}
     assert body["allow_live"] is False
     with urllib.request.urlopen(base + "/", timeout=10) as resp:
         assert b"Fault Console" in resp.read()
@@ -201,7 +204,8 @@ def test_a_switch_runs_exactly_one_kubectl_set_env(tmp_path, monkeypatch):
     monkeypatch.setattr(fc.subprocess, "run", lambda cmd, **k: (calls.append(cmd) or Done()))
     console._engine = {"second_opinion": "shadow", "ambiguity": "off"}
     ok, _ = console.set_engine("ambiguity", "on")
-    assert ok and calls == [["kubectl", "-n", "autosre", "set", "env", "deploy/correlation-engine", "ESCALATE_ON_AMBIGUITY=true"]]
+    assert ok and calls[0] == ["kubectl", "-n", "autosre", "set", "env", "deploy/correlation-engine", "ESCALATE_ON_AMBIGUITY=true"]
+    assert len(calls) == 2 and calls[1][:3] == ["kubectl", "create", "--raw"] and "/correlation-engine:8000/proxy/events" in calls[1][3]       # the change is also recorded in the event log
     assert console.engine_switches() == {"second_opinion": "shadow", "ambiguity": "on"}
 
 
@@ -222,3 +226,18 @@ def test_the_page_explains_both_switches_in_plain_words():
     page = (ROOT / "scripts" / "fault_console" / "page.html").read_text(encoding="utf-8")
     for text in ("ML second opinion", "Ambiguity rule", "Shadow", "Gate", "escalate", "/api/engine"):
         assert text in page
+
+
+def test_every_variation_is_offered_with_what_to_expect_and_nothing_else_can_be_started():
+    fams = fc.families()
+    keys = [v["key"] for f in fams for v in f["variants"]]
+    assert set(keys) == set(fc.SCENARIOS) and len(keys) == len(set(keys)) >= 17
+    for f in fams:
+        for v in f["variants"]:
+            assert v["expect"] in ("act", "escalate") and v["label"] and v["kind"].startswith("real:")
+            assert (v["playbook"] is None) == (v["expect"] == "escalate" and v["key"].startswith("unknown:"))
+
+
+def test_the_page_offers_a_variation_choice_per_family():
+    page = (ROOT / "scripts" / "fault_console" / "page.html").read_text(encoding="utf-8")
+    assert "s.families" in page and "createElement('select')" in page and "to be escalated" in page and "innerHTML" not in page
