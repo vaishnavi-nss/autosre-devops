@@ -51,6 +51,9 @@ POLICY = {
     "restore_service.yml": {"targets": {"database", "transaction-service", "api-gateway"}, "vars": {"target_service", "replicas"}},
     "rollback_deployment.yml": {"targets": {"transaction-service", "api-gateway"}, "vars": {"target_service"}},
     "fix_service_selector.yml": {"targets": {"database", "transaction-service", "api-gateway"}, "vars": {"target_service"}},
+    "resume_deployment.yml": {"targets": {"transaction-service", "api-gateway"}, "vars": {"target_service"}},
+    "restore_service_type.yml": {"targets": {"database", "transaction-service", "api-gateway"}, "vars": {"target_service"}},
+    "restore_baseline_replicas.yml": {"targets": {"transaction-service"}, "vars": {"target_service", "replicas"}},
 }
 ALLOWED_PLAYBOOKS = set(POLICY)               # kept for callers that import it
 # Read-only: collects evidence (pod states, recent events, log tails) for a person to read. It changes nothing, so it needs neither AUTO_REMEDIATE nor a
@@ -137,8 +140,11 @@ class Cluster:
         d = self._api("GET", f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}")
         s = d.get("status", {})
         return {"generation": d["metadata"].get("generation", 0), "observed": s.get("observedGeneration", 0),
-                "replicas": d["spec"].get("replicas", 0), "updated": s.get("updatedReplicas", 0),
+                "replicas": d["spec"].get("replicas", 0), "paused": bool(d["spec"].get("paused", False)), "updated": s.get("updatedReplicas", 0),
                 "ready": s.get("readyReplicas", 0), "available": s.get("availableReplicas", 0)}
+
+    def service_type(self, name: str, namespace: str) -> str:
+        return self._api("GET", f"/api/v1/namespaces/{namespace}/services/{name}").get("spec", {}).get("type", "")
 
     def ready_endpoints(self, name: str, namespace: str) -> int:
         """How many ready addresses stand behind the Service of that name."""
@@ -348,6 +354,20 @@ def verify(record: dict, before: dict, cfg: dict, sleep=time.sleep) -> tuple[boo
                 want = record["extra_vars"].get("replicas", 1)
                 ok = settled and now["replicas"] >= want and now["available"] >= want
                 why = f"{now['available']}/{want} replicas available" if not ok else f"restored: {now['available']} replica(s) available"
+            elif playbook == "resume_deployment.yml":
+                ok = settled and not now.get("paused", False) and now["replicas"] >= 1
+                why = "the Deployment is resumed and settled" if ok else f"still paused or not settled: {now}"
+            elif playbook == "restore_service_type.yml":
+                try:
+                    kind = cluster.service_type(target, ns)
+                except Exception as exc:                        # noqa: BLE001
+                    kind = f"unreadable: {exc}"
+                ok = settled and kind == "ClusterIP"
+                why = "the Service is ClusterIP again" if ok else f"the Service type is {kind!r}; deployment {now}"
+            elif playbook == "restore_baseline_replicas.yml":
+                want = record["extra_vars"]["replicas"]
+                ok = settled and now["replicas"] == want
+                why = f"back to {want} replica(s)" if ok else f"{now['ready']}/{want} replicas ready, wanted {want}, have {now['replicas']}"
             elif playbook == "fix_service_selector.yml":
                 try:
                     ready = cluster.ready_endpoints(target, ns)

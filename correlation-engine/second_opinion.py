@@ -19,6 +19,7 @@ FOR_SECONDS = {
     "APILatencyHigh": 60, "ErrorRateHigh": 60, "DBPoolNearExhaustion": 30,
     "DBDiskNearFull": 60, "PodRestartsHigh": 0, "ContainerMemoryHigh": 60,
     "DeploymentUnavailable": 30, "RolloutStalled": 120, "ServiceHasNoEndpoints": 60,
+    "DeploymentPaused": 60, "ServiceTypeChanged": 60, "ReplicasAboveBaseline": 600,
 }
 SCRAPE_AND_EVAL_S = 15
 DEFAULT_FOR_S = 60

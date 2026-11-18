@@ -114,6 +114,50 @@ SIGNATURES: dict[str, dict] = {
         "playbook": "fix_service_selector.yml",
         "description": "The API gateway pods are available but its Service has no endpoint.",
     },
+    # ---- configuration drift. Each of these is wrong BY ITSELF (nothing else has to fail for it to be a problem, and the fix is exact and safe), so the deciding symptom is
+    # the whole evidence and carries the whole weight. They are listed in DEFINITIVE below, which is the one exception to "a lone deciding symptom stays under the gate".
+    "deployment_paused_transaction_service": {
+        "owner": "transaction-service",
+        "required_symptoms": ["DeploymentPaused"],
+        "weights": {"DeploymentPaused": 1.0},
+        "playbook": "resume_deployment.yml",
+        "description": "The transaction service Deployment is paused, so updates and rollbacks are ignored.",
+    },
+    "deployment_paused_api_gateway": {
+        "owner": "api-gateway",
+        "required_symptoms": ["DeploymentPaused"],
+        "weights": {"DeploymentPaused": 1.0},
+        "playbook": "resume_deployment.yml",
+        "description": "The API gateway Deployment is paused.",
+    },
+    "service_type_changed_database": {
+        "owner": "database",
+        "required_symptoms": ["ServiceTypeChanged"],
+        "weights": {"ServiceTypeChanged": 1.0},
+        "playbook": "restore_service_type.yml",
+        "description": "The database Service is no longer ClusterIP.",
+    },
+    "service_type_changed_transaction_service": {
+        "owner": "transaction-service",
+        "required_symptoms": ["ServiceTypeChanged"],
+        "weights": {"ServiceTypeChanged": 1.0},
+        "playbook": "restore_service_type.yml",
+        "description": "The transaction service's Service is no longer ClusterIP.",
+    },
+    "service_type_changed_api_gateway": {
+        "owner": "api-gateway",
+        "required_symptoms": ["ServiceTypeChanged"],
+        "weights": {"ServiceTypeChanged": 1.0},
+        "playbook": "restore_service_type.yml",
+        "description": "The API gateway's Service is no longer ClusterIP.",
+    },
+    "replicas_above_baseline": {
+        "owner": "transaction-service",
+        "required_symptoms": ["ReplicasAboveBaseline"],
+        "weights": {"ReplicasAboveBaseline": 1.0},
+        "playbook": "restore_baseline_replicas.yml",
+        "description": "The transaction service still has extra replicas long after the incident that added them.",
+    },
     # As everywhere, the deciding symptom alone stays below the 0.75 gate. A crash-looping revision also restarts its pods (PodRestartsHigh), so it
     # reaches 1.0 and is rolled back by itself; a revision that only fails its readiness probe or its image pull never restarts, stays at 0.60 and
     # is left to a person.
@@ -132,6 +176,10 @@ SIGNATURES: dict[str, dict] = {
         "description": "A new revision of the API gateway never became ready.",
     },
 }
+
+#: Causes whose single deciding symptom is a definitive state (see the comment above them): the only ones allowed to clear the confidence gate on that symptom alone.
+DEFINITIVE = frozenset({"deployment_paused_transaction_service", "deployment_paused_api_gateway", "service_type_changed_database",
+                        "service_type_changed_transaction_service", "service_type_changed_api_gateway", "replicas_above_baseline"})
 
 # `expected_symptoms` is derived from the weights, never written by hand, so the
 # two can never drift apart.

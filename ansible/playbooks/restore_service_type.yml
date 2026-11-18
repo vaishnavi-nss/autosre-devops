@@ -1,0 +1,73 @@
+---
+# Remediation for: service_type_changed_database, service_type_changed_transaction_service, service_type_changed_api_gateway
+#
+# Every Service of this project is ClusterIP (reachable only inside the cluster). If someone changes one to NodePort or LoadBalancer it still works but it is
+# now exposed outside the cluster, which is a security-relevant drift. This puts the type back.
+#
+# Changing a NodePort Service back to ClusterIP is refused by Kubernetes while a `nodePort` is still set, so the same patch clears it (a null deletes the field
+# in a strategic merge). The patch names the one port (8000) that every Service of this project has.
+#
+# Safe by construction: only the three approved services, only the autosre namespace, and it refuses when the Service is already ClusterIP.
+#
+#   ansible-playbook -i ../inventory/localhost.yml restore_service_type.yml -e target_service=database
+- name: Put a Service back to ClusterIP
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    k8s_namespace: autosre
+    target_service: database
+    allowed_services: [database, transaction-service, api-gateway]
+    allowed_namespaces: [autosre]
+
+  tasks:
+    - name: Refuse anything outside the approved targets
+      ansible.builtin.assert:
+        that:
+          - target_service in allowed_services
+          - k8s_namespace in allowed_namespaces
+        fail_msg: "{{ k8s_namespace }}/{{ target_service }} is not an approved Service repair."
+
+    - name: Read the Service
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+      register: before
+
+    - name: Refuse unless the Service exists and is not ClusterIP
+      ansible.builtin.assert:
+        that:
+          - before.resources | length == 1
+          - before.resources[0].spec.type | default('ClusterIP') != 'ClusterIP'
+        fail_msg: "{{ target_service }} is already ClusterIP (or does not exist); nothing to restore."
+
+    - name: Put the type back and clear the node port
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Service
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+        state: patched
+        definition:
+          spec:
+            type: ClusterIP
+            ports:
+              - port: 8000
+                nodePort: null
+
+    - name: Read the Service again
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+      register: after
+      until: after.resources | length == 1 and after.resources[0].spec.type == 'ClusterIP'
+      retries: 12
+      delay: 5
+
+    - name: Report the outcome
+      ansible.builtin.debug:
+        msg: "Service {{ target_service }} is {{ after.resources[0].spec.type }} again (it was {{ before.resources[0].spec.type }})."

@@ -118,7 +118,7 @@ def yaml_vars(cmd):
 
 # ------------------------------------------------------------------------------------------------ policy
 def test_all_approved_playbooks_are_allowed():
-    assert disp.ALLOWED_PLAYBOOKS == {"restart_service.yml", "scale_replicas.yml", "clear_logs.yml", "restore_service.yml", "rollback_deployment.yml", "fix_service_selector.yml"}
+    assert disp.ALLOWED_PLAYBOOKS == {"restart_service.yml", "scale_replicas.yml", "clear_logs.yml", "restore_service.yml", "rollback_deployment.yml", "fix_service_selector.yml", "resume_deployment.yml", "restore_service_type.yml", "restore_baseline_replicas.yml"}
     mapping = yaml.safe_load((ROOT / "ansible" / "remediation_map.yml").read_text())["remediations"]
     for cause, entry in mapping.items():
         spec = disp.POLICY[entry["playbook"]]
@@ -431,7 +431,7 @@ def test_the_real_cluster_class_calls_the_api_server_with_the_service_account_to
 
     monkeypatch.setattr(disp.urllib.request, "urlopen", fake_urlopen)
     real = disp.Cluster()
-    assert real.deployment("transaction-service", "autosre") == {"generation": 4, "observed": 4, "replicas": 3, "updated": 3, "ready": 2, "available": 2}
+    assert real.deployment("transaction-service", "autosre") == {"generation": 4, "observed": 4, "replicas": 3, "paused": False, "updated": 3, "ready": 2, "available": 2}
     real.scale("transaction-service", "autosre", 1)
     method, url, headers, data = seen[0]
     assert (method, url) == ("GET", "https://10.96.0.1:443/apis/apps/v1/namespaces/autosre/deployments/transaction-service")
@@ -669,3 +669,49 @@ def test_evidence_survives_a_restart_and_does_not_crowd_the_fixes(isolated, monk
     disp._diagnostics.clear(); disp._executions.clear()
     assert disp._load_history(disp.settings()) == 0                # no fixes to reload...
     assert len(disp._diagnostics) == 1                             # ...but the evidence is back
+
+
+# ------------------------------------------------------------------------------------------------ configuration drift playbooks
+PAUSED_TX = {"root_cause": "deployment_paused_transaction_service", "confidence": 1.0, "service": "transaction-service", "second_opinion": AGREE}
+TYPE_DB = {"root_cause": "service_type_changed_database", "confidence": 1.0, "service": "database", "second_opinion": AGREE}
+EXTRA = {"root_cause": "replicas_above_baseline", "confidence": 1.0, "service": "transaction-service", "second_opinion": AGREE}
+
+
+@pytest.mark.parametrize("payload,playbook,target,extra", [(PAUSED_TX, "resume_deployment.yml", "transaction-service", {"target_service": "transaction-service"}),
+                                                            (TYPE_DB, "restore_service_type.yml", "database", {"target_service": "database"}),
+                                                            (EXTRA, "restore_baseline_replicas.yml", "transaction-service", {"target_service": "transaction-service", "replicas": 1})])
+def test_each_drift_cause_maps_to_its_playbook(payload, playbook, target, extra):
+    d = disp.decide(payload)
+    assert d["status"] == "ready" and d["playbook"] == playbook and d["target_service"] == target and d["extra_vars"] == extra
+
+
+def test_resume_counts_only_when_the_deployment_is_no_longer_paused(isolated, monkeypatch):
+    isolated.state["paused"] = True
+    monkeypatch.setattr(disp.subprocess, "run", lambda cmd, **kw: (isolated.ran.append(cmd), isolated.state.update(paused=False), subprocess.CompletedProcess(cmd, 0, "ok", ""))[2])
+    rec = disp.run_execution(_accept(PAUSED_TX), sleep=lambda s: None)
+    assert rec["status"] == "succeeded" and "resumed" in rec["reason"]
+    disp._cooldowns.clear(); disp._inflight.clear()
+    isolated.state["paused"] = True
+    monkeypatch.setattr(disp.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "ok", ""))      # exits 0 but nothing was resumed
+    rec = disp.run_execution(_accept(PAUSED_TX), sleep=lambda s: None)
+    assert rec["status"] == "verification_failed" and "still paused" in rec["reason"]
+
+
+def test_a_service_type_fix_counts_only_when_the_service_is_clusterip_again(isolated, monkeypatch):
+    kinds = {"now": "NodePort"}
+    isolated.service_type = lambda name, ns: kinds["now"]
+    monkeypatch.setattr(disp.subprocess, "run", lambda cmd, **kw: (kinds.update(now="ClusterIP"), subprocess.CompletedProcess(cmd, 0, "ok", ""))[1])
+    rec = disp.run_execution(_accept(TYPE_DB), sleep=lambda s: None)
+    assert rec["status"] == "succeeded" and "ClusterIP again" in rec["reason"]
+    disp._cooldowns.clear(); disp._inflight.clear()
+    kinds["now"] = "NodePort"
+    monkeypatch.setattr(disp.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "ok", ""))
+    rec = disp.run_execution(_accept(TYPE_DB), sleep=lambda s: None)
+    assert rec["status"] == "verification_failed" and "NodePort" in rec["reason"]
+
+
+def test_scaling_back_to_the_baseline_is_verified_by_the_replica_count(isolated, monkeypatch):
+    isolated.state.update(replicas=3, updated=3, ready=3, available=3)
+    monkeypatch.setattr(disp.subprocess, "run", lambda cmd, **kw: (isolated.scale_out(yaml_vars(cmd)["replicas"]), subprocess.CompletedProcess(cmd, 0, "ok", ""))[1])
+    rec = disp.run_execution(_accept(EXTRA), sleep=lambda s: None)
+    assert rec["status"] == "succeeded" and rec["after"]["replicas"] == 1 and "back to 1" in rec["reason"]

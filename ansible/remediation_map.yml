@@ -76,6 +76,43 @@ remediations:
     extra_vars:
       target_service: api-gateway
 
+  deployment_paused_transaction_service:
+    playbook: resume_deployment.yml
+    description: Resume the paused transaction service Deployment
+    extra_vars:
+      target_service: transaction-service
+
+  deployment_paused_api_gateway:
+    playbook: resume_deployment.yml
+    description: Resume the paused API gateway Deployment
+    extra_vars:
+      target_service: api-gateway
+
+  service_type_changed_database:
+    playbook: restore_service_type.yml
+    description: Put the database Service back to ClusterIP
+    extra_vars:
+      target_service: database
+
+  service_type_changed_transaction_service:
+    playbook: restore_service_type.yml
+    description: Put the transaction service's Service back to ClusterIP
+    extra_vars:
+      target_service: transaction-service
+
+  service_type_changed_api_gateway:
+    playbook: restore_service_type.yml
+    description: Put the API gateway's Service back to ClusterIP
+    extra_vars:
+      target_service: api-gateway
+
+  replicas_above_baseline:
+    playbook: restore_baseline_replicas.yml
+    description: Scale the transaction service back to its baseline of one replica
+    extra_vars:
+      target_service: transaction-service
+      replicas: 1
+
 # Fallback for unmapped root causes.
 default:
   action: notify_human

@@ -504,3 +504,38 @@ def test_cleanup_puts_a_services_own_selector_back_even_when_the_dispatcher_alre
     r.reset_faults = lambda: None
     r.cleanup_fault("selector:transaction-service")
     assert any(call[0] == ("-n", "autosre", "patch", "svc/transaction-service", "--type=merge", "-p", '{"spec": {"selector": {"app": "transaction-service"}}}') for call in c.calls)
+
+
+@pytest.mark.parametrize("key,expected", [
+    ("paused:transaction-service", ("-n", "autosre", "rollout", "pause", "deploy/transaction-service")),
+    ("svctype:api-gateway", ("-n", "autosre", "patch", "svc/api-gateway", "--type=merge", "-p", '{"spec": {"type": "NodePort"}}')),
+    ("drift:replicas", ("-n", "autosre", "scale", "deploy/transaction-service", "--replicas=3"))])
+def test_the_drift_faults_are_real_kubernetes_changes(key, expected):
+    c = Recorder()
+    r = runner_with(c)
+    r.settle = lambda *d: None
+    r.c.get = lambda url: {"status": "ok"}
+    r.c.svc = lambda *a, **k: "u"
+    r.inject(key)
+    assert any(call[0] == expected for call in c.calls), (key, c.calls)
+
+
+def test_cleanup_resumes_a_paused_deployment_clears_the_node_port_and_scales_back():
+    for key, expected in (("paused:api-gateway", ("-n", "autosre", "rollout", "resume", "deploy/api-gateway")),
+                          ("drift:replicas", ("-n", "autosre", "scale", "deploy/transaction-service", "--replicas=1"))):
+        c = Recorder()
+        r = runner_with(c)
+        r.reset_faults = lambda: None
+        r.cleanup_fault(key)
+        assert any(call[0] == expected for call in c.calls), key
+    c = Recorder()
+    r = runner_with(c)
+    r.reset_faults = lambda: None
+    r.cleanup_fault("svctype:database")
+    patch = next(call for call in c.calls if call[0][:4] == ("-n", "autosre", "patch", "svc/database"))
+    assert '"type": "ClusterIP"' in patch[0][-1] and '"nodePort": null' in patch[0][-1]
+
+
+def test_the_slow_alert_gets_a_longer_wait():
+    import inspect
+    assert 'self.t["alert"] * (6 if spec["alert"] == "ReplicasAboveBaseline"' in inspect.getsource(rs.Runner.run_fault)

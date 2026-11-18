@@ -22,7 +22,7 @@ def fire(*pairs):
 
 def test_the_new_causes_exist_with_their_playbooks_and_nothing_else_changed():
     assert {c: SIGNATURES[c]["playbook"] for c in NEW} == NEW
-    assert {"db_connection_pool_exhaustion", "high_memory_usage", "db_disk_full"} <= set(SIGNATURES) and len(SIGNATURES) == 11
+    assert {"db_connection_pool_exhaustion", "high_memory_usage", "db_disk_full"} <= set(SIGNATURES) and len(SIGNATURES) == 17
 
 
 def test_every_alert_playbook_and_map_entry_the_new_causes_need_exists():
@@ -89,3 +89,41 @@ def test_the_alert_that_means_no_endpoint_leaves_out_a_deployment_with_no_replic
     rules = (ROOT / "monitoring" / "alert-rules.yaml").read_text(encoding="utf-8")
     block = rules.split("alert: ServiceHasNoEndpoints")[1]
     assert "kube_endpointslice_info" in block and "unless on(endpointslice)" in block and "kube_deployment_status_replicas_available" in block and "> 0" in block
+
+
+# ---------------------------------------------------------------------------------------------------- configuration drift
+DRIFT = {"deployment_paused_transaction_service": ("DeploymentPaused", "transaction-service", "resume_deployment.yml"),
+         "deployment_paused_api_gateway": ("DeploymentPaused", "api-gateway", "resume_deployment.yml"),
+         "service_type_changed_database": ("ServiceTypeChanged", "database", "restore_service_type.yml"),
+         "service_type_changed_transaction_service": ("ServiceTypeChanged", "transaction-service", "restore_service_type.yml"),
+         "service_type_changed_api_gateway": ("ServiceTypeChanged", "api-gateway", "restore_service_type.yml"),
+         "replicas_above_baseline": ("ReplicasAboveBaseline", "transaction-service", "restore_baseline_replicas.yml")}
+
+
+@pytest.mark.parametrize("cause,spec", list(DRIFT.items()))
+def test_a_drifted_state_is_named_on_its_own_with_full_confidence(cause, spec):
+    alert_name, service, playbook = spec
+    out = correlate(fire((alert_name, service)))
+    assert out["root_cause"] == cause and out["service"] == service and out["playbook"] == playbook and out["confidence"] == 1.0
+
+
+def test_only_the_documented_drift_causes_may_act_on_a_lone_symptom():
+    from signatures import DEFINITIVE
+    assert DEFINITIVE == set(DRIFT)
+    for cause, spec in SIGNATURES.items():
+        if cause not in DEFINITIVE:
+            assert max(spec["weights"][s] for s in spec["required_symptoms"]) < 0.75, cause
+
+
+def test_drift_alerts_exist_with_their_hold_times_and_metrics():
+    rules = (ROOT / "monitoring" / "alert-rules.yaml").read_text(encoding="utf-8")
+    for name, metric, hold in (("DeploymentPaused", "kube_deployment_spec_paused", "1m"), ("ServiceTypeChanged", "kube_service_spec_type", "1m"),
+                               ("ReplicasAboveBaseline", "kube_deployment_spec_replicas", "10m")):
+        block = rules.split(f"alert: {name}")[1].split("- alert:")[0]
+        assert metric in block and f"for: {hold}" in block and "namespace: autosre" in block
+    assert 'service: "{{ $labels.deployment }}"' in rules.split("alert: DeploymentPaused")[1].split("- alert:")[0]
+
+
+def test_a_drift_never_overlaps_a_resource_cause_on_the_same_service():
+    both = fire(("DeploymentPaused", "transaction-service"), ("DBPoolNearExhaustion", "transaction-service"))
+    assert set(ambiguous_causes(both)) == {"deployment_paused_transaction_service", "db_connection_pool_exhaustion"}      # two faults at once are two causes, never one

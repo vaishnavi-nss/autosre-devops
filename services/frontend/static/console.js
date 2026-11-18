@@ -86,7 +86,9 @@
   const CAUSE = { db_connection_pool_exhaustion: 'DB connection pool exhausted', high_memory_usage: 'High memory usage', db_disk_full: 'Database disk full',
     database_down: 'Database is down', transaction_service_down: 'Transaction service is down', api_gateway_down: 'API gateway is down',
     bad_rollout_transaction_service: 'Bad rollout: transaction service', bad_rollout_api_gateway: 'Bad rollout: API gateway',
-    database_unreachable: 'Database unreachable (selector)', transaction_service_unreachable: 'Transaction service unreachable (selector)', api_gateway_unreachable: 'API gateway unreachable (selector)' };
+    database_unreachable: 'Database unreachable (selector)', transaction_service_unreachable: 'Transaction service unreachable (selector)', api_gateway_unreachable: 'API gateway unreachable (selector)',
+    deployment_paused_transaction_service: 'Transaction service paused', deployment_paused_api_gateway: 'API gateway paused', service_type_changed_database: 'Database Service type changed',
+    service_type_changed_transaction_service: 'Transaction Service type changed', service_type_changed_api_gateway: 'Gateway Service type changed', replicas_above_baseline: 'Extra replicas left behind' };
   const cname = c => c ? (CAUSE[c] || String(c).replace(/_/g, ' ')) : 'Unknown cause';
   const ACTION = { auto_fixed: ['Auto-fixed', 'p-auto'], escalated: ['Escalated', 'p-esc'], dry_run: ['Dry run', 'p-dry'], vetoed: ['Held by ML gate', 'p-veto'], skipped: ['Skipped (cooldown)', 'p-dry'], running: ['Fixing now', 'p-run'], decision: ['Decision only', 'p-dry'] };
   const label = i => i.open ? ['Open', 'p-open'] : (ACTION[i.action] || [i.action, 'p-dry']);
@@ -340,6 +342,8 @@
     ['clear_logs.yml', 'Clear old database logs', 'database'], ['restore_service.yml', 'Bring a service with no replica back to a ready replica', 'database, transaction-service, api-gateway'],
     ['rollback_deployment.yml', 'Go back to the previous working revision (kubernetes.core.k8s_rollback)', 'transaction-service, api-gateway'],
     ['fix_service_selector.yml', 'Put a Service selector back so it reaches its pods again', 'database, transaction-service, api-gateway'],
+    ['resume_deployment.yml', 'Resume a paused Deployment', 'transaction-service, api-gateway'], ['restore_service_type.yml', 'Put a Service back to ClusterIP', 'database, transaction-service, api-gateway'],
+    ['restore_baseline_replicas.yml', 'Scale back to the baseline replica count after an incident', 'transaction-service'],
     ['collect_diagnostics.yml', 'Read-only: collect pod states, events and log tails for a person (no approval needed)', 'all four services']];
   window.CX_PLAYBOOKS = CATALOG;
   function pagePlaybooks() {

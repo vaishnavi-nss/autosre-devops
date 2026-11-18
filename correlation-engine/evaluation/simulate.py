@@ -67,6 +67,9 @@ PLACEMENT: dict[str, dict[str, str]] = {
     "database_unreachable": {"ErrorRateHigh": "transaction-service", "APILatencyHigh": "api-gateway"},
     "transaction_service_unreachable": {"ErrorRateHigh": "api-gateway", "APILatencyHigh": "api-gateway"},
     "api_gateway_unreachable": {"ErrorRateHigh": "frontend", "APILatencyHigh": "frontend"},
+    # drift causes have no consequences: the deciding symptom is all there is
+    "deployment_paused_transaction_service": {}, "deployment_paused_api_gateway": {}, "service_type_changed_database": {},
+    "service_type_changed_transaction_service": {}, "service_type_changed_api_gateway": {}, "replicas_above_baseline": {},
 }
 
 #: Consequence-type alerts an unrelated fault could produce. None of them is a

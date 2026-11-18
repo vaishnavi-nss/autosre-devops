@@ -4,6 +4,8 @@
 #
 #   bash run-batch.sh sim-escalate     faults the system must hand to a person (simulate: nothing is fixed, and nothing needs to be)
 #   bash run-batch.sh sim-act          faults the system should fix, as dry runs: alert, diagnosis and chosen playbook only (NOT recoveries)
+#   bash run-batch.sh sim-drift         configuration drift (paused Deployment, Service type changed, extra replicas), as dry runs
+#   APPROVED_LIVE=yes bash run-batch.sh live-drift   the drift faults for real
 #   APPROVED_LIVE=yes bash run-batch.sh live-act     the same faults for real; only with the owner's explicit approval
 set -uo pipefail
 NAME="${1:?usage: run-batch.sh sim-escalate|sim-act|live-act|live-<scenarios,comma,separated>}"
@@ -12,6 +14,8 @@ DIR="/home/$OWNER/autosre-console"
 case "$NAME" in
   sim-escalate) MODE=simulate; LIST="pool:partial memory:light disk:threshold rollout:tx-image rollout:gw-probe unknown:latency unknown:errors unknown:partition unknown:podkill" ;;
   sim-act)      MODE=simulate; LIST="down:database down:transaction-service down:api-gateway rollout:tx-crash rollout:gw-crash selector:database selector:transaction-service selector:api-gateway" ;;
+  sim-drift)    MODE=simulate; LIST="paused:transaction-service paused:api-gateway svctype:database svctype:transaction-service svctype:api-gateway drift:replicas" ;;
+  live-drift)   MODE=live;     LIST="paused:transaction-service paused:api-gateway svctype:database svctype:transaction-service svctype:api-gateway drift:replicas" ;;
   live-act)     MODE=live;     LIST="down:database down:transaction-service down:api-gateway rollout:tx-crash rollout:gw-crash selector:database selector:transaction-service selector:api-gateway" ;;
   live-*)       MODE=live;     LIST="$(echo "${NAME#live-}" | tr ',' ' ')" ;;
   sim-*)        MODE=simulate; LIST="$(echo "${NAME#sim-}" | tr ',' ' ')" ;;

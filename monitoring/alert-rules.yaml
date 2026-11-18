@@ -150,3 +150,40 @@ spec:
             severity: critical
           annotations:
             summary: "{{ $labels.service }} has available pods but no endpoint: its Service selector does not match them"
+
+        # ---- configuration drift: a state that is wrong by itself, so it has no consequences to wait for
+        # A paused Deployment ignores every update and rollback until it is resumed.
+        - alert: DeploymentPaused
+          expr: >-
+            kube_deployment_spec_paused{namespace="autosre", deployment=~"transaction-service|api-gateway"} == 1
+          for: 1m
+          labels:
+            namespace: autosre
+            severity: warning
+            service: "{{ $labels.deployment }}"
+          annotations:
+            summary: "{{ $labels.deployment }} is paused: updates and rollbacks are ignored"
+
+        # Every Service of this project is ClusterIP. kube-state-metrics already labels this series with the Service's name as `service`.
+        - alert: ServiceTypeChanged
+          expr: >-
+            kube_service_spec_type{namespace="autosre", service=~"database|transaction-service|api-gateway", type!="ClusterIP"} == 1
+          for: 1m
+          labels:
+            namespace: autosre
+            severity: warning
+          annotations:
+            summary: "Service {{ $labels.service }} is no longer ClusterIP ({{ $labels.type }})"
+
+        # The memory fix scales the transaction service out to 3 replicas and leaves them. If they are still there 10 minutes later the incident is over and the
+        # extra replicas are just cost.
+        - alert: ReplicasAboveBaseline
+          expr: >-
+            kube_deployment_spec_replicas{namespace="autosre", deployment="transaction-service"} > 1
+          for: 10m
+          labels:
+            namespace: autosre
+            severity: info
+            service: "{{ $labels.deployment }}"
+          annotations:
+            summary: "{{ $labels.deployment }} still has extra replicas 10 minutes after they were added"

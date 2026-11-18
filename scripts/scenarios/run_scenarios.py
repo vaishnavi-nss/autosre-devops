@@ -39,7 +39,7 @@ NS, MON = "autosre", "monitoring"
 PROM = f"/api/v1/namespaces/{MON}/services/monitoring-kube-prometheus-prometheus:9090/proxy"
 AM = f"/api/v1/namespaces/{MON}/services/monitoring-kube-prometheus-alertmanager:9093/proxy"
 DEPLOYMENTS = ("frontend", "api-gateway", "transaction-service", "database", "correlation-engine", "second-opinion", "remediation-dispatcher")
-SYMPTOMS = "APILatencyHigh|ErrorRateHigh|DBPoolNearExhaustion|DBDiskNearFull|PodRestartsHigh|ContainerMemoryHigh|DeploymentUnavailable|RolloutStalled"
+SYMPTOMS = "APILatencyHigh|ErrorRateHigh|DBPoolNearExhaustion|DBDiskNearFull|PodRestartsHigh|ContainerMemoryHigh|DeploymentUnavailable|RolloutStalled|ServiceHasNoEndpoints|DeploymentPaused|ServiceTypeChanged|ReplicasAboveBaseline"
 
 def _s(family, label, alert, cause, playbook, service, kind, fault, expect="act", **params):
     """One scenario. `expect` is 'act' (the pipeline must fix it and an independent check must confirm) or 'escalate' (a person must be asked and
@@ -87,6 +87,19 @@ SCENARIOS = {
                                        "fix_service_selector.yml", "transaction-service", "real: the transaction service's Service selector is changed to a label no pod has", "bad_selector"),
     "selector:api-gateway": _s("selector", "The API gateway's Service selects nothing", "ServiceHasNoEndpoints", "api_gateway_unreachable", "fix_service_selector.yml",
                                "api-gateway", "real: the API gateway's Service selector is changed to a label no pod has", "bad_selector"),
+    # ---- configuration drift: a state that is wrong by itself
+    "paused:transaction-service": _s("paused", "The transaction service Deployment is paused", "DeploymentPaused", "deployment_paused_transaction_service", "resume_deployment.yml",
+                                     "transaction-service", "real: `rollout pause` is run on the Deployment, so it ignores updates and rollbacks", "pause"),
+    "paused:api-gateway": _s("paused", "The API gateway Deployment is paused", "DeploymentPaused", "deployment_paused_api_gateway", "resume_deployment.yml", "api-gateway",
+                             "real: `rollout pause` is run on the Deployment", "pause"),
+    "svctype:database": _s("service_type", "The database Service is changed to NodePort", "ServiceTypeChanged", "service_type_changed_database", "restore_service_type.yml",
+                           "database", "real: the Service type is changed from ClusterIP to NodePort, which opens a port on the node", "svc_type"),
+    "svctype:transaction-service": _s("service_type", "The transaction service's Service is changed to NodePort", "ServiceTypeChanged", "service_type_changed_transaction_service",
+                                      "restore_service_type.yml", "transaction-service", "real: the Service type is changed from ClusterIP to NodePort", "svc_type"),
+    "svctype:api-gateway": _s("service_type", "The API gateway's Service is changed to NodePort", "ServiceTypeChanged", "service_type_changed_api_gateway", "restore_service_type.yml",
+                              "api-gateway", "real: the Service type is changed from ClusterIP to NodePort", "svc_type"),
+    "drift:replicas": _s("drift", "Extra replicas left behind (the alert needs 10 minutes)", "ReplicasAboveBaseline", "replicas_above_baseline", "restore_baseline_replicas.yml",
+                         "transaction-service", "real: the transaction service is scaled to 3 replicas and left there for 10 minutes", "extra_replicas"),
     # ---- faults with no known cause: the system must hand them to a person
     "unknown:errors": _s("unknown", "Half of the transactions fail", "ErrorRateHigh", None, None, "transaction-service",
                          "real: the transaction service fails 50% of requests (no signature fits)", "errors", expect="escalate", rate=0.5),
@@ -385,6 +398,9 @@ class Runner:
             lambda: self.c.kubectl("-n", NS, "scale", "deploy/transaction-service", "--replicas=1"),
             lambda: self.c.kubectl("-n", NS, "scale", "deploy/database", "deploy/api-gateway", "--replicas=1", check=False),
             lambda: self.c.kubectl("-n", NS, "delete", "networkpolicy", "chaos-deny-database", "--ignore-not-found", check=False),
+            lambda: [self.c.kubectl("-n", NS, "rollout", "resume", f"deploy/{d}", check=False) for d in ("transaction-service", "api-gateway")],
+            lambda: [self.c.kubectl("-n", NS, "patch", f"svc/{d}", "-p", json.dumps({"spec": {"type": "ClusterIP", "ports": [{"port": 8000, "nodePort": None}]}}), check=False)
+                     for d in ("database", "transaction-service", "api-gateway")],
             lambda: [self.heal_rollout(d) for d in ("transaction-service", "api-gateway")],
             lambda: [self.c.kubectl("-n", NS, "patch", f"svc/{d}", "--type=merge", "-p", json.dumps({"spec": {"selector": {"app": d}}}), check=False)
                      for d in ("database", "transaction-service", "api-gateway")],
@@ -425,6 +441,15 @@ spec:
         if fault == "scale_zero":
             self.c.kubectl("-n", NS, "scale", f"deploy/{svc}", "--replicas=0")
             return {"fault": fault, "service": svc, "consequence": f"real: {svc} has no replica"}
+        if fault == "pause":
+            self.c.kubectl("-n", NS, "rollout", "pause", f"deploy/{svc}")
+            return {"fault": fault, "service": svc, "consequence": "real: the Deployment ignores updates and rollbacks"}
+        if fault == "svc_type":
+            self.c.kubectl("-n", NS, "patch", f"svc/{svc}", "--type=merge", "-p", json.dumps({"spec": {"type": "NodePort"}}))
+            return {"fault": fault, "service": svc, "consequence": "real: the Service is NodePort now; it still works, but it is wrong"}
+        if fault == "extra_replicas":
+            self.c.kubectl("-n", NS, "scale", f"deploy/{svc}", "--replicas=3")
+            return {"fault": fault, "service": svc, "consequence": "real: three replicas that nothing needs"}
         if fault == "bad_selector":
             self.c.kubectl("-n", NS, "patch", f"svc/{svc}", "--type=merge", "-p", json.dumps({"spec": {"selector": {"app": "does-not-exist"}}}))
             return {"fault": fault, "service": svc, "consequence": "real: the Service has no endpoint, so callers get connection errors"}
@@ -590,7 +615,7 @@ spec:
         rec["timeline"]["injected_at"] = since
         rec["evidence"]["injection"] = self.inject(name)
         ev = {}
-        alert, w = wait_for(lambda: self.c.firing(spec["alert"]), self.t["alert"] * (2 if spec["alert"] in ("RolloutStalled", "ErrorRateHigh", "PodRestartsHigh") else 1), 5, f"{spec['alert']}")
+        alert, w = wait_for(lambda: self.c.firing(spec["alert"]), self.t["alert"] * (6 if spec["alert"] == "ReplicasAboveBaseline" else (2 if spec["alert"] in ("RolloutStalled", "ErrorRateHigh", "PodRestartsHigh") else 1)), 5, f"{spec['alert']}")
         ev["alert_fired"] = bool(alert); ev["alert"] = alert[0]["metric"] if alert else None
         rec["timeline"]["alert_after_s"] = w
         if alert and spec["expect"] == "escalate":
@@ -659,6 +684,12 @@ spec:
             self.heal_rollout(svc)
         elif fault == "partition":
             self.c.kubectl("-n", NS, "delete", "networkpolicy", "chaos-deny-database", "--ignore-not-found", check=False)
+        elif fault == "pause":
+            self.c.kubectl("-n", NS, "rollout", "resume", f"deploy/{svc}", check=False)
+        elif fault == "svc_type":                               # nodePort is cleared with a null in the same strategic patch
+            self.c.kubectl("-n", NS, "patch", f"svc/{svc}", "-p", json.dumps({"spec": {"type": "ClusterIP", "ports": [{"port": 8000, "nodePort": None}]}}), check=False)
+        elif fault == "extra_replicas":
+            self.c.kubectl("-n", NS, "scale", f"deploy/{svc}", "--replicas=1", check=False)
         elif fault == "bad_selector":                           # always safe: put the Service's own selector back
             self.c.kubectl("-n", NS, "patch", f"svc/{svc}", "--type=merge", "-p", json.dumps({"spec": {"selector": {"app": svc}}}), check=False)
         self.reset_faults()

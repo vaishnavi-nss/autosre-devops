@@ -1,0 +1,60 @@
+---
+# Remediation for: replicas_above_baseline
+#
+# The memory fix (scale_replicas.yml) scales the transaction service out and leaves the extra replicas. Ten minutes after the incident those replicas are
+# only cost, so this scales the Deployment back to its baseline (one replica). It uses the Kubernetes collection's `k8s_scale` module.
+#
+# Safe by construction: only the transaction service, only the autosre namespace, only 1 to max_replicas replicas, and it refuses to act when the Deployment
+# has no more replicas than asked for (nothing to scale back).
+#
+#   ansible-playbook -i ../inventory/localhost.yml restore_baseline_replicas.yml -e target_service=transaction-service -e replicas=1
+- name: Scale a service back to its baseline replica count
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    k8s_namespace: autosre
+    target_service: transaction-service
+    replicas: 1
+    max_replicas: 3
+    allowed_services: [transaction-service]
+    allowed_namespaces: [autosre]
+
+  tasks:
+    - name: Refuse anything outside the approved target and range
+      ansible.builtin.assert:
+        that:
+          - target_service in allowed_services
+          - k8s_namespace in allowed_namespaces
+          - replicas | int >= 1
+          - replicas | int <= max_replicas | int
+        fail_msg: "{{ k8s_namespace }}/{{ target_service }} x{{ replicas }} is not an approved scale-back."
+
+    - name: Read the deployment
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+      register: before
+
+    - name: Refuse unless the deployment exists and has more replicas than the baseline
+      ansible.builtin.assert:
+        that:
+          - before.resources | length == 1
+          - before.resources[0].spec.replicas | int > replicas | int
+        fail_msg: "{{ target_service }} does not have more than {{ replicas }} replica(s); nothing to scale back."
+
+    - name: Scale {{ target_service }} back to {{ replicas }} replica(s)
+      kubernetes.core.k8s_scale:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+        replicas: "{{ replicas | int }}"
+        wait: true
+        wait_timeout: 120
+
+    - name: Report the outcome
+      ansible.builtin.debug:
+        msg: "{{ target_service }} scaled back from {{ before.resources[0].spec.replicas }} to {{ replicas }} replica(s)."

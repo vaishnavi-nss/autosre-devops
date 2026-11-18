@@ -1,0 +1,72 @@
+---
+# Remediation for: deployment_paused_transaction_service, deployment_paused_api_gateway
+#
+# A paused Deployment ignores every update and rollback until it is resumed. This resumes it (what `kubectl rollout resume` does: spec.paused back to false).
+#
+# Safe by construction: only the two approved services, only the autosre namespace, and it refuses when the Deployment is NOT paused (then there is nothing
+# to resume and a person must look). It only finishes once the controller has observed the change and every replica is available.
+#
+#   ansible-playbook -i ../inventory/localhost.yml resume_deployment.yml -e target_service=transaction-service
+- name: Resume a paused Deployment
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    k8s_namespace: autosre
+    target_service: transaction-service
+    allowed_services: [transaction-service, api-gateway]
+    allowed_namespaces: [autosre]
+
+  tasks:
+    - name: Refuse anything outside the approved targets
+      ansible.builtin.assert:
+        that:
+          - target_service in allowed_services
+          - k8s_namespace in allowed_namespaces
+        fail_msg: "{{ k8s_namespace }}/{{ target_service }} is not an approved resume target."
+
+    - name: Read the deployment
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+      register: before
+
+    - name: Refuse unless the deployment exists and really is paused
+      ansible.builtin.assert:
+        that:
+          - before.resources | length == 1
+          - before.resources[0].spec.paused | default(false) | bool
+        fail_msg: "{{ target_service }} is not paused (or does not exist); nothing to resume."
+
+    - name: Resume {{ target_service }}
+      kubernetes.core.k8s:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+        state: patched
+        definition:
+          spec:
+            paused: false
+
+    - name: Wait until the change is observed and every replica is available
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+      register: resumed
+      until:
+        - resumed.resources | length == 1
+        - not (resumed.resources[0].spec.paused | default(false) | bool)
+        - resumed.resources[0].status.observedGeneration | default(0) | int >= resumed.resources[0].metadata.generation | int
+        - resumed.resources[0].status.updatedReplicas | default(0) | int == resumed.resources[0].spec.replicas | int
+        - resumed.resources[0].status.availableReplicas | default(0) | int == resumed.resources[0].spec.replicas | int
+      retries: 30
+      delay: 5
+
+    - name: Report the outcome
+      ansible.builtin.debug:
+        msg: "{{ target_service }} is resumed and settled."

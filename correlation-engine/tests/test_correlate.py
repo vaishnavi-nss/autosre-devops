@@ -127,9 +127,13 @@ def test_confidence_is_not_limited_to_round_quarters():
 
 def test_the_deciding_symptom_alone_is_below_the_dispatch_threshold():
     # Default dispatcher gate is 0.75; one lone deciding symptom must not clear it.
+    from signatures import DEFINITIVE
     for cause, spec in SIGNATURES.items():
         lone = incident((spec["required_symptoms"][0], spec["owner"]))
-        assert confidence(cause, lone) < 0.75, cause
+        if cause in DEFINITIVE:                                  # a state that is wrong by itself: the one documented exception
+            assert confidence(cause, lone) == 1.0, cause
+        else:
+            assert confidence(cause, lone) < 0.75, cause
 
 
 def test_weights_sum_to_one():
@@ -141,7 +145,7 @@ def test_deciding_symptom_outweighs_every_consequence():
     for cause, spec in SIGNATURES.items():
         deciding = max(spec["weights"][s] for s in spec["required_symptoms"])
         others = [w for s, w in spec["weights"].items() if s not in spec["required_symptoms"]]
-        assert deciding > max(others), cause
+        assert deciding > max(others, default=0), cause
 
 
 # -- failing safe: None means escalate to a human --------------------------------
