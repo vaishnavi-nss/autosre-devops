@@ -184,12 +184,37 @@ Saved in `docs/completion/screenshots/`. Taken from the user's own browser again
 | `40-jenkins-job-before-first-build.jpg` | Jenkins 2.580.2, job `autosre-cicd` present, no builds yet |
 | `60` to `69-github-*.jpg` | The repository on GitHub: branch with 61 commits, commit list, docs folder, this report rendered, scripts folder, the Jenkinsfile, the two open pull requests, branches, the ML code folder, the project guide |
 | `90-aws-lab-session-expired.jpg` | CloudShell after the lab session ended: the environment no longer exists |
+| `91` to `94-aws-*.jpg` | The AWS console after the restart: EC2 instance running (3/3 checks), the S3 results bucket, Systems Manager managed node Online, the security group's inbound rules |
+| `100` to `114-sim-*.jpg` | The three simulated runs: console, dashboard Telemetry, Grafana, Prometheus |
+| `120` to `128-live-*.jpg` | The three live runs: console passed with auto-remediation ON, playbooks succeeded, Grafana remediation panels |
+| `129`, `130` | Final safe state: console idle with auto-remediation OFF, dashboard RECOVERED (VERIFIED), all deployments ready |
+| `140-jenkins-signed-out-needs-owner-login.jpg` | Jenkins asking for the owner to sign in |
 
-**What this session did and did not finish (stated plainly).** A simulated disk run was started from the fault console API at 01:49 UTC and was **interrupted** when the AWS Academy lab session expired
-(about 01:55 UTC); no simulated or live run completed through the console, so there is **no new pass or fail result** from it, and none is claimed. Simulate mode keeps `AUTO_REMEDIATE=false`, so the cut-off could not
-leave live remediation on; it may have left fault injection switched on in `transaction-service` and `database`, which the launcher resets on the next run. The live runs, the screenshots during a fault and after recovery,
-the Jenkins build and the AWS console pages are still to do once the lab is running again. While the cluster was busy the console's status call also hung for more than 20 s (it runs `kubectl` on every poll); this is a
-console weakness to fix (cache longer, or return the last known state on a timeout).
+### The fault console, run end to end (2026-11-18, after the lab was restarted)
+
+The first attempt (01:49 UTC) was cut off when the AWS Academy session expired (no result was claimed from it). The lab was then restarted (new public address 54.198.234.191), the cluster brought back with
+`scripts/aws/bring-up.sh` (Minikube started, safe defaults forced, all 8 deployments 1/1, `AUTO_REMEDIATE=false` confirmed before anything ran), and six runs were made **through the fault console's own API**
+(`scripts/aws/demo-runs.sh`, token read from the instance, never typed by hand). Times are UTC from the runner's log.
+
+| Run | Mode | Started | Fault injected | Result | What the pipeline did |
+|---|---|---|---|---|---|
+| pool | simulate | 02:12:36 | 02:14:01 | **dry_run** 02:16:25 | alert fired, cause `db_connection_pool_exhaustion` 85%, ML agree, `restart_service.yml` selected, **nothing executed** |
+| memory | simulate | 02:22:33 | 02:23:58 (median transaction 1.226 s) | **dry_run** 02:27:23 | `high_memory_usage` 75%, ML agree, `scale_replicas.yml` selected, nothing executed |
+| disk | simulate | 02:33:16 | 02:34:42 | **dry_run** 02:36:09 | `db_disk_full` 85%, ML agree, `clear_logs.yml` selected, nothing executed; restore 02:42:27 |
+| pool | **live** | 02:47:50 | 02:49:22 | **passed** 02:52:26 | `restart_service.yml` **succeeded in 29.2 s**; recovery verified independently |
+| memory | **live** | 02:57:33 | 02:59:05 (median transaction 1.292 s) | **passed** 03:03:03 | `scale_replicas.yml` **succeeded in 24.4 s**; recovery verified; cooldown for `high_memory_usage` active |
+| disk | **live** | 03:08:32 | 03:10:06 | **passed** 03:11:54 | `clear_logs.yml` **succeeded in 23.9 s**; restore 03:17:41, done 03:17:50 |
+
+How to read it honestly:
+- The three **simulate** runs are *not* recoveries and are not counted as passes. The runner itself reported each as "0 passed, failed or not recovered" (for example `done: 0 passed, failed or not recovered: ['pool']`), because nothing was fixed. They show the alert, the diagnosis, the ML verdict and the playbook that **would** run.
+- The three **live** runs each passed the full chain: Prometheus alert, engine diagnosis, ML agreement, approved playbook, and an independent recovery check. Auto-remediation was ON only for each run (the console showed ON) and the runner restored it to false at the end of each.
+- After the last run: console idle, auto-remediation **OFF (safe)**, no alerts firing, the dashboard showed **RECOVERED (VERIFIED)**, all four core deployments ready 1/1. Grafana's engine panels read 19 incidents received (9 escalated, mostly the lone-symptom first alerts the 0.75 gate deliberately holds back), root causes pool 4, memory 4, disk 2, across everything run since the lab came back.
+- This is one pass per live scenario in this session, on top of the earlier counted runs (pool 5/5, disk 4/4, memory 3 of 4 acted); it adds the evidence that the **buttons** drive the same pipeline, not a new rate.
+- Screenshots: `100` to `114` (simulate), `120` to `128` (live), `129` and `130` (final safe state).
+
+Two weaknesses found while doing this, neither a failure of a run:
+- **The security group for the demo ports was open to 0.0.0.0/0** (found in the AWS console, screenshot `94`), although the guide says to allow only your own IP. Jenkins and the console both carry the throwaway password `password` and can change the cluster; restrict the rules to one IP or delete them. This is a network setting, so it was left for the owner to change.
+- **The Jenkins pipeline has still not been built**: Jenkins signed the browser out (screenshot `140`) and signing in is a password step the owner must do. The job, Jenkinsfile and sign-in all work (checked earlier); the first build is open.
 
 ## Runs, in order
 
@@ -210,6 +235,8 @@ console weakness to fix (cache longer, or return the last known state on a timeo
 | **comp14** | live | pool, cooldown, unknown cause, live guardrails: **4 of 4 passed**. Restore confirmed: `auto_remediate: false`, no errors, 8 of 8 deployments 1/1, no runner |
 | coll1, coll2 | dry, `--collect` | real-fault trial data for the scorer experiment (10 and 8 faults); coll2 ran the retrained model: 8/8 agree, `pair_gate` passed |
 | **cloud2** | live | pool and disk with the new dispatcher history volume: 2 passed; the restore restarted the dispatcher and the new pod kept both records and the disk cooldown (95 s left of 600 s); `AUTO_REMEDIATE=false` confirmed afterwards, 8 of 8 deployments 1/1 |
+| **console-sim** (pool, memory, disk) | simulate, via the fault console | three dry runs: alert, diagnosis, ML agree, playbook chosen, **nothing executed, not counted as recovery** (see "The fault console, run end to end") |
+| **console-live** (pool, memory, disk) | live, via the fault console | **3 of 3 passed** (29.2 s, 24.4 s, 23.9 s); safe defaults restored and confirmed afterwards |
 | **cloud1** | live, cold start | pool, memory, disk live and unknown cause: **5 of 5 passed**, guardrails 7/7, default model, restore confirmed (see "The cloud side") |
 
 ## Bugs that only the real cluster showed (all fixed and covered by a test)
@@ -256,7 +283,7 @@ console weakness to fix (cache longer, or return the last known state on a timeo
 
 New things this work found and did **not** fix:
 - The one scorer disagreement on a real memory fault (above). Retraining on real-fault trials was tried and changed nothing measurable; the open question is whether the engine's estimated `fault_start` window differs from the true-start windows I recorded.
-- The fault console's buttons and the Jenkins `autosre-cicd` job are built and the pages open, but neither has finished a run against the cluster yet (a simulated disk run was interrupted by the lab session ending); the first completed Simulate run and the first pipeline build are the real tests.
+- The fault console is now proven end to end (three simulate and three live runs, above). The Jenkins `autosre-cicd` job is built and signs in, but the first pipeline build has not run (the owner must sign in).
 - The fault console's status call can hang when the cluster is busy (it runs `kubectl` for every poll), which made the page show "console unreachable".
 - The dispatcher's cumulative counters (not the execution list or cooldowns) still reset on a restart.
 - Lab caveats: the instance runs a single-node Minikube on 2 vCPUs, so timings are not production numbers, and every fault is started by the runner.
