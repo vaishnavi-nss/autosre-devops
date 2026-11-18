@@ -10,18 +10,19 @@ REPO="${REPO:-https://github.com/vaishnavi-nss/autosre-devops}"
 BRANCH="${BRANCH:-devops-completion}"
 HOME_DIR=/var/lib/jenkins
 WAR=/opt/jenkins/jenkins.war
+JAVA=/usr/lib/jvm/java-21-openjdk-amd64/bin/java      # current Jenkins needs Java 21 or 25
 PASSFILE="/home/$OWNER/.jenkins-admin-pass"
 
 rm -f /etc/apt/sources.list.d/jenkins.list /usr/share/keyrings/jenkins-keyring.asc     # a half-installed repo from an earlier attempt breaks apt-get update
 apt-get -o DPkg::Lock::Timeout=900 update -qq
-apt-get -o DPkg::Lock::Timeout=900 install -y -qq openjdk-17-jre-headless fontconfig python3-venv git curl >/dev/null
+apt-get -o DPkg::Lock::Timeout=900 install -y -qq openjdk-21-jre-headless fontconfig python3-venv git curl >/dev/null
 install -d -o "$OWNER" -g "$OWNER" /opt/jenkins "$HOME_DIR" "$HOME_DIR/plugins" "$HOME_DIR/init.groovy.d" "$HOME_DIR/jobs/autosre-cicd"
 [ -s "$WAR" ] || curl -fsSL -o "$WAR" https://get.jenkins.io/war-stable/latest/jenkins.war
 
 # Plugins, installed before first start so no setup wizard is needed.
 PM=/opt/jenkins/jenkins-plugin-manager.jar
 [ -s "$PM" ] || curl -fsSL -o "$PM" https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.13.2/jenkins-plugin-manager-2.13.2.jar
-java -jar "$PM" --war "$WAR" --plugin-download-directory "$HOME_DIR/plugins" \
+"$JAVA" -jar "$PM" --war "$WAR" --plugin-download-directory "$HOME_DIR/plugins" \
      --plugins workflow-aggregator git junit timestamper pipeline-stage-view >/dev/null
 
 # Admin user from a generated password; anonymous users get nothing.
@@ -74,7 +75,7 @@ Group=$OWNER
 Environment=JENKINS_HOME=$HOME_DIR
 Environment=KUBECONFIG=/home/$OWNER/.kube/config
 Environment=MINIKUBE_HOME=/home/$OWNER
-ExecStart=/usr/bin/java -Djava.awt.headless=true -Djenkins.install.runSetupWizard=false -Xmx768m -jar $WAR --httpPort=8080
+ExecStart=$JAVA -Djava.awt.headless=true -Djenkins.install.runSetupWizard=false -Xmx768m -jar $WAR --httpPort=8080
 Restart=on-failure
 RestartSec=10
 
