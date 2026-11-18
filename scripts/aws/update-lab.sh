@@ -9,6 +9,8 @@ as() { sudo -u "$OWNER" -H env KUBECONFIG="/home/$OWNER/.kube/config" "$@"; }
 say() { echo "$(date -u +%T) $*"; }
 
 as git -C "$DIR" pull -q 2>&1 | tail -1
+# the fault console runs the scenario runner from this second checkout (its --repo), so it must be current too
+if [ -d "/home/$OWNER/autosre-completion/.git" ]; then as git -C "/home/$OWNER/autosre-completion" pull -q 2>&1 | tail -1; fi
 say "commit: $(as git -C "$DIR" log --oneline -1)"
 say "building images"
 as bash -lc "cd $DIR && eval \$(minikube docker-env) && bash scripts/build-images.sh" 2>&1 | tail -4

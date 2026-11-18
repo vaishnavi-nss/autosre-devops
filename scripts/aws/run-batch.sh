@@ -19,6 +19,7 @@ case "$NAME" in
 esac
 if [ "$MODE" = live ] && [ "${APPROVED_LIVE:-}" != yes ]; then echo "refusing a live batch without APPROVED_LIVE=yes"; exit 2; fi
 sudo -u "$OWNER" git -C "$DIR" pull -q 2>&1 | tail -1
+[ -d "/home/$OWNER/autosre-completion/.git" ] && sudo -u "$OWNER" git -C "/home/$OWNER/autosre-completion" pull -q 2>&1 | tail -1
 OUT="/home/$OWNER/batch-$NAME.out"
 sudo -u "$OWNER" -H env KUBECONFIG="/home/$OWNER/.kube/config" MODE="$MODE" APPROVED_LIVE="${APPROVED_LIVE:-}" SCENARIOS="$LIST" setsid nohup bash "$DIR/scripts/aws/demo-runs.sh" > "$OUT" 2>&1 < /dev/null &
 echo "started batch $NAME ($MODE): $LIST"
