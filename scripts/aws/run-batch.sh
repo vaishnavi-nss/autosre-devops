@@ -11,8 +11,8 @@ OWNER="${OWNER:-ubuntu}"
 DIR="/home/$OWNER/autosre-console"
 case "$NAME" in
   sim-escalate) MODE=simulate; LIST="pool:partial memory:light disk:threshold rollout:tx-image rollout:gw-probe unknown:latency unknown:errors unknown:partition unknown:podkill" ;;
-  sim-act)      MODE=simulate; LIST="down:database down:transaction-service down:api-gateway rollout:tx-crash rollout:gw-crash" ;;
-  live-act)     MODE=live;     LIST="down:database down:transaction-service down:api-gateway rollout:tx-crash rollout:gw-crash" ;;
+  sim-act)      MODE=simulate; LIST="down:database down:transaction-service down:api-gateway rollout:tx-crash rollout:gw-crash selector:database selector:transaction-service selector:api-gateway" ;;
+  live-act)     MODE=live;     LIST="down:database down:transaction-service down:api-gateway rollout:tx-crash rollout:gw-crash selector:database selector:transaction-service selector:api-gateway" ;;
   live-*)       MODE=live;     LIST="$(echo "${NAME#live-}" | tr ',' ' ')" ;;
   sim-*)        MODE=simulate; LIST="$(echo "${NAME#sim-}" | tr ',' ' ')" ;;
   *) echo "unknown batch $NAME"; exit 2 ;;
