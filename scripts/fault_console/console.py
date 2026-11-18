@@ -35,6 +35,11 @@ SCENARIOS = {
 }
 MODES = ("simulate", "live")
 COOLDOWN_S = 60
+# The two switches of the correlation engine that the team may change on purpose. Both default to the safe value.
+ENGINE_SWITCHES = {
+    "second_opinion": {"env": "SECOND_OPINION_MODE", "values": {"shadow": "shadow", "gate": "gate"}, "default": "shadow"},
+    "ambiguity": {"env": "ESCALATE_ON_AMBIGUITY", "values": {"off": None, "on": "true"}, "default": "off"},     # None = unset the variable
+}
 RUNNER_PATTERN = "run_scenario[s]"          # the [s] keeps pgrep from matching itself
 
 
@@ -86,6 +91,33 @@ def summarize_log(lines: list[str]) -> dict:
     return {"phase": phase, "outcome": outcome}
 
 
+def validate_engine_change(body: dict) -> tuple[str | None, str | None, str | None]:
+    """(setting, value, error)."""
+    setting, value = body.get("setting"), body.get("value")
+    if setting not in ENGINE_SWITCHES:
+        return None, None, f"unknown setting {setting!r}; choose one of {', '.join(ENGINE_SWITCHES)}"
+    if value not in ENGINE_SWITCHES[setting]["values"]:
+        return None, None, f"unknown value {value!r} for {setting}; choose one of {', '.join(ENGINE_SWITCHES[setting]['values'])}"
+    return setting, value, None
+
+
+def engine_env_arg(setting: str, value: str) -> str:
+    """The `kubectl set env` argument: NAME=value, or NAME- to remove the variable (which is how a switch goes back to off)."""
+    env, target = ENGINE_SWITCHES[setting]["env"], ENGINE_SWITCHES[setting]["values"][value]
+    return f"{env}={target}" if target is not None else f"{env}-"
+
+
+def parse_engine_env(raw: str) -> dict:
+    """Read the two switches from the engine Deployment's env list (JSON). Missing means the default."""
+    try:
+        env = {e.get("name"): e.get("value") for e in json.loads(raw or "[]")}
+    except (ValueError, TypeError, AttributeError):
+        return {}
+    mode = env.get("SECOND_OPINION_MODE") or "shadow"
+    amb = str(env.get("ESCALATE_ON_AMBIGUITY") or "").lower() in ("1", "true", "yes")
+    return {"second_opinion": mode if mode in ("shadow", "gate") else "unknown", "ambiguity": "on" if amb else "off"}
+
+
 def token_ok(supplied: str | None, expected: str) -> bool:
     return bool(supplied) and hmac.compare_digest(supplied.encode(), expected.encode())
 
@@ -98,6 +130,7 @@ class Console:
         self.proc: subprocess.Popen | None = None
         self.job: dict | None = None
         self._auto = "starting"
+        self._engine = {"second_opinion": "starting", "ambiguity": "starting"}
 
     def runner_pids(self) -> list[str]:
         out = subprocess.run(["pgrep", "-f", RUNNER_PATTERN], capture_output=True, text=True).stdout.split()
@@ -118,10 +151,40 @@ class Console:
             if self._auto == "starting":
                 self._auto = "unknown"
 
+    def engine_switches(self) -> dict:
+        return dict(self._engine)
+
+    def refresh_engine(self) -> None:
+        try:
+            raw = subprocess.run(["kubectl", "-n", "autosre", "get", "deploy", "correlation-engine", "-o", "jsonpath={.spec.template.spec.containers[0].env}"],
+                                 capture_output=True, text=True, timeout=10).stdout.strip()
+            parsed = parse_engine_env(raw)
+            if parsed:
+                self._engine = parsed
+        except Exception:                                       # noqa: BLE001 - keep the last value
+            if self._engine["second_opinion"] == "starting":
+                self._engine = {"second_opinion": "unknown", "ambiguity": "unknown"}
+
+    def set_engine(self, setting: str, value: str) -> tuple[bool, str]:
+        """Change one engine switch. Never while a scenario run is in progress (the runner restores the safe defaults itself and the two would race)."""
+        with self.lock:
+            if self.running():
+                return False, "a scenario run is in progress; change the switches when it has finished"
+            try:
+                done = subprocess.run(["kubectl", "-n", "autosre", "set", "env", "deploy/correlation-engine", engine_env_arg(setting, value)],
+                                      capture_output=True, text=True, timeout=30)
+            except Exception as exc:                            # noqa: BLE001
+                return False, f"could not change the switch: {type(exc).__name__}"
+            if done.returncode != 0:
+                return False, "kubectl refused the change: " + (done.stderr or "").strip()[:200]
+            self._engine = {**self._engine, setting: value}
+            return True, f"{setting} is now {value}. The engine restarts (a few seconds) and forgets its recent-incident list."
+
     def start_refresher(self, every_s: float = 5.0) -> threading.Thread:
         def loop():
             while True:
                 self.refresh_auto()
+                self.refresh_engine()
                 time.sleep(every_s)
         thread = threading.Thread(target=loop, name="auto-remediate-refresher", daemon=True)
         thread.start()
@@ -161,7 +224,7 @@ class Console:
             except OSError:
                 lines = []
         running = self.running()
-        return {"running": running, "job": self.job, "auto_remediate": self.auto_remediate(), "allow_live": self.allow_live,
+        return {"running": running, "job": self.job, "auto_remediate": self.auto_remediate(), "engine": self.engine_switches(), "allow_live": self.allow_live,
                 "scenarios": SCENARIOS, "log": lines[-60:], **summarize_log(lines)}
 
 
@@ -205,6 +268,12 @@ def make_handler(console: Console):
                 if err:
                     return self._json(400, {"error": err})
                 ok, msg = console.start(scenario, mode)
+                return self._json(200 if ok else 409, {"ok": ok, "message": msg})
+            if self.path == "/api/engine":
+                setting, value, err = validate_engine_change(body)
+                if err:
+                    return self._json(400, {"error": err})
+                ok, msg = console.set_engine(setting, value)
                 return self._json(200 if ok else 409, {"ok": ok, "message": msg})
             if self.path == "/api/stop":
                 return self._json(200, {"ok": True, "message": console.stop()})

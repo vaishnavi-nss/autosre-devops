@@ -29,6 +29,12 @@
   .note { color:var(--mute); font-size:13px; }
   .msg { min-height:1.4em; font-size:14px; }
   a { color:var(--gold); }
+  .sw { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px; }
+  .switch { border:1px solid var(--line); border-radius:8px; padding:12px; display:flex; flex-direction:column; gap:8px; }
+  .seg { display:flex; gap:0; } .seg button { border-radius:0; background:transparent; color:var(--ink); border:1px solid var(--line); }
+  .seg button:first-child { border-radius:8px 0 0 8px; } .seg button:last-child { border-radius:0 8px 8px 0; border-left:0; }
+  .seg button.on { background:var(--navy); color:#fff; border-color:var(--navy); }
+  .switch p { margin:0; color:var(--mute); font-size:13px; }
 </style>
 </head>
 <body>
@@ -43,6 +49,24 @@
       <span>Outcome: <span id="outcome" class="pill">none yet</span></span>
     </div>
     <p class="note" id="job"></p>
+  </section>
+
+  <section class="card">
+    <h2>Pipeline switches</h2>
+    <p class="note">Two safety switches of the correlation engine. Both are at their safe setting unless a person changes them here (needs the access token), and the runner puts them back after every fault run. Changing one restarts the engine, which forgets its recent-incident list. They cannot be changed while a run is in progress.</p>
+    <div class="sw">
+      <div class="switch">
+        <b>ML second opinion</b>
+        <div class="seg" id="sw-second_opinion"><button data-v="shadow">Shadow</button><button data-v="gate">Gate</button></div>
+        <p><b>Shadow</b> (safe): the learned model gives its opinion, which is recorded and shown, but it never changes a decision.<br><b>Gate</b>: if the model disagrees with the rules, the incident is escalated to a person and nothing is run.</p>
+      </div>
+      <div class="switch">
+        <b>Ambiguity rule</b>
+        <div class="seg" id="sw-ambiguity"><button data-v="off">Off</button><button data-v="on">Evaluate</button></div>
+        <p><b>Off</b> (safe): if two different causes seem present, the engine acts on the deepest one.<br><b>Evaluate</b>: if two known causes' deciding alerts fire together, the engine escalates instead of guessing. Safer with two real faults at once, but it can hand over incidents it could have fixed.</p>
+      </div>
+    </div>
+    <p class="note" id="swnote"></p>
   </section>
 
   <section class="card">
@@ -94,6 +118,8 @@ async function call(path, body) {
   poll();
 }
 $('stop').addEventListener('click', () => call('/api/stop'));
+document.querySelectorAll('.seg').forEach(seg => seg.querySelectorAll('button').forEach(b =>
+  b.addEventListener('click', () => call('/api/engine', { setting: seg.id.replace('sw-', ''), value: b.dataset.v }))));
 
 function buildFaults(scenarios) {
   if ($('faults').children.length) return;
@@ -119,6 +145,12 @@ async function poll() {
     $('job').textContent = '';
     if (s.job) $('job').textContent = 'Last request: ' + s.job.scenario + ' (' + s.job.mode + ') started ' + s.job.started + ' UTC';
     document.querySelectorAll('.fault button').forEach(b => { b.disabled = s.running; });
+    const eng = s.engine || {};
+    for (const key of ['second_opinion', 'ambiguity']) {
+      document.querySelectorAll('#sw-' + key + ' button').forEach(b => { b.classList.toggle('on', b.dataset.v === eng[key]); b.disabled = s.running; });
+    }
+    const safe = eng.second_opinion === 'shadow' && eng.ambiguity === 'off';
+    $('swnote').textContent = 'Now: second opinion ' + (eng.second_opinion || '?') + ', ambiguity rule ' + (eng.ambiguity || '?') + (safe ? ' (both at the safe default).' : ' (not the default: the runner restores the defaults after its next run).');
     const live = document.querySelector('input[value=live]'); live.disabled = !s.allow_live;
     if (!s.allow_live && mode() === 'live') { document.querySelector('input[value=simulate]').checked = true; refreshModeUI(); }
     $('log').textContent = s.log.length ? s.log.join('\n') : 'no run yet';

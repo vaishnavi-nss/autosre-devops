@@ -152,3 +152,73 @@ def test_the_refresher_keeps_the_last_good_value_when_kubectl_fails(tmp_path, mo
     monkeypatch.setattr(fc.subprocess, "run", slow)
     console.refresh_auto()
     assert console.auto_remediate() == "false"                  # not replaced by a guess
+
+
+# ---------------------------------------------------------------------------------------------------- the engine switches
+@pytest.mark.parametrize("body,err", [
+    ({"setting": "second_opinion", "value": "gate"}, None), ({"setting": "second_opinion", "value": "shadow"}, None),
+    ({"setting": "ambiguity", "value": "on"}, None), ({"setting": "ambiguity", "value": "off"}, None),
+    ({"setting": "AUTO_REMEDIATE", "value": "true"}, "unknown setting"),            # the console cannot be used to turn on live remediation
+    ({"setting": "ambiguity", "value": "true"}, "unknown value"), ({"setting": "second_opinion", "value": "x; rm -rf /"}, "unknown value"), ({}, "unknown setting"),
+])
+def test_engine_changes_are_validated(body, err):
+    setting, value, got = fc.validate_engine_change(body)
+    assert (got is None) if err is None else (got and err in got and setting is None)
+
+
+def test_each_switch_maps_to_the_right_kubectl_argument():
+    assert fc.engine_env_arg("second_opinion", "gate") == "SECOND_OPINION_MODE=gate"
+    assert fc.engine_env_arg("second_opinion", "shadow") == "SECOND_OPINION_MODE=shadow"
+    assert fc.engine_env_arg("ambiguity", "on") == "ESCALATE_ON_AMBIGUITY=true"
+    assert fc.engine_env_arg("ambiguity", "off") == "ESCALATE_ON_AMBIGUITY-"          # unset, exactly how the runner and bring-up reset it
+
+
+def test_the_switches_are_read_from_the_engine_deployment():
+    raw = json.dumps([{"name": "SECOND_OPINION_MODE", "value": "gate"}, {"name": "ESCALATE_ON_AMBIGUITY", "value": "true"}, {"name": "X", "value": "1"}])
+    assert fc.parse_engine_env(raw) == {"second_opinion": "gate", "ambiguity": "on"}
+    assert fc.parse_engine_env("[]") == {"second_opinion": "shadow", "ambiguity": "off"}        # not set means the safe default
+    assert fc.parse_engine_env("not json") == {} and fc.parse_engine_env("") == {"second_opinion": "shadow", "ambiguity": "off"}
+
+
+def test_a_switch_is_refused_while_a_run_is_in_progress_and_changes_nothing(tmp_path, monkeypatch):
+    console = fc.Console(ROOT, tmp_path, "t", allow_live=False)
+    monkeypatch.setattr(console, "runner_pids", lambda: ["99"])
+
+    def boom(*a, **k):
+        raise AssertionError("kubectl must not run")
+    monkeypatch.setattr(fc.subprocess, "run", boom)
+    ok, msg = console.set_engine("second_opinion", "gate")
+    assert ok is False and "in progress" in msg
+
+
+def test_a_switch_runs_exactly_one_kubectl_set_env(tmp_path, monkeypatch):
+    console = fc.Console(ROOT, tmp_path, "t", allow_live=False)
+    monkeypatch.setattr(console, "runner_pids", lambda: [])
+    calls = []
+
+    class Done:
+        returncode, stderr = 0, ""
+    monkeypatch.setattr(fc.subprocess, "run", lambda cmd, **k: (calls.append(cmd) or Done()))
+    console._engine = {"second_opinion": "shadow", "ambiguity": "off"}
+    ok, _ = console.set_engine("ambiguity", "on")
+    assert ok and calls == [["kubectl", "-n", "autosre", "set", "env", "deploy/correlation-engine", "ESCALATE_ON_AMBIGUITY=true"]]
+    assert console.engine_switches() == {"second_opinion": "shadow", "ambiguity": "on"}
+
+
+def test_the_switch_endpoint_needs_the_token_and_status_reports_the_switches(server, monkeypatch):
+    base, console, _ = server
+    seen = []
+    monkeypatch.setattr(console, "set_engine", lambda s, v: (seen.append((s, v)) or (True, "ok")))
+    console._engine = {"second_opinion": "shadow", "ambiguity": "off"}
+    assert call(base, "/api/engine", {"setting": "ambiguity", "value": "on"})[0] == 401
+    assert call(base, "/api/engine", {"setting": "ambiguity", "value": "on"}, token="wrong")[0] == 401
+    assert call(base, "/api/engine", {"setting": "AUTO_REMEDIATE", "value": "true"}, token="s3cret")[0] == 400
+    assert seen == []
+    assert call(base, "/api/engine", {"setting": "ambiguity", "value": "on"}, token="s3cret")[0] == 200 and seen == [("ambiguity", "on")]
+    assert call(base, "/api/status")[1]["engine"] == {"second_opinion": "shadow", "ambiguity": "off"}
+
+
+def test_the_page_explains_both_switches_in_plain_words():
+    page = (ROOT / "scripts" / "fault_console" / "page.html").read_text(encoding="utf-8")
+    for text in ("ML second opinion", "Ambiguity rule", "Shadow", "Gate", "escalate", "/api/engine"):
+        assert text in page
