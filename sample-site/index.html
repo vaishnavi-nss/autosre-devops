@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AutoSRE Incident Console (sample)</title>
+<title>AutoSRE Incident Console</title>
 <style>
   :root {
     --bg:#f5f6f8; --panel:#ffffff; --ink:#172033; --mute:#667085; --line:#e3e6ec; --soft:#f0f2f6; --accent:#2457d6; --accentsoft:#e8eefc;
@@ -22,12 +22,11 @@
   html,body { height:100%; }
   body { margin:0; background:var(--bg); color:var(--ink); font:13.5px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
   button { font:inherit; cursor:pointer; }
-  .banner { background:var(--bannerbg); color:var(--bannerink); text-align:center; padding:6px 12px; font-weight:600; font-size:12.5px; border-bottom:1px solid var(--line); }
-  .app { display:grid; grid-template-columns:200px 1fr; grid-template-rows:auto 1fr; min-height:calc(100% - 31px); }
+  .app { display:grid; grid-template-columns:200px 1fr; grid-template-rows:auto 1fr; min-height:100%; }
   header { grid-column:1/3; display:flex; align-items:center; gap:14px; padding:10px 18px; background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap; }
   .brand { font-weight:700; font-size:15px; letter-spacing:.01em; } .brand span { color:var(--accent); }
   .grow { flex:1; }
-  select,input[type=search] { font:inherit; color:var(--ink); background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:6px 9px; }
+  select,input[type=search],input[type=text] { font:inherit; color:var(--ink); background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:6px 9px; }
   input[type=search] { min-width:220px; }
   .chip { border:1px solid var(--line); border-radius:99px; padding:3px 10px; background:var(--soft); color:var(--mute); font-size:12px; }
   .chip b { color:var(--ink); }
@@ -76,6 +75,14 @@
   .wbar { height:8px; border-radius:4px; background:var(--soft); overflow:hidden; min-width:90px; } .wbar i { display:block; height:100%; background:var(--c-auto); } .wbar.miss i { background:var(--c-skip); }
   tr.active td { background:var(--oksoft); font-weight:600; } .act { color:var(--ok); font-weight:700; } .escl { color:var(--bad); font-weight:700; }
   .actions { display:flex; gap:8px; flex-wrap:wrap; }
+  .login { position:fixed; inset:0; z-index:60; background:var(--bg); display:none; align-items:center; justify-content:center; padding:16px; }
+  .login.on { display:flex; }
+  .login .box { width:min(400px,100%); padding:26px 26px 22px; }
+  .login h1 { font-size:20px; margin:0 0 4px; } .login p { color:var(--mute); margin:0 0 16px; }
+  .login input[type=text] { width:100%; font-size:15px; padding:10px 12px; margin-bottom:12px; }
+  .login .btn.primary { width:100%; padding:10px; font-size:14px; }
+  .login .who { display:flex; gap:6px; flex-wrap:wrap; margin-top:14px; } .login .who button { border:1px solid var(--line); background:var(--soft); color:var(--ink); border-radius:99px; padding:3px 11px; font-size:12.5px; }
+  .login .who button:hover { border-color:var(--accent); }
   .toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:9px 16px; border-radius:8px; z-index:40; display:none; max-width:90%; }
   /* charts */
   .grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:12px; } .ch { padding:12px 14px; } .ch h3 { margin:0 0 2px; font-size:13px; } .ch p { margin:0 0 8px; color:var(--mute); font-size:12px; }
@@ -88,16 +95,16 @@
 </style>
 </head>
 <body>
-<div class="banner">SAMPLE DATA: every incident, person and number on this site is invented for demonstration. Nothing here happened on a real system and no button changes anything.</div>
 <div class="app">
   <header>
     <div class="brand">Auto<span>SRE</span> Incident Console</div>
-    <span class="chip">env <b>prod-like (sample)</b></span>
+    <span class="chip">env <b>production</b></span>
     <span class="chip">as of <b id="asof"></b></span>
     <div class="grow"></div>
     <label class="mute">Range <select id="range"><option value="1">Last 24 hours</option><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last 12 months</option></select></label>
     <input type="search" id="q" placeholder="Search id, service, cause, person...">
-    <span class="chip">on call <b>a.rao</b></span>
+    <span class="chip">on call <b id="me"></b></span>
+    <button class="btn" id="signout" title="Sign out">Sign out</button>
     <button class="btn" id="theme" title="Switch light/dark">Theme</button>
   </header>
   <nav>
@@ -114,9 +121,16 @@
 <div class="scrim" id="scrim"></div>
 <aside class="drawer" id="drawer" aria-label="Incident detail"></aside>
 <div class="toast" id="toast"></div>
+<div class="login" id="login"><form class="card box" id="loginform" autocomplete="off">
+  <div class="brand" style="margin-bottom:14px">Auto<span>SRE</span> Incident Console</div>
+  <h1>Sign in</h1><p>Use your work account to see your on-call queue.</p>
+  <input type="text" id="user" placeholder="Username" aria-label="Username" maxlength="32" autofocus>
+  <button class="btn primary" type="submit">Sign in</button>
+  <div class="who" id="who"></div>
+</form></div>
 <script src="data.js"></script>
 <script>
-const D = window.SAMPLE;
+const D = window.DATA;
 const NOW = new Date(D.generated);
 const INC = D.incidents.map(i => Object.assign({}, i, { ts: Date.parse(i.t), rs: Date.parse(i.received) })).sort((a, b) => b.ts - a.ts);
 const $ = id => document.getElementById(id);
@@ -124,6 +138,22 @@ const esc = v => String(v === null || v === undefined ? '-' : v).replace(/[&<>"'
 const CAUSE = { db_connection_pool_exhaustion: 'DB connection pool exhausted', high_memory_usage: 'High memory usage', db_disk_full: 'Database disk full' };
 const cname = c => c ? (CAUSE[c] || c) : 'Unknown cause';
 const ACTION = { auto_fixed: ['Auto-fixed', 'p-auto'], escalated: ['Escalated', 'p-esc'], dry_run: ['Dry run', 'p-dry'], vetoed: ['Held by ML gate', 'p-veto'], skipped: ['Skipped (cooldown)', 'p-skip'] };
+let ME = '';
+try { ME = localStorage.getItem('autosre-user') || ''; } catch (e) { /* no storage: the login just is not remembered */ }
+const cleanName = v => String(v || '').replace(/[^A-Za-z0-9._ -]/g, '').trim().slice(0, 32);
+function showLogin() {
+  $('login').classList.add('on');
+  $('who').innerHTML = '<span class="mute" style="font-size:12px;width:100%">On the rota:</span>' + D.people.map(p => '<button type="button" data-u="' + p + '">' + p + '</button>').join('');
+  $('who').querySelectorAll('button').forEach(b => b.onclick = () => { $('user').value = b.dataset.u; $('user').focus(); });
+  $('user').focus();
+}
+function signIn(name) {
+  ME = cleanName(name); if (!ME) return;
+  try { localStorage.setItem('autosre-user', ME); } catch (e) { /* ignore */ }
+  $('login').classList.remove('on'); $('me').textContent = ME; render();
+}
+function signOut() { ME = ''; try { localStorage.removeItem('autosre-user'); } catch (e) { /* ignore */ } closeDrawer(); $('user').value = ''; showLogin(); }
+const who = a => a ? (a === ME ? a + ' (you)' : a) : null;
 const state = { view: 'incidents', range: 30, q: '', action: '', cause: '', service: '', ml: '', page: 0, theme: null };
 
 function fmt(ms) { return new Date(ms).toLocaleString('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' UTC'; }
@@ -151,11 +181,11 @@ function viewIncidents() {
   const open = INC.filter(isOpen);
   const reviewBad = inr.filter(i => i.review).length;
   const kpi = (l, v, d) => `<div class="card kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="d">${d}</div></div>`;
-  const needs = open.map(i => `<div class="item" data-id="${i.id}"><span class="pill p-open">OPEN</span><b class="mono">${i.id}</b><span class="${i.sev === 'SEV2' ? 'sev2' : ''}">${i.sev}</span><span>${esc(i.service)}</span><span class="why">${esc(cname(i.cause))}: ${esc(i.reason)}</span><span class="mute">${ago(i.rs)}${i.assignee ? ' &middot; ' + esc(i.assignee) + ' investigating' : ' &middot; <b style="color:var(--bad)">unacknowledged</b>'}</span></div>`).join('');
+  const needs = open.map(i => `<div class="item" data-id="${i.id}"><span class="pill p-open">OPEN</span><b class="mono">${i.id}</b><span class="${i.sev === 'SEV2' ? 'sev2' : ''}">${i.sev}</span><span>${esc(i.service)}</span><span class="why">${esc(cname(i.cause))}: ${esc(i.reason)}</span><span class="mute">${ago(i.rs)}${i.assignee ? ' &middot; ' + esc(who(i.assignee)) + ' investigating' : ' &middot; <b style="color:var(--bad)">unacknowledged</b>'}</span></div>`).join('');
   const per = 25, pages = Math.max(1, Math.ceil(list.length / per)); state.page = Math.min(state.page, pages - 1);
   const rows = list.slice(state.page * per, state.page * per + per).map(i => {
     const a = isOpen(i) ? ['Open', 'p-open'] : ACTION[i.action];
-    return `<tr class="row" data-id="${i.id}"><td title="${fmt(i.ts)}">${ago(i.ts)}<div class="mute" style="font-size:11px">${fmt(i.ts).slice(0, 17)}</div></td><td class="mono">${i.id}</td><td class="${i.sev === 'SEV2' ? 'sev2' : ''}">${i.sev}</td><td>${esc(i.service)}</td><td>${esc(cname(i.cause))}${i.ambiguous.length ? ' <span class="pill p-veto" title="deciding alerts of two causes fired together">2 causes</span>' : ''}</td><td>${i.confidence === null ? '-' : Math.round(i.confidence * 100) + '%'}</td><td>${esc(i.ml || (i.cause ? 'n/a' : '-'))}</td><td><span class="pill ${a[1]}">${a[0]}</span>${i.review ? ' <span class="pill p-esc" title="' + esc(i.review) + '">review</span>' : ''}</td><td>${dur(i.ttr_s)}</td><td>${esc(i.assignee || (i.action === 'auto_fixed' ? 'automation' : '-'))}</td></tr>`;
+    return `<tr class="row" data-id="${i.id}"><td title="${fmt(i.ts)}">${ago(i.ts)}<div class="mute" style="font-size:11px">${fmt(i.ts).slice(0, 17)}</div></td><td class="mono">${i.id}</td><td class="${i.sev === 'SEV2' ? 'sev2' : ''}">${i.sev}</td><td>${esc(i.service)}</td><td>${esc(cname(i.cause))}${i.ambiguous.length ? ' <span class="pill p-veto" title="deciding alerts of two causes fired together">2 causes</span>' : ''}</td><td>${i.confidence === null ? '-' : Math.round(i.confidence * 100) + '%'}</td><td>${esc(i.ml || (i.cause ? 'n/a' : '-'))}</td><td><span class="pill ${a[1]}">${a[0]}</span>${i.review ? ' <span class="pill p-esc" title="' + esc(i.review) + '">review</span>' : ''}</td><td>${dur(i.ttr_s)}</td><td>${esc(who(i.assignee) || (i.action === 'auto_fixed' ? 'automation' : '-'))}</td></tr>`;
   }).join('');
   const opt = (arr, cur, all) => `<option value="">${all}</option>` + arr.map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`).join('');
   return `<h1>Incidents</h1><p class="sub">${list.length} of ${inr.length} incidents in range match. Click a row for the full timeline, evidence and what each setting would have decided.</p>
@@ -174,7 +204,7 @@ function viewIncidents() {
     <select id="f-service">${opt(['api-gateway', 'transaction-service', 'database', 'frontend'].map(s => [s, s]), state.service, 'All services')}</select>
     <select id="f-ml">${opt([['agree', 'ML agrees'], ['disagree', 'ML disagrees'], ['unavailable', 'ML unavailable'], ['no_opinion', 'ML no opinion'], ['none', 'ML not consulted']], state.ml, 'Any ML verdict')}</select>
     <button class="btn" id="f-clear">Clear filters</button><div class="grow"></div>
-    <button class="btn" id="export">Export CSV (sample)</button>
+    <button class="btn" id="export">Export CSV</button>
   </div>
   <div class="card tw"><table><thead><tr><th>When</th><th>ID</th><th>Sev</th><th>Service</th><th>Cause</th><th>Conf.</th><th>ML</th><th>Outcome</th><th>Time to fix</th><th>Owner</th></tr></thead><tbody>${rows || '<tr><td colspan="10" class="mute">No incidents match.</td></tr>'}</tbody></table></div>
   <div class="pager"><button class="btn" id="prev" ${state.page === 0 ? 'disabled' : ''}>Previous</button> page ${state.page + 1} of ${pages} <button class="btn" id="next" ${state.page >= pages - 1 ? 'disabled' : ''}>Next</button></div>`;
@@ -196,7 +226,7 @@ function openDrawer(id) {
       <div>Cause</div><div>${esc(cname(i.cause))}</div><div>First alert</div><div>${fmt(i.ts)}</div><div>Incident received</div><div>${fmt(i.rs)}</div>
       <div>Confidence</div><div>${i.confidence === null ? '-' : Math.round(i.confidence * 100) + '%'}</div><div>ML second opinion</div><div>${esc(i.ml || 'not consulted')}</div>
       <div>Decision</div><div>${esc(i.reason || (i.action === 'auto_fixed' ? 'Fixed by ' + i.playbook + ' and verified' : '-'))}</div>
-      <div>Playbook</div><div>${esc(i.playbook || '-')}${i.duration_s ? ' (' + i.duration_s + ' s)' : ''}</div><div>Time to fix</div><div>${dur(i.ttr_s)}</div><div>Owner</div><div>${esc(i.assignee || (i.action === 'auto_fixed' ? 'automation' : 'nobody yet'))}</div>
+      <div>Playbook</div><div>${esc(i.playbook || '-')}${i.duration_s ? ' (' + i.duration_s + ' s)' : ''}</div><div>Time to fix</div><div>${dur(i.ttr_s)}</div><div>Owner</div><div>${esc(who(i.assignee) || (i.action === 'auto_fixed' ? 'automation' : 'nobody yet'))}</div>
       ${i.note ? `<div>Resolution note</div><div>${esc(i.note)}</div>` : ''}</div>
       ${i.review ? `<div class="note" style="margin:10px 0 0;background:var(--badsoft);color:var(--bad)">${esc(i.review)}</div>` : ''}</div>
     <div class="card sec"><h3>Actions</h3><div class="actions"><button class="btn primary" data-act="Acknowledged">Acknowledge</button><button class="btn" data-act="Playbook re-run requested">Re-run playbook</button><button class="btn" data-act="Rollback requested">Roll back</button><button class="btn" data-act="Escalated to the secondary on-call">Escalate</button><button class="btn" data-act="Opening Grafana">Open in Grafana</button><button class="btn" data-act="Opening logs">Logs</button><button class="btn" data-act="Link copied">Copy link</button></div></div>
@@ -209,7 +239,13 @@ function openDrawer(id) {
   </div>`;
   $('drawer').classList.add('on'); $('scrim').classList.add('on');
   $('dclose').onclick = closeDrawer;
-  $('drawer').querySelectorAll('[data-act]').forEach(b => b.onclick = () => toast('Sample site: "' + b.dataset.act + '" - no action was taken.'));
+  $('drawer').querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
+    if (b.dataset.act === 'Acknowledged' && isOpen(i)) {
+      if (i.assignee) { toast('Already acknowledged by ' + i.assignee + '.'); return; }
+      i.assignee = ME; i.events.push({ t: NOW.toISOString(), k: 'human', text: 'Acknowledged by ' + ME }); toast('Acknowledged. You now own ' + i.id + '.'); render(); openDrawer(i.id); return;
+    }
+    toast(b.dataset.act + '.');
+  });
 }
 function closeDrawer() { $('drawer').classList.remove('on'); $('scrim').classList.remove('on'); }
 function toast(t) { const e = $('toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => e.style.display = 'none', 2600); }
@@ -292,7 +328,7 @@ function viewSettings() {
 // ------------------------------------------------------------------------------------------ wiring
 function csv() {
   const rows = [['id', 'time', 'severity', 'service', 'cause', 'confidence', 'ml', 'outcome', 'ttr_s']].concat(INC.filter(matches).map(i => [i.id, i.t, i.sev, i.service, i.cause || 'unknown', i.confidence, i.ml, i.action, i.ttr_s]));
-  const blob = new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'autosre-sample-incidents.csv'; a.click();
+  const blob = new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'autosre-incidents.csv'; a.click();
 }
 function render() {
   const v = { incidents: viewIncidents, trends: viewTrends, services: viewServices, playbooks: viewPlaybooks, settings: viewSettings }[state.view];
@@ -313,6 +349,9 @@ $('q').oninput = e => { state.q = e.target.value; state.page = 0; if (state.view
 $('scrim').onclick = closeDrawer; document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
 $('theme').onclick = () => { const dark = document.documentElement.getAttribute('data-theme') === 'dark' || (!document.documentElement.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches); document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark'); };
 $('asof').textContent = fmt(NOW.getTime());
+$('signout').onclick = signOut;
+$('loginform').onsubmit = e => { e.preventDefault(); signIn($('user').value); };
+if (ME) { $('me').textContent = ME; } else { showLogin(); }
 render();
 </script>
 </body>
