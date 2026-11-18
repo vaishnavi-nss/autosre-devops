@@ -36,7 +36,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, g
 
 from opinion import judge
 from prometheus import fetch_metrics
-from scoring import KINDS, OWN_KINDS, service_scores
+from scoring import ALL_KINDS, KINDS, service_scores
 
 SERVICE_NAME = os.getenv("SERVICE_NAME", "second-opinion")
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://monitoring-kube-prometheus-prometheus.monitoring:9090")
@@ -148,7 +148,7 @@ def features(body: dict):
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"fault_start must be a number: {exc}")
     try:
-        scores, reason = window_scores(start, OWN_KINDS, **kwargs)
+        scores, reason = window_scores(start, ALL_KINDS, **kwargs)
     except Exception as exc:                      # Prometheus down, bad data, ...
         scores, reason = None, f"could not score: {exc}"
     return {"scores": scores} if scores is not None else {"scores": None, "reason": reason}

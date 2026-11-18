@@ -20,12 +20,17 @@ KINDS = ("cpu", "mem", "latency", "error", "workload")
 # Signals our own services expose and RCAEval does not. Only a model trained on our own data
 # (train_own.py) uses them; the RCAEval model keeps the five above.
 OWN_KINDS = KINDS + ("disk", "pool")
+# Kubernetes-state signals (service down, no ready endpoints, paused, Service type, extra replicas, restarts, unavailable pods). A model trained on them can
+# see the faults that leave no resource-metric trace, such as a Service that selects nothing or a paused Deployment.
+STATE_KINDS = ("down", "noep", "paused", "svctype", "extra", "restart", "unready")
+ALL_KINDS = OWN_KINDS + STATE_KINDS
 # Column suffix -> kind. RCAEval uses latency-50/-90 and load/workload; Prometheus data is
 # named with the plain kinds.
 SUFFIX_KIND = {
     "cpu": "cpu", "mem": "mem", "error": "error", "workload": "workload", "load": "workload",
     "latency": "latency", "latency-50": "latency", "latency-90": "latency",
     "disk": "disk", "pool": "pool",
+    **{k: k for k in STATE_KINDS},
 }
 NOT_A_SERVICE = {"main"}              # RCAEval's load-generator / host columns
 Z_CLIP = 10_000.0

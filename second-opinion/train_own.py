@@ -31,7 +31,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from opinion import judge          # noqa: E402
-from scoring import OWN_KINDS, Scorer  # noqa: E402
+from scoring import ALL_KINDS, Scorer  # noqa: E402
 
 CHAIN = ("frontend", "api-gateway", "transaction-service", "database")
 
@@ -42,6 +42,21 @@ TRUTH = {
     "high_memory_usage": ("transaction-service", "high_memory_usage"),
     "db_disk_full": ("database", "db_disk_full"),
     None: ("api-gateway", "gateway_fault"),
+    # Kubernetes-state faults: the injected cause names the service and is itself the fault the model learns.
+    "database_down": ("database", "database_down"),
+    "transaction_service_down": ("transaction-service", "transaction_service_down"),
+    "api_gateway_down": ("api-gateway", "api_gateway_down"),
+    "bad_rollout_transaction_service": ("transaction-service", "bad_rollout_transaction_service"),
+    "bad_rollout_api_gateway": ("api-gateway", "bad_rollout_api_gateway"),
+    "database_unreachable": ("database", "database_unreachable"),
+    "transaction_service_unreachable": ("transaction-service", "transaction_service_unreachable"),
+    "api_gateway_unreachable": ("api-gateway", "api_gateway_unreachable"),
+    "deployment_paused_transaction_service": ("transaction-service", "deployment_paused_transaction_service"),
+    "deployment_paused_api_gateway": ("api-gateway", "deployment_paused_api_gateway"),
+    "service_type_changed_database": ("database", "service_type_changed_database"),
+    "service_type_changed_transaction_service": ("transaction-service", "service_type_changed_transaction_service"),
+    "service_type_changed_api_gateway": ("api-gateway", "service_type_changed_api_gateway"),
+    "replicas_above_baseline": ("transaction-service", "replicas_above_baseline"),
 }
 SIZE = (60, 40)          # trees, boosting rounds: ~100 cases need no more, and calibration refits them per trial
 MIN_TRIALS = 12          # fewer than this and the numbers below mean nothing
@@ -72,7 +87,7 @@ def load_cases(dirs):
 
 def complete(scores):
     """Every service must carry every kind, or a missing metric would break the feature rows."""
-    return {s: {k: float(v.get(k, 0.0)) for k in OWN_KINDS} for s, v in scores.items()}
+    return {s: {k: float(v.get(k, 0.0)) for k in ALL_KINDS} for s, v in scores.items()}
 
 
 def leave_one_trial_out(cases, seed=0):
@@ -80,7 +95,7 @@ def leave_one_trial_out(cases, seed=0):
     rows = []
     for system in sorted({c["system"] for c in cases}):
         train = [c for c in cases if c["system"] != system]
-        model = Scorer(seed, OWN_KINDS, *SIZE, identity=CHAIN, service="gb").fit(train).calibrate(train)
+        model = Scorer(seed, ALL_KINDS, *SIZE, identity=CHAIN, service="gb").fit(train).calibrate(train)
         for c in (c for c in cases if c["system"] == system):
             service, fault, conf, _ = model.diagnose(c["scores"])
             rows.append({**c, "pred_service": service, "pred_fault": fault, "conf": conf})
@@ -128,7 +143,7 @@ def main(argv=None):
     result = report(rows, args.min_confidence)
     print(json.dumps(result, indent=2))
 
-    model = Scorer(0, OWN_KINDS, *SIZE, identity=CHAIN, service="gb").fit(cases).calibrate(cases)
+    model = Scorer(0, ALL_KINDS, *SIZE, identity=CHAIN, service="gb").fit(cases).calibrate(cases)
     args.out.mkdir(exist_ok=True)
     joblib.dump(model, args.out / "own.joblib")
     (args.out / "own.json").write_text(json.dumps({

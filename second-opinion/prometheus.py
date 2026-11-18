@@ -29,6 +29,17 @@ QUERIES = {
     # Our own gauges; only a model trained on our data (train_own.py) asks for these.
     "disk": ("max by (service) (db_disk_usage_ratio)", "service"),
     "pool": ("max by (service) (db_connection_pool_active)", "service"),
+    # Kubernetes state, from kube-state-metrics (the same series the alert rules use). Each is 0 when healthy and rises when its fault is present, and each has an
+    # `or` branch that yields 0 when the series is absent, so a baseline of "nothing wrong" exists for the fault window to be compared with.
+    "down": (f'1 - clamp_max(max by (deployment) (kube_deployment_status_replicas_available{{namespace="{NAMESPACE}"}}), 1)', "deployment"),
+    "unready": (f'max by (deployment) (kube_deployment_status_replicas_unavailable{{namespace="{NAMESPACE}"}})', "deployment"),
+    "paused": (f'max by (deployment) (kube_deployment_spec_paused{{namespace="{NAMESPACE}"}})', "deployment"),
+    "extra": (f'clamp_min(max by (deployment) (kube_deployment_spec_replicas{{namespace="{NAMESPACE}"}}) - 1, 0)', "deployment"),
+    "restart": (f'sum by (container) (increase(kube_pod_container_status_restarts_total{{namespace="{NAMESPACE}",container!=""}}[2m]))', "container"),
+    "svctype": (f'sum by (service) (kube_service_spec_type{{namespace="{NAMESPACE}",type=~"NodePort|LoadBalancer"}})'
+                f' or (0 * sum by (service) (kube_service_spec_type{{namespace="{NAMESPACE}",type="ClusterIP"}}))', "service"),
+    "noep": (f'1 - clamp_max(sum by (service) (label_replace(kube_endpointslice_endpoints{{namespace="{NAMESPACE}",ready="true"}}, "service", "$1", "endpointslice", "(.+)-[a-z0-9]{{5}}"))'
+             f' or (0 * sum by (service) (label_replace(kube_endpointslice_info{{namespace="{NAMESPACE}"}}, "service", "$1", "endpointslice", "(.+)-[a-z0-9]{{5}}"))), 1)', "service"),
 }
 DEFAULT_KINDS = ("cpu", "mem", "latency", "error", "workload")
 

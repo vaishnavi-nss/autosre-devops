@@ -238,7 +238,7 @@ def test_features_endpoint_returns_every_signal_and_needs_no_model(monkeypatch):
     with TestClient(svc.app) as client:
         reply = client.post("/features", json={"incident_start": 1000}).json()
 
-    assert set(reply["scores"]["database"]) == set(scoring.OWN_KINDS) and "disk" in seen["kinds"]
+    assert set(reply["scores"]["database"]) == set(scoring.ALL_KINDS) and "disk" in seen["kinds"]
 
     monkeypatch.setattr(svc, "window_scores", lambda *a, **k: (None, "only 2 samples"))
     with TestClient(svc.app) as client:
@@ -277,3 +277,35 @@ def test_features_endpoint_passes_a_known_fault_start_through_and_rejects_a_bad_
         assert client.post("/features", json={"incident_start": 1000, "fault_start": 940}).json()["scores"] is not None
         assert seen["fault_start"] == 940.0
         assert client.post("/features", json={"incident_start": 1000, "fault_start": "soon"}).status_code == 422
+
+
+# ------------------------------------------------------------------------------------------------------ Kubernetes-state faults
+def test_the_scorer_abstains_on_a_state_cause_it_was_not_trained_on():
+    from opinion import judge
+    r = judge("database_down", "database", "api-gateway", "latency", 0.9, 0.3, vocabulary={"high_memory_usage"})
+    assert r["verdict"] == "no_opinion" and r["basis"] == "state fault"
+
+
+def test_a_model_trained_on_a_state_cause_judges_it_like_any_other():
+    from opinion import judge
+    vocab = {"database_down"}
+    assert judge("database_down", "database", "database", "database_down", 0.9, 0.3, vocab)["verdict"] == "agree"
+    assert judge("database_down", "database", "api-gateway", "database_down", 0.9, 0.3, vocab)["verdict"] == "disagree"
+    assert judge("database_down", "database", "database", "high_memory_usage", 0.9, 0.3, vocab)["verdict"] == "disagree"
+
+
+def test_every_state_signal_has_a_query_a_label_and_a_column_name_the_scorer_parses():
+    import prometheus, scoring
+    for kind in scoring.STATE_KINDS:
+        query, label = prometheus.QUERIES[kind]
+        assert label in ("deployment", "service", "container") and "autosre" in query
+        assert scoring.parse_column(f"database_{kind}") == ("database", kind)
+    assert set(scoring.ALL_KINDS) == set(scoring.OWN_KINDS) | set(scoring.STATE_KINDS)
+
+
+def test_a_state_signal_that_rises_from_zero_scores_far_above_a_quiet_one():
+    import pandas as pd, scoring
+    t = list(range(0, 600, 15))
+    frame = pd.DataFrame({"time": t, "database_down": [0.0] * 30 + [1.0] * 10, "transaction-service_down": [0.0] * 40})
+    s = scoring.service_scores(frame, inject_time=450, window_s=150, kinds=scoring.ALL_KINDS)
+    assert s["database"]["down"] > 100 and s["transaction-service"]["down"] == 0.0

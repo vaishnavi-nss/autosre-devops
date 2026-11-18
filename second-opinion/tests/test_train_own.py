@@ -12,7 +12,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
 import train_own as t   # noqa: E402
-from scoring import OWN_KINDS  # noqa: E402
+from scoring import ALL_KINDS  # noqa: E402
 
 SERVICES = ("frontend", "api-gateway", "transaction-service", "database")
 # which (service, kind) lights up for each cause
@@ -25,7 +25,7 @@ HOT = {
 
 
 def table(label, rng):
-    scores = {s: {k: float(rng.normal(0, 0.6)) for k in OWN_KINDS} for s in SERVICES}
+    scores = {s: {k: float(rng.normal(0, 0.6)) for k in ALL_KINDS} for s in SERVICES}
     for service, kind, size in HOT[label]:
         scores[service][kind] = size * float(rng.uniform(0.7, 1.3))
     return scores
@@ -55,7 +55,7 @@ def test_load_cases_skips_contaminated_trials_and_probes_without_features(tmp_pa
     assert skipped == 1
     assert {c["fault"] for c in cases} == {"db_connection_pool_exhaustion", "high_memory_usage",
                                            "db_disk_full", "gateway_fault"}
-    assert all(set(c["scores"]["database"]) == set(OWN_KINDS) for c in cases)
+    assert all(set(c["scores"]["database"]) == set(ALL_KINDS) for c in cases)
 
 
 def test_a_model_trained_on_our_signatures_names_the_service_and_the_cause(tmp_path):
@@ -87,6 +87,6 @@ def test_main_saves_a_model_the_service_can_load(tmp_path):
     run = write_run(tmp_path, per_label=3)
     t.main([str(run), "--out", str(tmp_path / "models")])
     model = joblib.load(tmp_path / "models" / "own.joblib")
-    assert model.kinds == OWN_KINDS
+    assert model.kinds == ALL_KINDS
     service, fault, conf, _ = model.diagnose(table("db_disk_full", np.random.default_rng(5)))
     assert (service, fault) == ("database", "db_disk_full") and conf > 0.3
