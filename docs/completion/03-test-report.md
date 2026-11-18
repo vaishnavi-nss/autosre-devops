@@ -189,6 +189,7 @@ Saved in `docs/completion/screenshots/`. Taken from the user's own browser again
 | `120` to `128-live-*.jpg` | The three live runs: console passed with auto-remediation ON, playbooks succeeded, Grafana remediation panels |
 | `129`, `130` | Final safe state: console idle with auto-remediation OFF, dashboard RECOVERED (VERIFIED), all deployments ready |
 | `140-jenkins-signed-out-needs-owner-login.jpg` | Jenkins asking for the owner to sign in |
+| `141` to `143-jenkins-*.jpg` | Jenkins build #1: green Stage View, console ending `Finished: SUCCESS`, the console after the deploy |
 
 ### The fault console, run end to end (2026-11-18, after the lab was restarted)
 
@@ -212,9 +213,25 @@ How to read it honestly:
 - This is one pass per live scenario in this session, on top of the earlier counted runs (pool 5/5, disk 4/4, memory 3 of 4 acted); it adds the evidence that the **buttons** drive the same pipeline, not a new rate.
 - Screenshots: `100` to `114` (simulate), `120` to `128` (live), `129` and `130` (final safe state).
 
+### The Jenkins pipeline, built (2026-11-18 03:24 UTC, build #1)
+
+The owner signed in and the job `autosre-cicd` was built from the branch (commit `8233fce`). **Result: SUCCESS in about 9 min 26 s.**
+
+| Stage | Time | What it did |
+|---|---|---|
+| Checkout | 1 s | fetched the repository at the exact commit |
+| Preflight | 1 s | Minikube running, **no fault scenario running, `AUTO_REMEDIATE` is `false`** (it would have refused otherwise) |
+| Unit tests | 8 min 22 s | created a virtual environment, installed the requirements, ran the suite: **no failures** (Jenkins "Latest Test Result: no failures") |
+| Build images | 21 s | rebuilt the seven images into Minikube |
+| Deploy | 6 s | applied the manifests, **forced the safe defaults**, restarted the seven deployments |
+| Verify | 22 s | every deployment rolled out, `AUTO_REMEDIATE` still false, the smoke test traversed frontend, gateway, transaction service and database |
+
+Afterwards all 8 deployments were 1/1 and the fault console still showed auto-remediation **OFF (safe)**. Screenshots `141` (Stage View), `142` (console output ending `Finished: SUCCESS`), `143` (console after the deploy).
+Note the unit-test stage is the slow one on the 2-vCPU instance (8 min against about 2.5 min on a laptop); the pipeline's 40-minute limit leaves room.
+
 Two weaknesses found while doing this, neither a failure of a run:
 - **The security group for the demo ports was open to 0.0.0.0/0** (found in the AWS console, screenshot `94`), although the guide says to allow only your own IP. Jenkins and the console both carry the throwaway password `password` and can change the cluster; restrict the rules to one IP or delete them. This is a network setting, so it was left for the owner to change.
-- **The Jenkins pipeline has still not been built**: Jenkins signed the browser out (screenshot `140`) and signing in is a password step the owner must do. The job, Jenkinsfile and sign-in all work (checked earlier); the first build is open.
+- **Jenkins**: it signed the browser out (screenshot `140`) and the owner signed in; the pipeline was then built (next section).
 
 ## Runs, in order
 
@@ -236,6 +253,7 @@ Two weaknesses found while doing this, neither a failure of a run:
 | coll1, coll2 | dry, `--collect` | real-fault trial data for the scorer experiment (10 and 8 faults); coll2 ran the retrained model: 8/8 agree, `pair_gate` passed |
 | **cloud2** | live | pool and disk with the new dispatcher history volume: 2 passed; the restore restarted the dispatcher and the new pod kept both records and the disk cooldown (95 s left of 600 s); `AUTO_REMEDIATE=false` confirmed afterwards, 8 of 8 deployments 1/1 |
 | **console-sim** (pool, memory, disk) | simulate, via the fault console | three dry runs: alert, diagnosis, ML agree, playbook chosen, **nothing executed, not counted as recovery** (see "The fault console, run end to end") |
+| **jenkins #1** | CI/CD pipeline | **SUCCESS**, about 9 min 26 s: preflight, tests (no failures), build, deploy, verify; safe defaults held |
 | **console-live** (pool, memory, disk) | live, via the fault console | **3 of 3 passed** (29.2 s, 24.4 s, 23.9 s); safe defaults restored and confirmed afterwards |
 | **cloud1** | live, cold start | pool, memory, disk live and unknown cause: **5 of 5 passed**, guardrails 7/7, default model, restore confirmed (see "The cloud side") |
 
@@ -283,7 +301,7 @@ Two weaknesses found while doing this, neither a failure of a run:
 
 New things this work found and did **not** fix:
 - The one scorer disagreement on a real memory fault (above). Retraining on real-fault trials was tried and changed nothing measurable; the open question is whether the engine's estimated `fault_start` window differs from the true-start windows I recorded.
-- The fault console is now proven end to end (three simulate and three live runs, above). The Jenkins `autosre-cicd` job is built and signs in, but the first pipeline build has not run (the owner must sign in).
+- The fault console is now proven end to end (three simulate and three live runs, above). The Jenkins `autosre-cicd` job has now been built once, successfully (build #1, above).
 - The fault console's status call can hang when the cluster is busy (it runs `kubectl` for every poll), which made the page show "console unreachable".
 - The dispatcher's cumulative counters (not the execution list or cooldowns) still reset on a restart.
 - Lab caveats: the instance runs a single-node Minikube on 2 vCPUs, so timings are not production numbers, and every fault is started by the runner.
