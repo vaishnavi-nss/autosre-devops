@@ -157,6 +157,20 @@ Two things the check turned up, neither a failure of the system:
 - The image-check step printed a Python `BrokenPipeError` traceback because it piped `ansible-playbook --version` into `head -1`. It was noise only (the playbook checks after it passed); fixed in the launcher.
 - **Three other EC2 instances were running** in the lab account (`t3.medium`, `i-071187d6f97ea8271`, `i-0cf7a8f86041a88c6`, `i-0227adbb1ed3d2519`, not part of AutoSRE), using lab budget. I left them alone as agreed earlier; stopping or terminating them is your call.
 
+### The demo tooling: Grafana, Prometheus, fault console, Jenkins (added 2026-11-18)
+
+To show the live system in a browser, four things were put on the lab instance (all in `scripts/aws/` and `scripts/fault_console/`, pushed to `devops-completion`):
+
+| Piece | What it is | Checked how |
+|---|---|---|
+| Dashboard, Grafana, Prometheus on :8081, :3000, :9090 | `expose.sh` makes each a systemd service (`kubectl port-forward`, restarts itself) | **Opened in a browser from the user's machine**: the dashboard shows the Telemetry page, Grafana shows the AutoSRE dashboard with the engine's real incidents (6 received, 3 escalated, 2 pool, 1 disk), Prometheus loads with 10 prepared queries |
+| Fault console on :8082 | A small web page whose buttons start `run_scenarios.py` for one of pool, memory or disk. **Simulate** injects the real fault with `AUTO_REMEDIATE` left false (decisions only, never reported as recovery). **Live** needs the typed word LIVE and a server switch, turns auto-remediation on for that run only, and the runner restores it. Token needed for every action, one run at a time, Stop button | **17 unit tests** (validation, token, live refusal, one-at-a-time, command built is the runner's own) plus the page loads and the token check was tried on the instance (right token 200, wrong 401). **The buttons have not yet been pressed against the cluster** |
+| Jenkins on :8080 | The official `jenkins.war` under systemd, as the user that owns kubectl and docker, job `autosre-cicd` from the repository's `Jenkinsfile`: preflight (refuses during a fault run or if `AUTO_REMEDIATE` is not false), unit tests, build the seven images, deploy, verify (all deployments ready, `AUTO_REMEDIATE` false, smoke test) | Jenkins starts, the sign-in works (HTTP 200 with the admin login). **The pipeline job itself has not been run yet** |
+
+Things this turned up (all fixed): the console's log parser missed the runner's indented outcome lines (a unit test caught it, so the page would have shown no outcome); the Jenkins apt repository's signing key had changed, so the install now runs the official war; current Jenkins needs Java 21, not 17; the install now waits for the apt lock instead of failing; a freshly pushed file is not yet served from GitHub's raw cache, so the instance clones the branch instead.
+
+Access: the user asked for the Jenkins admin password and the fault console token to be the word `password`, and set that on the instance. That is acceptable only because each port is reachable from the user's own IP alone (security-group rules the user added, to be deleted after the demo); both services can change the cluster, so never leave them open or reuse those values.
+
 ## Runs, in order
 
 | Run | Mode | What it showed |
@@ -175,6 +189,7 @@ Two things the check turned up, neither a failure of the system:
 | **comp13** | live | memory x3, pool x2, disk x2: **6 passed, 1 escalated by policy** (ML disagree). Restore confirmed |
 | **comp14** | live | pool, cooldown, unknown cause, live guardrails: **4 of 4 passed**. Restore confirmed: `auto_remediate: false`, no errors, 8 of 8 deployments 1/1, no runner |
 | coll1, coll2 | dry, `--collect` | real-fault trial data for the scorer experiment (10 and 8 faults); coll2 ran the retrained model: 8/8 agree, `pair_gate` passed |
+| **cloud2** | live | pool and disk with the new dispatcher history volume: 2 passed; the restore restarted the dispatcher and the new pod kept both records and the disk cooldown (95 s left of 600 s); `AUTO_REMEDIATE=false` confirmed afterwards, 8 of 8 deployments 1/1 |
 | **cloud1** | live, cold start | pool, memory, disk live and unknown cause: **5 of 5 passed**, guardrails 7/7, default model, restore confirmed (see "The cloud side") |
 
 ## Bugs that only the real cluster showed (all fixed and covered by a test)
@@ -206,9 +221,9 @@ Two things the check turned up, neither a failure of the system:
 | 5 | The dispatcher selects the correct approved playbook | Yes: restart, scale, clear logs |
 | 6 | Ansible executes the intended operation | **Yes, all three, live** |
 | 7 | Kubernetes and application health confirm recovery | **Yes, all three**, by an independent check (memory = capacity ready and healthy) |
-| 8 | Grafana displays the incident and recovery evidence | **Yes**: the deployed dashboard and front end were rendered and looked at; defects found there were fixed (one fix, the front end's incident choice, is pushed but not yet deployed) |
+| 8 | Grafana displays the incident and recovery evidence | **Yes**: the deployed dashboard and front end were rendered and looked at; defects found there were fixed, and the front end's incident choice is now deployed too; the same pages were opened again from the user's own browser over the instance address |
 | 9 | Unknown and unsafe incidents escalate to a human | Yes: unknown-cause scenario, guardrails, cooldown, two-fault ambiguity, gate veto |
-| 10 | Automated tests pass; deployment documented | Yes (265 tests; `01-audit.md`, `02-deploy-demo-cleanup-rollback.md`, this report) |
+| 10 | Automated tests pass; deployment documented | Yes (about 305 tests, 288 passed in the last full run before the 17 fault-console tests were added; `01-audit.md`, `02-deploy-demo-cleanup-rollback.md`, this report) |
 
 ## Limits, and what was done about each
 
@@ -216,11 +231,12 @@ Two things the check turned up, neither a failure of the system:
 |---|---|---|
 | Memory's slowness was injected; a scale-out leaves the leak | The slowness is now real work on the leaked heap (no sleep), calibrated by measuring. The "alert persists" assumption was wrong: the alert sums across pods and resolves, and recovery now requires that plus 24 live transactions with no errors and a median under 0.3 s. The leak itself stays in the original pod by design (the approved playbook is a scale-out); the runner replaces that pod after each trial | **Verified live** (comp12, comp13): 3 of 4 acted and recovered. **Still true:** a scale-out does not cure a leak, a human must replace the pod |
 | One passing run per scenario, not a rate | pool 5/5, disk 4/4, memory 3 acted of 4 (1 escalated by the ML gate), cooldown, unknown cause and live guardrails each repeated against the real fault models | **Counted, still small.** These are not confidence intervals. Memory acted on 3 of 4 in the repeat runs and the scorer then agreed on 5 of 5 more in the dry-run batch; 8 of 9 in all. Too few to call a rate either way |
-| Front end and Grafana pages not viewed | Both rendered in a real browser from the deployed cluster; four defects found and fixed | **Done**, except that the last front-end fix is not deployed yet |
+| Front end and Grafana pages not viewed | Both rendered in a real browser from the deployed cluster; four defects found and fixed | **Done**, including the last front-end fix |
 | memory, cooldown, guardrails, unknown cause not repeated against the new fault models | All four were run against them (comp13, comp14) | **Done** |
 
 New things this work found and did **not** fix:
 - The one scorer disagreement on a real memory fault (above). Retraining on real-fault trials was tried and changed nothing measurable; the open question is whether the engine's estimated `fault_start` window differs from the true-start windows I recorded.
+- The fault console's buttons and the Jenkins `autosre-cicd` job are built and the pages open, but neither has been run against the cluster yet; the first Simulate press and the first pipeline build are the real tests.
 - The dispatcher's cumulative counters (not the execution list or cooldowns) still reset on a restart.
 - Lab caveats: the instance runs a single-node Minikube on 2 vCPUs, so timings are not production numbers, and every fault is started by the runner.
 

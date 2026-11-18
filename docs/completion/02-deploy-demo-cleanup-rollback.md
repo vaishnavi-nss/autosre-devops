@@ -53,6 +53,26 @@ What each scenario really is: the pool fault sets the pool gauge (injected, no r
 in the container; the disk fault writes real bytes into the database's bounded log directory. A memory scale-out does not remove the leak in
 the original pod, so the memory alert is expected to persist; "recovered" there means the extra replicas are ready and the service is healthy.
 
+## The demo console (browser pages, lab instance)
+
+Run once on the instance as root (SSM or a Session Manager shell). The lab's security group blocks everything until you add a rule for each port **from your own IP only**:
+
+```bash
+git clone -b devops-completion https://github.com/vaishnavi-nss/autosre-devops /tmp/jk
+bash /tmp/jk/scripts/aws/expose.sh            # dashboard 8081, Grafana 3000, Prometheus 9090, fault console 8082
+bash /tmp/jk/scripts/aws/install-jenkins.sh   # Jenkins 8080 (admin login in /home/ubuntu/.jenkins-admin-pass)
+```
+
+| URL (instance public IP) | What to do there |
+|---|---|
+| `:8081` | The AutoSRE dashboard: Telemetry shows the latest incident, the ML verdict, the playbook and the executions. |
+| `:3000` | Grafana, dashboard "AutoSRE" (viewer, no login): decisions, symptoms, remediation, rollout and recovery. |
+| `:9090` | Prometheus: `up`, `ALERTS`, `db_connection_pool_active / db_connection_pool_max`, `db_disk_usage_ratio`, `remediation_decisions_total`, `remediation_executions_total`. |
+| `:8082` | Fault console. Choose a fault and **Simulate** (real fault, `AUTO_REMEDIATE` stays false, nothing is fixed) or **Live** (type LIVE; auto-remediation is on for that run only, then restored). One run at a time; **Stop and restore safe settings** ends it. The access token is in `/home/ubuntu/.fault-console-token`. A run takes about 3 to 6 minutes. |
+| `:8080` | Jenkins, job `autosre-cicd`: preflight, tests, build the seven images, deploy, verify. It refuses to run during a fault run or if `AUTO_REMEDIATE` is not false, and always leaves it false. |
+
+Rules that still apply: never aim a fault at a shared or production cluster; Live needs your explicit approval each time; stop if the preflight or the recovery check fails; a Simulate run is **not** a recovery and is never reported as one. Set your own password and token (the lab ones in this project were set to a throwaway value at the user's request).
+
 ## Clean up
 
 The runner restores everything it changed. To do it by hand:
@@ -64,6 +84,8 @@ kubectl -n autosre set env deploy/database CHAOS_ENABLED=false
 kubectl -n autosre set env deploy/correlation-engine SECOND_OPINION_MODE=shadow ESCALATE_ON_AMBIGUITY-
 kubectl -n autosre scale deploy/transaction-service --replicas=1
 ```
+
+Demo console: delete the security-group rules for 8081, 3000, 9090, 8082 and 8080, and on the instance `systemctl disable --now autosre-pf-frontend autosre-pf-grafana autosre-pf-prometheus autosre-fault-console jenkins`. The console and Jenkins can change the cluster, so do not leave them reachable.
 
 Injected disk bytes live in an `emptyDir` (bounded to 100Mi) inside the database pod and disappear when the pod is replaced; the approved
 cleanup deletes only `*.log` files directly in `/var/log/app`. Do not clean up the lab's EC2 instance, S3 bucket or other AWS resources.
