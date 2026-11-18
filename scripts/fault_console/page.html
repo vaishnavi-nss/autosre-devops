@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoSRE Fault Console</title>
+<style>
+  :root { --bg:#f4f2ec; --card:#fff; --ink:#1b2236; --mute:#6b7280; --line:#e2dfd5; --gold:#b08d3c; --ok:#1f7a4d; --bad:#b3261e; --warn:#9a6700; --navy:#141c33; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1424; --card:#182036; --ink:#e8eaf2; --mute:#9aa3b8; --line:#2a3452; --gold:#d4b25c; --ok:#4cc38a; --bad:#ff7b72; --warn:#e3b341; --navy:#0b1020; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui, "Segoe UI", sans-serif; }
+  header { background:var(--navy); color:#fff; padding:14px 16px; }
+  header b { color:var(--gold); }
+  main { max-width:980px; margin:0 auto; padding:16px; display:grid; gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  h2 { margin:0 0 8px; font-size:15px; letter-spacing:.04em; text-transform:uppercase; color:var(--mute); }
+  .row { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+  .pill { padding:2px 10px; border-radius:99px; font-size:13px; border:1px solid var(--line); }
+  .pill.ok { color:var(--ok); border-color:var(--ok); } .pill.bad { color:var(--bad); border-color:var(--bad); } .pill.warn { color:var(--warn); border-color:var(--warn); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(250px, 1fr)); gap:12px; }
+  .fault { border:1px solid var(--line); border-radius:8px; padding:12px; display:flex; flex-direction:column; gap:8px; }
+  .fault p { margin:0; color:var(--mute); font-size:13px; flex:1; }
+  button { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--navy); color:#fff; cursor:pointer; }
+  button.live { background:var(--bad); border-color:var(--bad); }
+  button.stop { background:transparent; color:var(--bad); border-color:var(--bad); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  input[type=text], input[type=password] { font:inherit; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--ink); }
+  pre { margin:0; background:var(--navy); color:#d7dcec; padding:12px; border-radius:8px; max-height:340px; overflow:auto; font-size:12.5px; white-space:pre-wrap; word-break:break-word; }
+  .note { color:var(--mute); font-size:13px; }
+  .msg { min-height:1.4em; font-size:14px; }
+  a { color:var(--gold); }
+</style>
+</head>
+<body>
+<header><b>AutoSRE</b> Fault Console &middot; real faults in the isolated <code>autosre</code> namespace of the lab cluster</header>
+<main>
+  <section class="card">
+    <h2>State</h2>
+    <div class="row">
+      <span>Run: <span id="run" class="pill">...</span></span>
+      <span>Phase: <span id="phase" class="pill">...</span></span>
+      <span>Auto-remediation: <span id="auto" class="pill">...</span></span>
+      <span>Outcome: <span id="outcome" class="pill">none yet</span></span>
+    </div>
+    <p class="note" id="job"></p>
+  </section>
+
+  <section class="card">
+    <h2>Cause a fault</h2>
+    <div class="row" style="margin-bottom:10px">
+      <label><input type="radio" name="mode" value="simulate" checked> Simulate</label>
+      <label><input type="radio" name="mode" value="live"> Live</label>
+      <input type="text" id="confirm" placeholder="type LIVE to confirm" autocomplete="off" style="display:none">
+      <input type="password" id="token" placeholder="access token" autocomplete="off">
+    </div>
+    <p class="note" id="modenote"></p>
+    <div class="grid" id="faults"></div>
+    <div class="row" style="margin-top:12px"><button class="stop" id="stop">Stop and restore safe settings</button><span class="msg" id="msg"></span></div>
+  </section>
+
+  <section class="card">
+    <h2>Runner log (last lines)</h2>
+    <pre id="log">waiting for the first status...</pre>
+    <p class="note">Watch it work: <a id="l-front" target="_blank">dashboard</a> &middot; <a id="l-graf" target="_blank">Grafana</a> &middot; <a id="l-prom" target="_blank">Prometheus</a> &middot; <a id="l-jenk" target="_blank">Jenkins</a></p>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const host = location.hostname;
+$('l-front').href = 'http://' + host + ':8081'; $('l-graf').href = 'http://' + host + ':3000';
+$('l-prom').href = 'http://' + host + ':9090'; $('l-jenk').href = 'http://' + host + ':8080';
+try { $('token').value = sessionStorage.getItem('fc-token') || ''; } catch (e) {}
+let state = {};
+const mode = () => document.querySelector('input[name=mode]:checked').value;
+
+function setPill(el, text, cls) { el.textContent = text; el.className = 'pill ' + (cls || ''); }
+function refreshModeUI() {
+  const live = mode() === 'live';
+  $('confirm').style.display = live ? '' : 'none';
+  $('modenote').textContent = live
+    ? 'LIVE: the real fault is injected and auto-remediation is switched ON for this run only. The pipeline will really run the Ansible playbook and the runner then restores it to OFF.'
+    : 'SIMULATE: the real fault is injected, but auto-remediation stays OFF. The pipeline raises the alert, diagnoses it and records what it would do. Nothing is fixed; the runner removes the fault at the end.';
+  document.querySelectorAll('.fault button').forEach(b => { b.className = live ? 'live' : ''; b.textContent = (live ? 'Cause LIVE fault' : 'Simulate fault'); });
+}
+document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', refreshModeUI));
+
+async function call(path, body) {
+  const token = $('token').value.trim();
+  try { sessionStorage.setItem('fc-token', token); } catch (e) {}
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Token': token }, body: JSON.stringify(body || {}) });
+  const j = await r.json().catch(() => ({}));
+  $('msg').textContent = j.message || j.error || ('HTTP ' + r.status);
+  $('msg').style.color = r.ok ? 'var(--ok)' : 'var(--bad)';
+  poll();
+}
+$('stop').addEventListener('click', () => call('/api/stop'));
+
+function buildFaults(scenarios) {
+  if ($('faults').children.length) return;
+  for (const [key, text] of Object.entries(scenarios)) {
+    const d = document.createElement('div'); d.className = 'fault';
+    const h = document.createElement('b'); h.textContent = key;
+    const p = document.createElement('p'); p.textContent = text;
+    const b = document.createElement('button'); b.dataset.key = key;
+    b.addEventListener('click', () => call('/api/run', { scenario: key, mode: mode(), confirm: $('confirm').value.trim() }));
+    d.append(h, p, b); $('faults').append(d);
+  }
+  refreshModeUI();
+}
+
+async function poll() {
+  try {
+    const s = await (await fetch('/api/status')).json(); state = s;
+    buildFaults(s.scenarios);
+    setPill($('run'), s.running ? 'running' : 'idle', s.running ? 'warn' : 'ok');
+    setPill($('phase'), s.phase, '');
+    setPill($('auto'), s.auto_remediate === 'false' ? 'OFF (safe)' : s.auto_remediate === 'true' ? 'ON' : s.auto_remediate, s.auto_remediate === 'false' ? 'ok' : 'bad');
+    setPill($('outcome'), s.outcome || 'none yet', '');
+    $('job').textContent = '';
+    if (s.job) $('job').textContent = 'Last request: ' + s.job.scenario + ' (' + s.job.mode + ') started ' + s.job.started + ' UTC';
+    document.querySelectorAll('.fault button').forEach(b => { b.disabled = s.running; });
+    const live = document.querySelector('input[value=live]'); live.disabled = !s.allow_live;
+    if (!s.allow_live && mode() === 'live') { document.querySelector('input[value=simulate]').checked = true; refreshModeUI(); }
+    $('log').textContent = s.log.length ? s.log.join('\n') : 'no run yet';
+  } catch (e) { setPill($('run'), 'console unreachable', 'bad'); }
+}
+poll(); setInterval(poll, 3000);
+</script>
+</body>
+</html>
