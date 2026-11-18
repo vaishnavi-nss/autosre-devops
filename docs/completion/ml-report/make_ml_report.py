@@ -441,6 +441,9 @@ def estimate_fault_start(alerts, deciding):
     return min(estimates)
 """),
           P("If that estimate is a little late, the 'fault window' includes some normal behaviour and the z-scores shrink. It is listed as an open item rather than explained away.", CALL),
+          P("Follow-up (2026-11-18): re-scoring all 36 recorded real memory windows offline never flips the verdict (closest margin: trial coll1:memory-1), and both memory runs this session, simulate and live, agreed. So the timing idea is still a hypothesis. "
+            "The next step that would settle it is recording the scorer's inputs, with the engine's own estimated fault start, on the next live disagreement.", SM),
+          P("Related fix: the memory remediation now scales out <i>and replaces the pods</i> (a scale-out alone leaves the leaking pod running). One live run passed on 2026-11-18 (alert, diagnosis, ML agree, playbook, independent recovery; the leaking pod was replaced). One run, not a rate.", SM),
           PageBreak()]
 
     # ---------------- 10
@@ -451,7 +454,7 @@ def estimate_fault_start(alerts, deciding):
                  ["We injected the faults", "The faults and the labels come from the same team. Real production incidents may look different. Three causes only; a hand table is hard to beat with so few."],
                  ["Rules and simulator share an author", "Simulated accuracy (89.9% / 76.9%) shows behaviour under noise, not real-world accuracy."],
                  ["Confidence is not a probability", "The rules' confidence is a completeness ratio; the scorer's is calibrated on few held-out trials. Neither is a guarantee."],
-                 ["One live false alarm unexplained", "comp13 trial 1 (memory). Timing of the estimated fault start is the main suspect."],
+                 ["One live false alarm unexplained", "comp13 trial 1 (memory). Timing of the estimated fault start is the main suspect; offline re-scoring does not reproduce it and the two latest memory runs agreed, so it is not proven."],
                  ["Public-dataset model", "Right service 91% of the time but right fault only 67%; kept for reference, not used live."]],
                 [W * 0.30, W * 0.70]),
           P("What to take away", H2),
