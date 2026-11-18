@@ -98,10 +98,10 @@
 <div class="app">
   <header>
     <div class="brand">Auto<span>SRE</span> Incident Console</div>
-    <span class="chip">env <b>production</b></span>
+    <span class="chip">env <b id="env">production</b></span>
     <span class="chip">as of <b id="asof"></b></span>
     <div class="grow"></div>
-    <label class="mute">Range <select id="range"><option value="1">Last 24 hours</option><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last 12 months</option></select></label>
+    <label class="mute">Range <select id="range"><option value="1">Last 24 hours</option><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last 12 months</option><option value="9999">All time</option></select></label>
     <input type="search" id="q" placeholder="Search id, service, cause, person...">
     <span class="chip">on call <b id="me"></b></span>
     <button class="btn" id="signout" title="Sign out">Sign out</button>
@@ -112,6 +112,7 @@
     <button data-view="trends">Trends</button>
     <button data-view="services">Services</button>
     <button data-view="playbooks">Playbooks</button>
+    <button data-view="runs" id="nav-runs" style="display:none">Validation runs</button>
     <button data-view="settings">Settings &amp; changes</button>
     <div class="sep"></div>
     <small>Built for the on-call engineer: what needs you, what the automation did, and the evidence for it.</small>
@@ -146,7 +147,7 @@ try { ME = localStorage.getItem('autosre-user') || ''; } catch (e) { /* no stora
 const cleanName = v => String(v || '').replace(/[^A-Za-z0-9._ -]/g, '').trim().slice(0, 32);
 function showLogin() {
   $('login').classList.add('on');
-  $('who').innerHTML = '<span class="mute" style="font-size:12px;width:100%">On the rota:</span>' + D.people.map(p => '<button type="button" data-u="' + p + '">' + p + '</button>').join('');
+  $('who').innerHTML = !D.people.length ? '' : '<span class="mute" style="font-size:12px;width:100%">On the rota:</span>' + D.people.map(p => '<button type="button" data-u="' + p + '">' + p + '</button>').join('');
   $('who').querySelectorAll('button').forEach(b => b.onclick = () => { $('user').value = b.dataset.u; $('user').focus(); });
   $('user').focus();
 }
@@ -288,7 +289,34 @@ function causeBars() {
   const max = Math.max(...rows.map(r => r[1]));
   return rows.map(r => `<div style="margin:8px 0"><div style="display:flex;justify-content:space-between"><span>${esc(r[0])}</span><span class="mute">${r[1]} incidents, ${r[2]} auto-fixed</span></div><div class="wbar" style="height:10px"><i style="width:${r[1] / max * 100}%"></i></div></div>`).join('');
 }
+function barChart(items, unit, color) {
+  const max = Math.max(...items.map(x => x.v), 1), Wd = 720, H = 190, L = 40, bw = (Wd - L) / Math.max(items.length, 1);
+  let g = ''; items.forEach((x, k) => { const h = (x.v / max) * (H - 50); g += `<rect x="${L + k * bw + 3}" y="${H - 22 - h}" width="${Math.max(bw - 6, 4)}" height="${h}" rx="2" fill="${color || 'var(--accent)'}"><title>${esc(x.l)}: ${Math.round(x.v)} ${unit}</title></rect><text x="${L + k * bw + 3}" y="${H - 8}">${esc(x.s || '')}</text>`; });
+  const ticks = [0, .5, 1].map(f => `<text x="0" y="${H - 22 - f * (H - 50) + 3}">${Math.round(f * max)}</text>`).join('');
+  return `<svg viewBox="0 0 ${Wd} ${H}" width="100%">${ticks}<line class="ax" x1="${L}" x2="${Wd}" y1="${H - 22}" y2="${H - 22}"/>${g}</svg>`;
+}
+function viewTrendsReal() {
+  const bySrc = {}; INC.forEach(i => { const b = bySrc[i.source] = bySrc[i.source] || { auto_fixed: 0, escalated: 0, dry_run: 0 }; b[i.action] = (b[i.action] || 0) + 1; });
+  const stack = Object.entries(bySrc).map(([src, b]) => { const tot = b.auto_fixed + b.escalated + b.dry_run; const seg = (n, c, l) => n ? `<div style="flex:${n};background:${c};color:#fff;padding:4px 8px;font-size:12px;white-space:nowrap" title="${l}">${n} ${l}</div>` : '';
+    return `<div style="margin:10px 0"><div style="display:flex;justify-content:space-between"><b>${esc(src)}</b><span class="mute">${tot} incidents</span></div><div style="display:flex;border-radius:6px;overflow:hidden;margin-top:4px">${seg(b.auto_fixed, COL.auto, 'auto-fixed')}${seg(b.escalated, COL.esc, 'escalated')}${seg(b.dry_run, COL.dry, 'decision only')}</div></div>`; }).join('');
+  const delays = INC.filter(i => i.kind === 'injected').map(i => ({ v: (i.rs - i.ts) / 1000, l: i.id + ' ' + cname(i.cause), s: String(i.id).slice(-2) }));
+  const med = delays.map(d => d.v).sort((a, b) => a - b)[Math.floor(delays.length / 2)];
+  const fixes = INC.filter(i => i.action === 'auto_fixed').map(i => ({ v: i.ttr_s, l: i.id + ' ' + cname(i.cause), s: String(i.id).slice(-2) }));
+  return `<h1>Trends</h1><p class="sub">${INC.length} incidents from the collected live-run logs, ${fmt(Date.parse(D.start)).slice(0, 11)} to ${fmt(Date.parse(D.generated)).slice(0, 11)}. There are two sessions, so charts show per-incident detail rather than long-run trends.</p>
+  <div class="grid2">
+   <div class="card ch" style="grid-column:1/-1"><h3>Outcome by session</h3><p>What the automation did with the incidents of each session. "Decision only" means the dispatcher was not connected or live remediation was off.</p>${stack}</div>
+   <div class="card ch"><h3>Seconds from fault injection to the first incident</h3><p>Injected-fault session, one bar per trial. Median ${Math.round(med || 0)} s: Prometheus waits for the alert's duration, then Alertmanager groups.</p>${barChart(delays, 's')}</div>
+   <div class="card ch"><h3>Seconds from fault to verified recovery</h3><p>Live fault-console runs where the playbook ran and the recovery check passed.</p>${barChart(fixes, 's', 'var(--c-auto)')}</div>
+   <div class="card ch"><h3>By cause</h3><p>Over the whole period.</p>${causeBars()}</div>
+  </div>`;
+}
+function viewRuns() {
+  const rows = (D.runs || []).map(r => `<tr><td><b>${esc(r.name)}</b></td><td>${esc(r.when)}</td><td>${esc(r.mode)}</td><td>${esc(r.text)}</td></tr>`).join('');
+  return `<h1>Validation runs</h1><p class="sub">Every session recorded so far: the injected-fault validations and the cloud completion runs. Per-incident detail is shown on the Incidents page for the sessions whose logs list individual incidents.</p>
+  <div class="card tw"><table><thead><tr><th>Run</th><th>When</th><th>Kind</th><th>What it showed</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
 function viewTrends() {
+  if (D.mode === 'real') return viewTrendsReal();
   const live = INC.filter(i => i.action !== 'dry_run');
   return `<h1>Trends, last 12 months</h1><p class="sub">${INC.length} incidents. Dashed lines mark changes to the automation's settings; hover them for the reason. The change log has the full detail.</p>
   <div class="note">How to read this: the dry-run period at the start is when the system only recorded what it would do. After live remediation was approved, the share handled without a person rose and stayed stable.</div>
@@ -320,8 +348,9 @@ function viewPlaybooks() {
   <h1 style="margin-top:18px;font-size:15px">Recent runs that did not recover</h1><div class="card tw"><table><thead><tr><th>Incident</th><th>When</th><th>Playbook</th><th>What happened</th></tr></thead><tbody>${failed}</tbody></table></div>`;
 }
 function viewSettings() {
-  const cur = {}; D.events.forEach(e => cur[e.setting] = e); const names = { live_remediation: 'Live remediation', confidence_threshold: 'Confidence threshold', second_opinion: 'ML second opinion', ambiguity_rule: 'Ambiguity rule', playbook: 'Playbook change' };
-  const kv = Object.entries(cur).filter(([k]) => k !== 'playbook').map(([k, e]) => `<div>${names[k]}</div><div><b>${esc(e.value)}</b> <span class="mute">since ${fmt(Date.parse(e.t)).slice(0, 11)}</span></div>`).join('');
+  const cur = {}; D.events.forEach(e => cur[e.setting] = e); const names = { live_remediation: 'Live remediation', confidence_threshold: 'Confidence threshold', second_opinion: 'ML second opinion', ambiguity_rule: 'Ambiguity rule', playbook: 'Playbook change', deploy: 'Deploy', console: 'Fault console', engine: 'Engine' };
+  const kv = D.current ? Object.entries(D.current).map(([k, v]) => `<div>${names[k]}</div><div><b>${esc(v)}</b></div>`).join('') :
+    Object.entries(cur).filter(([k]) => ['live_remediation', 'confidence_threshold', 'second_opinion', 'ambiguity_rule'].includes(k)).map(([k, e]) => `<div>${names[k]}</div><div><b>${esc(e.value)}</b> <span class="mute">since ${fmt(Date.parse(e.t)).slice(0, 11)}</span></div>`).join('');
   const log = D.events.slice().reverse().map(e => `<tr><td>${fmt(Date.parse(e.t))}</td><td>${names[e.setting] || e.setting}</td><td><b>${esc(e.value)}</b></td><td>${esc(e.by)}</td><td>${esc(e.reason)}</td></tr>`).join('');
   return `<h1>Settings &amp; changes</h1><p class="sub">Every change to what the automation is allowed to do, who made it and why. This is what an auditor reads first.</p>
   <div class="card sec" style="margin-bottom:12px"><h3>In effect now</h3><div class="kv" style="grid-template-columns:200px 1fr">${kv}</div></div>
@@ -334,7 +363,7 @@ function csv() {
   const blob = new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'autosre-incidents.csv'; a.click();
 }
 function render() {
-  const v = { incidents: viewIncidents, trends: viewTrends, services: viewServices, playbooks: viewPlaybooks, settings: viewSettings }[state.view];
+  const v = { incidents: viewIncidents, trends: viewTrends, services: viewServices, playbooks: viewPlaybooks, settings: viewSettings, runs: viewRuns }[state.view];
   $('main').innerHTML = v();
   document.querySelectorAll('nav button[data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === state.view));
   $('n-open').textContent = INC.filter(isOpen).length || ''; $('n-open').style.display = INC.filter(isOpen).length ? '' : 'none';
@@ -352,6 +381,8 @@ $('q').oninput = e => { state.q = e.target.value; state.page = 0; if (state.view
 $('scrim').onclick = closeDrawer; document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
 $('theme').onclick = () => { const dark = document.documentElement.getAttribute('data-theme') === 'dark' || (!document.documentElement.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches); document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark'); };
 $('asof').textContent = fmt(NOW.getTime());
+if (D.mode === 'real') { $('env').textContent = 'lab cluster (autosre namespace)'; state.range = 9999; $('range').value = '9999'; }
+if (D.runs && D.runs.length) $('nav-runs').style.display = '';
 $('signout').onclick = signOut;
 $('loginform').onsubmit = e => { e.preventDefault(); signIn($('user').value); };
 if (ME) { $('me').textContent = ME; } else { showLogin(); }

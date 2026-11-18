@@ -1,9 +1,9 @@
-# AutoSRE incident console (static demo)
+# AutoSRE incident console (static)
 
-A static proposal for how the website could look for its real users: on-call SWE/SRE engineers first, auditors second. The data is generated (seeded, reproducible), so this is a presentation demo, not a connection to a live system.
+A static proposal for how the website could look for its real users: on-call SWE/SRE engineers first, auditors second. Two builds of the same console:
 
-- Open `AutoSRE_Incident_Console.html` (one self-contained file, no server or internet needed). `index.html` + `data.js` is the same site in two files.
-- Sign in with any username (the rota names are offered as shortcuts). The "on call" chip, owners and "Acknowledge" use the signed-in name; nothing is stored except the name in the browser.
-- `python sample-site/gen_data.py` regenerates `data.js` (about 670 incidents over 12 months, ending 2026-11-18 12:00 UTC); `python sample-site/build_single.py` rebuilds the single file.
+- `AutoSRE_Incident_Console_Live.html`: built from the **logs collected so far** (`python sample-site/build_real.py`): the 31 Oct 2026 live validation (17 trials with their real timestamps, alerts and decisions), the 18 Nov 2026 fault-console runs (three simulated, four live, with the recorded times), a "Validation runs" page covering every session, and the real changes to what the automation may do. Fields a log did not record show as `-`. The "what each setting would have decided" rows are computed with the engine's own code from the recorded alerts.
+- `AutoSRE_Incident_Console.html`: a year of generated data (`python sample-site/gen_data.py`) to show what the console looks like with volume.
 
-Pages: Incidents (needs-you list, KPIs, filters, detail drawer), Trends, Services, Playbooks, Settings & changes. The real website (`services/frontend/app.py`) is not touched by this folder.
+Open either file directly (self-contained, no server or internet). Sign in with any username; the "on call" chip, owners and "Acknowledge" use the signed-in name.
+`python sample-site/build_single.py [data.js] [output.html]` rebuilds a single file. The real website (`services/frontend/app.py`) is not touched by this folder.
