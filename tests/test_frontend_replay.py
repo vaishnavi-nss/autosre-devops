@@ -71,3 +71,37 @@ def test_failures_and_escalations_are_red_not_green():
     bad = stages({"root_cause": "db_disk_full", "confidence": 0.85, "alerts": [], "second_opinion": {"verdict": "agree"},
                   "remediation": {"status": "accepted", "execution_id": "z"}}, [{"id": "z", "playbook": "clear_logs.yml", "status": "verification_failed"}])
     assert bad[5]["s"] == "stop" and bad[6]["s"] == "stop"
+
+
+# ---------------------------------------------------------------------------------------------------- transparency mode
+def variant_rows(inc):
+    fn = SRC[SRC.index("function variantRows"):SRC.index("function renderVariants")]
+    script = fn + "\nconsole.log(JSON.stringify(variantRows(%s)));" % json.dumps(inc)
+    return json.loads(subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30, check=True).stdout)
+
+
+def test_the_header_has_the_transparency_switch_off_by_default_and_remembers_the_choice():
+    html = page()
+    assert 'id="tm-btn"' in html and 'role="switch"' in html and 'aria-checked="false"' in html and "Transparency mode" in html
+    assert html.index('id="tm-btn"') > html.index('id="nav-replay"')                 # in the header, after the navigation (top right)
+    assert "body.tm-on .tm-panel { display: block; }" in html and ".tm-panel { display: none;" in html
+    assert "localStorage" in html and "try {" in html
+    assert 'id="tm-exec"' in html and 'id="tm-replay"' in html
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_every_setting_is_listed_with_its_own_decision_whatever_the_real_outcome():
+    inc = {"variants": {"second_opinion_verdict": "disagree", "ambiguous_causes": [], "rows": [
+        {"key": "rules", "label": "Rules only", "action": "act", "playbook": "restart_service.yml", "cause": "db_connection_pool_exhaustion", "reason": "decided by the rules alone", "active": True},
+        {"key": "ml", "label": "Rules + second opinion", "action": "escalate", "cause": "db_connection_pool_exhaustion", "reason": "the second opinion disagrees", "active": False}]}}
+    rows = variant_rows(inc)
+    assert [r["label"] for r in rows] == ["Rules only", "Rules + second opinion"]
+    assert rows[0]["decision"] == "Acts: restart_service.yml" and rows[0]["active"] is True and rows[0]["escalate"] is False
+    assert rows[1]["decision"] == "Escalates to a person" and rows[1]["escalate"] is True and rows[1]["why"] == "the second opinion disagrees"
+    assert variant_rows({}) == [] and variant_rows(None) == []
+
+
+def test_the_variant_panel_writes_cluster_text_through_esc():
+    block = SRC[SRC.index("function renderVariants"):SRC.index("function setTransparency")]
+    for field in ("r.label", "r.decision", "r.why", "v.second_opinion_verdict"):
+        assert "esc(" + field in block, field

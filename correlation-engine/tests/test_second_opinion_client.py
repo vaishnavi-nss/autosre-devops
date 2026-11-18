@@ -140,3 +140,70 @@ def test_for_seconds_match_the_alert_rules():
         amount, kind = re.search(r"for:\s*(\d+)([sm])", block).groups()
         found[name] = int(amount) * unit[kind]
     assert found == so.FOR_SECONDS
+
+
+# ---------------------------------------------------------------------------------------------------- transparency mode
+from transparency import build_variants  # noqa: E402
+from correlate import correlate  # noqa: E402
+
+
+def alert(name, service):
+    return {"status": "firing", "labels": {"alertname": name, "service": service, "severity": "critical"}, "startsAt": "2026-11-18T10:00:00Z"}
+
+
+POOL = [alert("DBPoolNearExhaustion", "transaction-service"), alert("APILatencyHigh", "api-gateway")]
+
+
+def rows(v):
+    return {r["key"]: r for r in v["rows"]}
+
+
+def test_variants_with_an_agreeing_opinion_all_act():
+    v = build_variants(POOL, correlate(POOL, False), {"verdict": "agree"}, "shadow", False)
+    r = rows(v)
+    assert {k: x["action"] for k, x in r.items()} == {"rules": "act", "ml": "act", "amb": "act", "both": "act"}
+    assert r["rules"]["active"] and not r["ml"]["active"] and not r["both"]["active"]          # shadow + ambiguity off is the rules-only row
+    assert v["second_opinion_verdict"] == "agree"
+
+
+def test_a_disagreeing_opinion_only_changes_the_rows_that_use_it():
+    r = rows(build_variants(POOL, correlate(POOL, False), {"verdict": "disagree"}, "shadow", False))
+    assert r["rules"]["action"] == "act" and r["amb"]["action"] == "act"
+    assert r["ml"]["action"] == "escalate" and r["both"]["action"] == "escalate" and "disagrees" in r["ml"]["reason"]
+
+
+def test_two_causes_at_once_escalate_only_where_the_ambiguity_rule_is_on():
+    two = POOL + [alert("ContainerMemoryHigh", "transaction-service")]
+    v = build_variants(two, correlate(two, False), {"verdict": "agree"}, "gate", True)
+    r = rows(v)
+    assert len(v["ambiguous_causes"]) == 2
+    assert r["rules"]["action"] == "act" and r["ml"]["action"] == "act"
+    assert r["amb"]["action"] == "escalate" and r["both"]["action"] == "escalate" and "together" in r["amb"]["reason"]
+    assert r["both"]["active"] and not r["rules"]["active"]                                       # gate + ambiguity on is the 'both' row
+
+
+def test_no_known_cause_escalates_in_every_row_and_no_opinion_is_reported_honestly():
+    noise = [alert("SomethingElse", "frontend")]
+    v = build_variants(noise, correlate(noise, False), None, "shadow", False)
+    assert {x["action"] for x in v["rows"]} == {"escalate"} and v["second_opinion_verdict"] == "not consulted"
+
+
+def test_the_webhook_records_the_variants_for_every_incident(monkeypatch):
+    enable(monkeypatch, "shadow", fake("disagree"))
+    monkeypatch.setattr(engine, "ESCALATE_ON_AMBIGUITY", False)
+    from fastapi.testclient import TestClient
+    body = TestClient(engine.app).post("/alerts", json={"alerts": POOL}).json()
+    r = rows(body["variants"])
+    assert body["status"] == "correlated" and r["rules"]["action"] == "act" and r["ml"]["action"] == "escalate"       # shown even though shadow mode acted
+    assert engine.RECENT_INCIDENTS[-1]["variants"] == body["variants"]
+
+
+def test_with_the_ambiguity_rule_on_the_blocked_incident_still_shows_what_the_rules_alone_would_do(monkeypatch):
+    enable(monkeypatch, "shadow", fake("agree"))
+    monkeypatch.setattr(engine, "ESCALATE_ON_AMBIGUITY", True)
+    from fastapi.testclient import TestClient
+    two = POOL + [alert("ContainerMemoryHigh", "transaction-service")]
+    body = TestClient(engine.app).post("/alerts", json={"alerts": two}).json()
+    r = rows(body["variants"])
+    assert body["action"] == "escalate_to_human" and r["rules"]["action"] == "act" and r["amb"]["action"] == "escalate"
+    assert body["variants"]["second_opinion_verdict"] == "agree"

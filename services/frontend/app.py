@@ -138,6 +138,8 @@ async def serve_dashboard():
           display: flex;
           align-items: center;
           justify-content: space-between;
+          flex-wrap: wrap;
+          gap: 0.8rem 1.5rem;
           padding: 1.15rem 3rem;
           background: var(--navy-deep);
           color: #ffffff;
@@ -234,6 +236,21 @@ async def serve_dashboard():
         .logbox .k-ok { color: #6FD3A5; }
         .logbox .k-bad { color: #FF8F8F; }
         @media (max-width: 900px) { .pipe { grid-template-columns: repeat(2, 1fr); } }
+        /* Transparency mode: the toggle in the header and the panels it reveals */
+        .hdr-right { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem 1rem; margin-left: auto; }
+        @media (max-width: 900px) { header { padding: 0.9rem 1rem; } }
+        .tm { display: flex; align-items: center; gap: 0.55rem; background: transparent; border: 0; color: #ffffff; font: inherit; font-size: 0.8rem; font-weight: 600; cursor: pointer; padding: 0.2rem 0.3rem; }
+        .tm-track { width: 38px; height: 20px; border-radius: 99px; background: rgba(255,255,255,0.25); position: relative; transition: background 0.2s; flex: none; }
+        .tm-knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #ffffff; transition: left 0.2s; }
+        .tm[aria-checked="true"] .tm-track { background: var(--gold-accent); }
+        .tm[aria-checked="true"] .tm-knob { left: 20px; }
+        .tm-panel { display: none; margin-top: 0.9rem; border-top: 1px dashed var(--border-strong); padding-top: 0.8rem; }
+        body.tm-on .tm-panel { display: block; }
+        .tm-panel .tm-title { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.3rem; }
+        .tm-panel table td, .tm-panel table th { font-size: 0.78rem; }
+        .tm-panel tr.tm-active td { background: var(--status-ok-bg); font-weight: 600; }
+        .tm-act { color: var(--status-ok); font-weight: 700; }
+        .tm-esc { color: var(--status-err); font-weight: 700; }
         .view-section { display: none; }
         .view-section.active { display: block; animation: fadeIn 0.3s ease-out forwards; }
 
@@ -411,10 +428,15 @@ async def serve_dashboard():
             <span class="brand-tag">Autonomous Reliability & Telemetry</span>
           </div>
         </div>
+        <div class="hdr-right">
         <div class="nav-links">
           <button id="nav-dash" class="nav-btn active" onclick="switchView('dashboard')">Executive Overview</button>
           <button id="nav-status" class="nav-btn" onclick="switchView('status')">Telemetry & Deep-Dive</button>
           <button id="nav-replay" class="nav-btn" onclick="switchView('replay')">Fault Replay</button>
+        </div>
+        <button id="tm-btn" class="tm" role="switch" aria-checked="false" onclick="toggleTransparency()" title="Show what the rules alone, the ML second opinion and the ambiguity rule would each have decided for every incident">
+          <span class="tm-track"><span class="tm-knob"></span></span><span>Transparency mode</span>
+        </button>
         </div>
       </header>
 
@@ -559,6 +581,7 @@ async def serve_dashboard():
                   <tr><td>Dispatcher decision</td><td id="inc-disp">-</td></tr>
                   <tr><td>Received</td><td id="inc-time">-</td></tr>
                 </table>
+                <div class="tm-panel" id="tm-exec"></div>
               </div>
 
               <div class="card" style="border-top: 3px solid var(--navy-mid);">
@@ -611,6 +634,7 @@ async def serve_dashboard():
             </div>
             <p id="rp-why" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">Nothing to replay yet. When a fault raises alerts, each stage below lights up with what the system actually saw and decided.</p>
             <div id="rp-pipe" class="pipe"></div>
+            <div class="tm-panel" id="tm-replay"></div>
           </div>
 
           <div class="grid-2">
@@ -775,6 +799,8 @@ async def serve_dashboard():
           badge('recovery-badge', rec[0], rec[1]);
 
           renderReplay(st, inc);
+          renderVariants(document.getElementById('tm-exec'), inc);
+          renderVariants(document.getElementById('tm-replay'), inc);
 
           if (st.pool && st.pool.active !== null && st.pool.max !== null) setText('stat-pool', Math.round(st.pool.active) + ' / ' + Math.round(st.pool.max));
           if (st.disk !== null && st.disk !== undefined) setText('stat-disk', Math.round(st.disk * 100) + '%');
@@ -862,6 +888,39 @@ async def serve_dashboard():
               '</td><td>' + esc(i.second_opinion ? i.second_opinion.verdict : '-') + '</td><td>' + esc(rm ? rm.status : (i.action || '-')) + '</td></tr>';
           }).join('') : '<tr><td colspan="5" style="color: var(--text-muted);">none yet</td></tr>';
         }
+
+        // ---- Transparency mode. variantRows() is pure (incident in, table rows out) so it can be tested without a browser.
+        function variantRows(inc) {
+          const v = inc && inc.variants;
+          if (!v || !v.rows) return [];
+          return v.rows.map(function (r) {
+            return {label: r.label, active: !!r.active, escalate: r.action !== 'escalate' ? false : true,
+                    decision: r.action === 'act' ? 'Acts: ' + (r.playbook || r.cause || '-') : 'Escalates to a person',
+                    why: r.reason || ''};
+          });
+        }
+
+        function renderVariants(el, inc) {
+          const rows = variantRows(inc);
+          if (!rows.length) { el.innerHTML = '<div class="tm-title">Transparency mode</div><div style="font-size:0.78rem;color:var(--text-muted)">No decision data for this incident yet.</div>'; return; }
+          const v = inc.variants;
+          el.innerHTML = '<div class="tm-title">What each setting would have decided (shown whatever the real outcome was)</div>' +
+            '<table><thead><tr><th>Setting</th><th>Decision</th><th>Why</th></tr></thead><tbody>' + rows.map(function (r) {
+              return '<tr class="' + (r.active ? 'tm-active' : '') + '"><td>' + esc(r.label) + (r.active ? ' (in use now)' : '') + '</td><td class="' + (r.escalate ? 'tm-esc' : 'tm-act') + '">' + esc(r.decision) + '</td><td>' + esc(r.why) + '</td></tr>';
+            }).join('') + '</tbody></table><div style="font-size:0.72rem;color:var(--text-muted);margin-top:0.4rem">Second opinion said: ' + esc(v.second_opinion_verdict) +
+            '. Causes whose deciding alerts fired together: ' + esc((v.ambiguous_causes || []).length ? v.ambiguous_causes.join(', ') : 'none or one') + '.</div>';
+        }
+
+        function setTransparency(on) {
+          document.body.classList.toggle('tm-on', on);
+          document.getElementById('tm-btn').setAttribute('aria-checked', on ? 'true' : 'false');
+        }
+        function toggleTransparency() {
+          const on = !document.body.classList.contains('tm-on');
+          setTransparency(on);
+          try { localStorage.setItem('autosre-transparency', on ? '1' : '0'); } catch (e) { /* a private window has no storage; the toggle still works */ }
+        }
+        try { setTransparency(localStorage.getItem('autosre-transparency') === '1'); } catch (e) { /* keep it off */ }
 
         async function pollState() {
           try { renderState(await (await fetch('/api/state')).json()); } catch (e) { /* the probe table already shows connectivity */ }

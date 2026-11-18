@@ -40,6 +40,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_late
 import second_opinion
 from correlate import correlate, firing_only, why_unmatched
 from signatures import SIGNATURES
+from transparency import build_variants
 
 SERVICE_NAME = os.getenv("SERVICE_NAME", "correlation-engine")
 CAPTURE_PATH = os.getenv("CAPTURE_PATH")  # unset = capture disabled
@@ -137,8 +138,12 @@ async def receive_alerts(payload: dict):
     )
 
     result = correlate(firing, ESCALATE_ON_AMBIGUITY)
+    rules_only = result if not ESCALATE_ON_AMBIGUITY else correlate(firing, False)     # for transparency mode: what the rules alone would say
 
     if result is None:
+        opinion0 = None
+        if rules_only is not None and SECOND_OPINION_URL:                   # ambiguity rule stopped it before the second opinion was asked; ask for the record
+            opinion0 = await _second_opinion(rules_only, firing)
         reason = why_unmatched(firing, ESCALATE_ON_AMBIGUITY)
         unmatched_incidents_total.labels(SERVICE_NAME).inc()
         log.warning("no root cause, escalating to a human: %s", reason)
@@ -149,6 +154,7 @@ async def receive_alerts(payload: dict):
             "action": "escalate_to_human",
             "reason": reason,
             "received_alerts": len(firing),
+            "variants": build_variants(firing, rules_only, opinion0, SECOND_OPINION_MODE, ESCALATE_ON_AMBIGUITY),
         })
 
     opinion = None
@@ -168,6 +174,7 @@ async def receive_alerts(payload: dict):
                 "rule_confidence": result["confidence"],
                 "second_opinion": opinion,
                 "received_alerts": len(firing),
+                "variants": build_variants(firing, rules_only, opinion, SECOND_OPINION_MODE, ESCALATE_ON_AMBIGUITY),
             })
 
     root_causes_identified_total.labels(SERVICE_NAME, result["root_cause"]).inc()
@@ -175,7 +182,8 @@ async def receive_alerts(payload: dict):
     log.info("root cause: %s (%s)", result["root_cause"], result["explanation"])
     remediation = await _dispatch_remediation(result, opinion)
 
-    response = {"status": "correlated", "received_alerts": len(firing), **result}
+    response = {"status": "correlated", "received_alerts": len(firing), **result,
+                "variants": build_variants(firing, rules_only, opinion, SECOND_OPINION_MODE, ESCALATE_ON_AMBIGUITY)}
     if opinion is not None:
         response["second_opinion"] = opinion
     if remediation is not None:
@@ -249,6 +257,7 @@ def _remember(firing: list, response: dict) -> None:
         "reason": response.get("reason"),
         "alerts": [{"alertname": a.get("labels", {}).get("alertname"), "service": a.get("labels", {}).get("service")}
                    for a in firing],
+        "variants": response.get("variants"),
         "second_opinion": {k: so.get(k) for k in ("verdict", "reason", "scorer_service", "scorer_fault", "confidence")} if so else None,
         "remediation": {k: rem.get(k) for k in ("status", "reason", "playbook", "target_service", "execution_id",
                                                  "cooldown_remaining_s", "second_opinion")} if rem else None,
