@@ -65,7 +65,8 @@ class FakeCluster:
 
     def scale_out(self, n):
         s = self.state
-        s["generation"] += 1
+        if s["replicas"] != n:                                  # scaling to the count it already has changes nothing
+            s["generation"] += 1
         s.update(replicas=n, observed=s["generation"], updated=n if self.settle else 1, ready=n if self.settle else 1,
                  available=n if self.settle else 1)
 
@@ -91,6 +92,8 @@ def isolated(monkeypatch):
             fake.restart()
         elif "scale" in play:
             fake.scale_out(int(yaml_vars(cmd)["replicas"]))
+            if yaml_vars(cmd).get("replace_pods") and fake.__dict__.get("roll", True):
+                fake.restart()                                  # the playbook also rolls every pod
         return subprocess.CompletedProcess(cmd, fake.__dict__.get("rc", 0), "ok", "")
 
     monkeypatch.setattr(disp.subprocess, "run", fake_run)
@@ -178,6 +181,7 @@ def test_a_diagnosis_for_the_wrong_service_is_refused():
     ({"playbook": "scale_replicas.yml", "extra_vars": {"target_service": "transaction-service", "replicas": 50}}, "replicas must be"),
     ({"playbook": "scale_replicas.yml", "extra_vars": {"target_service": "transaction-service", "replicas": 0}}, "replicas must be"),
     ({"playbook": "scale_replicas.yml", "extra_vars": {"target_service": "transaction-service", "replicas": "many"}}, "not an integer"),
+    ({"playbook": "scale_replicas.yml", "extra_vars": {"target_service": "transaction-service", "replicas": 3, "replace_pods": "yes"}}, "true or false"),
 ])
 def test_a_tampered_map_cannot_widen_what_runs(entry, reason, monkeypatch, tmp_path):
     bad = tmp_path / "remediation_map.yml"
@@ -488,3 +492,33 @@ def test_the_manifest_gives_the_history_a_persistent_volume():
     assert {"name": "EXEC_LOG", "value": "/data/executions.jsonl"} in pod["containers"][0]["env"]
     assert pod["volumes"][0]["persistentVolumeClaim"]["claimName"] == "remediation-dispatcher-history"
     assert any(d and d["kind"] == "PersistentVolumeClaim" and d["metadata"]["name"] == "remediation-dispatcher-history" for d in docs)
+
+
+# ----------------------------------------------------------------------------------------------------- memory: scale out AND replace the pods
+def test_the_memory_fix_scales_out_and_replaces_the_pods(isolated):
+    plan = disp.decide(MEM)
+    assert plan["playbook"] == "scale_replicas.yml" and plan["extra_vars"]["replace_pods"] is True and plan["extra_vars"]["replicas"] == 3
+    rec = disp.run_execution(_accept(MEM), sleep=lambda s: None)
+    assert rec["status"] == "succeeded" and rec["after"]["generation"] == 3          # one for the scale, one for rolling the pods
+    assert yaml_vars(isolated.ran[-1])["replace_pods"] is True
+
+
+def test_a_scale_out_that_left_the_old_pods_running_is_not_a_recovery(isolated):
+    isolated.roll = False                                   # the playbook "succeeded" but the pods were never rolled
+    rec = disp.run_execution(_accept(MEM), sleep=lambda s: None)
+    assert rec["status"] == "verification_failed" and "pods were not replaced" in rec["reason"]
+    assert rec["rolled_back_to"] == 1                       # and the scale-out is undone as before
+
+
+def test_when_the_count_is_already_right_rolling_the_pods_is_enough(isolated):
+    isolated.state.update(replicas=3, updated=3, ready=3, available=3)
+    rec = disp.run_execution(_accept(MEM), sleep=lambda s: None)
+    assert rec["status"] == "succeeded" and rec["after"]["generation"] == 2          # only the roll changed the generation
+
+
+def test_the_scale_playbook_replaces_pods_only_when_asked_and_waits_for_the_new_ones():
+    text = (ROOT / "ansible" / "playbooks" / "scale_replicas.yml").read_text()
+    assert "replace_pods: false" in text and "replace_pods is boolean" in text           # off by default, and guarded
+    assert text.count("when: replace_pods | bool") == 3 and "restartedAt" in text
+    assert "after_scale.resources[0].metadata.generation" in text                        # waits for a roll AFTER the scale, not the scale itself
+    assert (ROOT / "ansible" / "remediation_map.yml").read_text().count("replace_pods: true") == 1       # only the memory cause uses it

@@ -97,25 +97,35 @@ class Console:
         self.lock = threading.Lock()
         self.proc: subprocess.Popen | None = None
         self.job: dict | None = None
-        self._auto_cache = (0.0, None)
+        self._auto = "starting"
 
     def runner_pids(self) -> list[str]:
         out = subprocess.run(["pgrep", "-f", RUNNER_PATTERN], capture_output=True, text=True).stdout.split()
         return out
 
     def auto_remediate(self) -> str:
-        at, val = self._auto_cache
-        if time.monotonic() - at < 5:
-            return val
+        """The last value the background refresher read. It never calls kubectl itself, so a slow or busy cluster cannot make the status
+        page hang (it did once, when every poll ran kubectl on the request thread)."""
+        return self._auto
+
+    def refresh_auto(self) -> None:
         try:
             raw = subprocess.run(["kubectl", "-n", "autosre", "get", "deploy", "remediation-dispatcher", "-o",
                                   "jsonpath={.spec.template.spec.containers[0].env[?(@.name=='AUTO_REMEDIATE')].value}"],
-                                 capture_output=True, text=True, timeout=15).stdout.strip()
-            val = raw or "unknown"
-        except Exception:                                       # noqa: BLE001
-            val = "unknown"
-        self._auto_cache = (time.monotonic(), val)
-        return val
+                                 capture_output=True, text=True, timeout=10).stdout.strip()
+            self._auto = raw or "unknown"
+        except Exception:                                       # noqa: BLE001 - keep the last value, mark it unknown only if never read
+            if self._auto == "starting":
+                self._auto = "unknown"
+
+    def start_refresher(self, every_s: float = 5.0) -> threading.Thread:
+        def loop():
+            while True:
+                self.refresh_auto()
+                time.sleep(every_s)
+        thread = threading.Thread(target=loop, name="auto-remediate-refresher", daemon=True)
+        thread.start()
+        return thread
 
     def running(self) -> bool:
         return bool(self.proc and self.proc.poll() is None) or bool(self.runner_pids())
@@ -219,6 +229,7 @@ def main() -> int:
     allow_live = os.environ.get("FAULT_CONSOLE_ALLOW_LIVE") == "1"
     Path(a.results).mkdir(parents=True, exist_ok=True)
     console = Console(Path(a.repo), Path(a.results), token, allow_live)
+    console.start_refresher()
     print(f"fault console on {a.host}:{a.port} (live runs {'ALLOWED' if allow_live else 'off'}); token file {tf}", flush=True)
     ThreadingHTTPServer((a.host, a.port), make_handler(console)).serve_forever()
     return 0

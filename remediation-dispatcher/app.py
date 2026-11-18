@@ -45,7 +45,7 @@ MAP_FILE = ANSIBLE_DIR / "remediation_map.yml"
 # What each approved playbook may touch. A map entry outside this table is refused even if the file says otherwise.
 POLICY = {
     "restart_service.yml": {"targets": {"transaction-service"}, "vars": {"target_service"}},
-    "scale_replicas.yml": {"targets": {"transaction-service"}, "vars": {"target_service", "replicas"}},
+    "scale_replicas.yml": {"targets": {"transaction-service"}, "vars": {"target_service", "replicas", "replace_pods"}},
     "clear_logs.yml": {"targets": {"database"}, "vars": {"target_service"}},
 }
 ALLOWED_PLAYBOOKS = set(POLICY)               # kept for callers that import it
@@ -206,6 +206,9 @@ def decide(payload: dict, cfg: dict | None = None) -> dict:
             return {**base, "status": "escalated", "reason": f"replicas must be 1 to {cfg['max_replicas']}", "playbook": playbook}
         extra["replicas"] = replicas
 
+    if "replace_pods" in extra and not isinstance(extra["replace_pods"], bool):
+        return {**base, "status": "escalated", "reason": "replace_pods must be true or false", "playbook": playbook}
+
     service = payload.get("service")
     if service and service != target:
         return {**base, "status": "escalated", "reason": f"Diagnosed service {service!r} differs from the playbook target {target!r}",
@@ -316,6 +319,12 @@ def verify(record: dict, before: dict, cfg: dict, sleep=time.sleep) -> tuple[boo
                 want = record["extra_vars"]["replicas"]
                 ok = settled and now["replicas"] == want
                 why = f"{now['ready']}/{want} replicas ready" if not ok else f"{want} replicas ready"
+                if ok and record["extra_vars"].get("replace_pods"):
+                    # a scale that changes the count is one generation and rolling the pods is another; if the count was already right only
+                    # the roll counts. Fewer means the old pods (and any leak in them) are still there.
+                    needed = before["generation"] + (2 if before["replicas"] != want else 1)
+                    if now["generation"] < needed:
+                        ok, why = False, f"the pods were not replaced (generation {before['generation']} -> {now['generation']})"
             else:                                               # clear_logs.yml: the deployment must be untouched and healthy
                 ok = settled and now["generation"] == before["generation"]
                 why = "deployment healthy" if ok else f"deployment not settled: {now}"

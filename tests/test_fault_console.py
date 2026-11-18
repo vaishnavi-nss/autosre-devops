@@ -124,3 +124,31 @@ def test_only_one_run_at_a_time(tmp_path, monkeypatch):
     monkeypatch.setattr(console, "runner_pids", lambda: ["123"])        # a runner is already going (maybe not started here)
     ok, msg = console.start("pool", "simulate")
     assert ok is False and "already in progress" in msg
+
+
+def test_the_status_never_waits_for_kubectl(tmp_path, monkeypatch):
+    """A slow cluster must not be able to hang the status page: status() reads a cached value and runs no kubectl."""
+    console = fc.Console(ROOT, tmp_path, "t", allow_live=False)
+    monkeypatch.setattr(console, "runner_pids", lambda: [])
+
+    def boom(*a, **k):
+        raise AssertionError("status() must not run a subprocess")
+    monkeypatch.setattr(fc.subprocess, "run", boom)
+    st = console.status()
+    assert st["auto_remediate"] == "starting" and st["running"] is False
+
+
+def test_the_refresher_keeps_the_last_good_value_when_kubectl_fails(tmp_path, monkeypatch):
+    console = fc.Console(ROOT, tmp_path, "t", allow_live=False)
+
+    class Done:                                                 # what subprocess.run returns
+        stdout = "false " + chr(10)
+    monkeypatch.setattr(fc.subprocess, "run", lambda *a, **k: Done())
+    console.refresh_auto()
+    assert console.auto_remediate() == "false"
+
+    def slow(*a, **k):
+        raise TimeoutError("kubectl took too long")
+    monkeypatch.setattr(fc.subprocess, "run", slow)
+    console.refresh_auto()
+    assert console.auto_remediate() == "false"                  # not replaced by a guess

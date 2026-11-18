@@ -13,10 +13,11 @@ remediations:
 
   high_memory_usage:
     playbook: scale_replicas.yml
-    description: Increase replica count
+    description: Increase replica count, then replace the pods so the leaking one does not survive
     extra_vars:
       target_service: transaction-service
       replicas: 3
+      replace_pods: true
 
   db_disk_full:
     playbook: clear_logs.yml
