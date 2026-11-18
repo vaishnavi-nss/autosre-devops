@@ -16,6 +16,8 @@ case "$NAME" in
   sim-act)      MODE=simulate; LIST="down:database down:transaction-service down:api-gateway rollout:tx-crash rollout:gw-crash selector:database selector:transaction-service selector:api-gateway" ;;
   sim-drift)    MODE=simulate; LIST="paused:transaction-service paused:api-gateway svctype:database svctype:transaction-service svctype:api-gateway drift:replicas" ;;
   live-drift)   MODE=live;     LIST="paused:transaction-service paused:api-gateway svctype:database svctype:transaction-service svctype:api-gateway drift:replicas" ;;
+  live-all)     MODE=live;     LIST="down:database down:transaction-service down:api-gateway rollout:tx-crash rollout:gw-crash selector:database selector:transaction-service selector:api-gateway paused:transaction-service paused:api-gateway svctype:database svctype:transaction-service svctype:api-gateway drift:replicas pool memory disk" ;;
+  sim-one-*)    MODE=simulate; LIST="$(echo "${NAME#sim-one-}" | tr ',' ' ')" ;;
   live-act)     MODE=live;     LIST="down:database down:transaction-service down:api-gateway rollout:tx-crash rollout:gw-crash selector:database selector:transaction-service selector:api-gateway" ;;
   live-*)       MODE=live;     LIST="$(echo "${NAME#live-}" | tr ',' ' ')" ;;
   sim-*)        MODE=simulate; LIST="$(echo "${NAME#sim-}" | tr ',' ' ')" ;;
