@@ -177,13 +177,15 @@ spec:
 
         # The memory fix scales the transaction service out to 3 replicas and leaves them. If they are still there 10 minutes later the incident is over and the
         # extra replicas are just cost.
+        # severity is `warning`, not `info`: kube-prometheus-stack's default Alertmanager config inhibits every `severity="info"` alert in a namespace (InfoInhibitor), so an
+        # info alert fires in Prometheus but is never delivered to the correlation engine. Found live (drift:replicas, 2026-11-19).
         - alert: ReplicasAboveBaseline
           expr: >-
             kube_deployment_spec_replicas{namespace="autosre", deployment="transaction-service"} > 1
           for: 10m
           labels:
             namespace: autosre
-            severity: info
+            severity: warning
             service: "{{ $labels.deployment }}"
           annotations:
             summary: "{{ $labels.deployment }} still has extra replicas 10 minutes after they were added"

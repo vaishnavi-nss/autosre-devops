@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 from correlate import ambiguous_causes, correlate
 from signatures import SIGNATURES
@@ -137,3 +138,11 @@ def test_the_gateway_is_named_on_its_deciding_alert_alone_because_it_cannot_repo
     # the database and transaction service are different: errors surface above them, so their lone alert stays under the gate
     assert correlate(fire(("DeploymentUnavailable", "database")))["confidence"] < 0.75
     assert correlate(fire(("ServiceHasNoEndpoints", "transaction-service")))["confidence"] < 0.75
+
+
+def test_no_alert_uses_severity_info_because_the_chart_default_alertmanager_inhibits_it():
+    """kube-prometheus-stack ships an InfoInhibitor rule (source alertname=InfoInhibitor, target severity=info, equal namespace). An info alert is shown in Prometheus
+    and Alertmanager but never delivered to the correlation engine, which is how ReplicasAboveBaseline went unseen in the live drift:replicas run."""
+    rules = yaml.safe_load((ROOT / "monitoring" / "alert-rules.yaml").read_text(encoding="utf-8"))
+    sev = {r["alert"]: r["labels"]["severity"] for g in rules["spec"]["groups"] for r in g["rules"]}
+    assert sev and "info" not in sev.values(), sev
