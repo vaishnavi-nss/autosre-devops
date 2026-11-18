@@ -171,6 +171,26 @@ Things this turned up (all fixed): the console's log parser missed the runner's 
 
 Access: the user asked for the Jenkins admin password and the fault console token to be the word `password`, and set that on the instance. That is acceptable only because each port is reachable from the user's own IP alone (security-group rules the user added, to be deleted after the demo); both services can change the cluster, so never leave them open or reuse those values.
 
+### Evidence screenshots (2026-11-18)
+
+Saved in `docs/completion/screenshots/`. Taken from the user's own browser against the lab instance, and from GitHub.
+
+| File | What it shows |
+|---|---|
+| `50-dashboard-executive-idle.jpg` | The deployed dashboard, Executive Overview, healthy and idle |
+| `20-grafana-autosre-top.jpg` | Grafana "AutoSRE": confidence 85%, 6 incidents received, 3 escalated, root causes (2 pool, 1 disk), p95 latency and error panels |
+| `30-prometheus-up.jpg` | Prometheus: every `autosre` target `up` |
+| `10-console-disk-simulate-preparing.jpg`, `11-console-status-unreachable.jpg` | The fault console running a simulated disk fault (phase "preparing", auto-remediation OFF), then the console's status call hanging |
+| `40-jenkins-job-before-first-build.jpg` | Jenkins 2.580.2, job `autosre-cicd` present, no builds yet |
+| `60` to `69-github-*.jpg` | The repository on GitHub: branch with 61 commits, commit list, docs folder, this report rendered, scripts folder, the Jenkinsfile, the two open pull requests, branches, the ML code folder, the project guide |
+| `90-aws-lab-session-expired.jpg` | CloudShell after the lab session ended: the environment no longer exists |
+
+**What this session did and did not finish (stated plainly).** A simulated disk run was started from the fault console API at 01:49 UTC and was **interrupted** when the AWS Academy lab session expired
+(about 01:55 UTC); no simulated or live run completed through the console, so there is **no new pass or fail result** from it, and none is claimed. Simulate mode keeps `AUTO_REMEDIATE=false`, so the cut-off could not
+leave live remediation on; it may have left fault injection switched on in `transaction-service` and `database`, which the launcher resets on the next run. The live runs, the screenshots during a fault and after recovery,
+the Jenkins build and the AWS console pages are still to do once the lab is running again. While the cluster was busy the console's status call also hung for more than 20 s (it runs `kubectl` on every poll); this is a
+console weakness to fix (cache longer, or return the last known state on a timeout).
+
 ## Runs, in order
 
 | Run | Mode | What it showed |
@@ -236,7 +256,8 @@ Access: the user asked for the Jenkins admin password and the fault console toke
 
 New things this work found and did **not** fix:
 - The one scorer disagreement on a real memory fault (above). Retraining on real-fault trials was tried and changed nothing measurable; the open question is whether the engine's estimated `fault_start` window differs from the true-start windows I recorded.
-- The fault console's buttons and the Jenkins `autosre-cicd` job are built and the pages open, but neither has been run against the cluster yet; the first Simulate press and the first pipeline build are the real tests.
+- The fault console's buttons and the Jenkins `autosre-cicd` job are built and the pages open, but neither has finished a run against the cluster yet (a simulated disk run was interrupted by the lab session ending); the first completed Simulate run and the first pipeline build are the real tests.
+- The fault console's status call can hang when the cluster is busy (it runs `kubectl` for every poll), which made the page show "console unreachable".
 - The dispatcher's cumulative counters (not the execution list or cooldowns) still reset on a restart.
 - Lab caveats: the instance runs a single-node Minikube on 2 vCPUs, so timings are not production numbers, and every fault is started by the runner.
 

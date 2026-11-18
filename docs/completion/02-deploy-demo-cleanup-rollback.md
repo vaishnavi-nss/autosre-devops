@@ -3,6 +3,85 @@
 Applies to branch `devops-completion`. Everything runs in the `autosre` namespace of one Minikube cluster (a laptop, or the AWS lab
 instance). Do not run any of this against a shared or production cluster.
 
+## Start here: what was done, end to end (for the whole team)
+
+This section is for anyone joining the project. It says what AutoSRE is, what was built and checked, what it looks like, and what is still open, without
+needing to read code. The ML part has its own 10-page guide: [`AutoSRE-ML-code-and-results.pdf`](AutoSRE-ML-code-and-results.pdf).
+
+### What AutoSRE does, in one picture
+
+A banking-style demo app (frontend, API gateway, transaction service, database) runs on Kubernetes. When something goes wrong, AutoSRE should notice, work out why,
+check itself, and fix it, or hand it to a human when it is not sure:
+
+```
+real fault -> Prometheus alert -> Alertmanager -> correlation engine (rules name the cause)
+           -> ML second opinion (do the raw metrics agree?) -> dispatcher gate -> Ansible playbook -> Kubernetes recovery
+```
+
+Three faults are supported: **pool** (the database connection pool is exhausted, so requests time out), **memory** (a container holds too much memory and slows down),
+**disk** (the database's log directory fills, so writes fail). Each has one approved fix: restart the service, scale it out, or clear old logs.
+Anything unknown, low-confidence, disputed by the ML, or repeated inside the cooldown is escalated to a human and nothing runs.
+
+### Where it runs
+
+| Piece | What it is |
+|---|---|
+| The cluster | One Minikube (single-node Kubernetes) on one AWS Academy lab EC2 instance (`t3.large`), in an isolated `autosre` namespace. Monitoring lives in `monitoring`. |
+| The code | GitHub repo `vaishnavi-nss/autosre-devops`, branch `devops-completion` (the other branches were left alone). |
+| How we reach it | AWS Systems Manager (no SSH keys) and CloudShell; results are copied to an S3 bucket. |
+| Browser pages (demo) | Dashboard :8081, Grafana :3000, Prometheus :9090, Fault console :8082, Jenkins :8080. Each is opened from your own IP only. |
+
+### What was done, in order
+
+1. **Audited** the teammate's branch: 150 tests passed, but the dispatcher (the part that actually fixes things) had no tests and no safety limits.
+2. **Built the safety layer**: confidence gate (0.75), ML must agree, cooldown, one fix at a time, `AUTO_REMEDIATE=false` by default, verification after every fix.
+3. **Made the faults real**: the pool fault leaks real slots, the memory fault holds real memory, the disk fault writes real bytes until writes fail with HTTP 507.
+4. **Ran it on the real cluster, 14+ times**, found and fixed 14 bugs that only a real cluster shows (the report lists them), and counted results: pool 5/5, disk 4/4, memory 3 acted of 4 (1 correctly escalated).
+5. **Checked the pages in a browser** (dashboard and Grafana), found four display defects, fixed them.
+6. **Tested the ML honestly**: compared a public-dataset model with one trained on our own faults; retrained on real faults and found no gain (so nothing was changed).
+7. **Checked the AWS side from a cold start** (instance stopped and started, cluster rebuilt): 5 of 5 scenarios passed. Removed three unrelated instances at your request.
+8. **Fixed history loss**: the dispatcher now keeps its execution history and cooldowns across restarts (a small persistent volume). Proved live: after a restart the cooldown was still counting down.
+9. **Added the demo console**: Grafana, Prometheus, a Fault console with Simulate / Live buttons, and a Jenkins CI/CD pipeline.
+
+### What each page shows (screenshots in `screenshots/`)
+
+| Page | What to look at | Screenshot |
+|---|---|---|
+| Dashboard (Executive) | One-glance health: status, latency, availability, the request path | ![dashboard](screenshots/50-dashboard-executive-idle.jpg) |
+| Grafana, "AutoSRE" dashboard | The engine's decisions (confidence, incidents, root causes), then symptoms, then remediation and recovery | ![grafana](screenshots/20-grafana-autosre-top.jpg) |
+| Prometheus | Raw metrics and alerts; ten prepared queries (health, alerts, pool, disk, latency, incidents, decisions, executions) | ![prometheus](screenshots/30-prometheus-up.jpg) |
+| Fault console | Pick a fault, choose Simulate or Live, watch phase, auto-remediation state and the runner log | ![console](screenshots/10-console-disk-simulate-preparing.jpg) |
+| Jenkins job `autosre-cicd` | Test, build the seven images, deploy, verify (never leaves live remediation on) | ![jenkins](screenshots/40-jenkins-job-before-first-build.jpg) |
+| GitHub, branch `devops-completion` | 61 commits, 56 ahead of `main`; docs, scripts, tests | ![github](screenshots/60-github-repo-devops-completion.jpg) |
+
+More GitHub views are in `screenshots/` (commits, docs folder, the test report, scripts, Jenkinsfile, pull requests, branches, the ML code folder).
+
+### Simulate versus Live (read this before pressing a button)
+
+| | Simulate | Live |
+|---|---|---|
+| The fault | real, injected | real, injected |
+| `AUTO_REMEDIATE` | stays **false** | switched **on for that run only**, then restored to false |
+| What the system does | alerts, diagnoses, records what it *would* do | does all that **and runs the approved Ansible playbook** |
+| Counts as recovery? | **No**, never reported as one | Yes, only if an independent check confirms recovery |
+| Needs | the access token | the token **and** typing LIVE, **and the owner's approval** |
+
+Only one run at a time. **Stop and restore safe settings** ends a run. A run takes about 3 to 6 minutes. Never point this at a shared or production cluster.
+
+### Honest status (as of 2026-11-18)
+
+* **Proven on the real cluster**: all three faults detected, diagnosed, checked by the ML, fixed by Ansible, and independently verified as recovered; unknown causes escalate; the history survives a restart.
+* **Built and opened in a browser, but not yet exercised end to end**: the fault console's buttons (unit tested; a simulated disk run was started and was interrupted when the lab session expired), and the Jenkins job (signs in, job present, not yet built).
+* **Not yet captured**: screenshots of the dashboards *during* a fault and *after* recovery, of a Jenkins build, and of the AWS console pages (EC2, Systems Manager, S3). They need the lab running again.
+* **Known open items**: one ML disagreement on a real memory fault is unexplained; a memory scale-out does not remove the leak (a person must replace the pod); the lab is single-node, so timings are not production numbers.
+* **Two passwords were set to the word `password` at the owner's request** (Jenkins admin and the fault console token). Fine for a throwaway lab reachable only from one IP; never reuse them.
+
+### If the lab session ends
+
+The AWS Academy lab stops after about four hours and the instance's public address changes when it is restarted. After pressing **Start Lab** again: start Minikube on the instance,
+run `scripts/aws/expose.sh` (the pages), check `kubectl -n autosre get deploy` shows all deployments ready, and confirm `AUTO_REMEDIATE` is `false` before anything else.
+A run that was cut off may leave fault injection switched on in the two services; the launcher forces the safe defaults, or use the commands under "Clean up".
+
 ## Safe defaults (what the manifests ship with)
 
 | Setting | Default | Where |
