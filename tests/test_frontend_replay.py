@@ -224,3 +224,11 @@ def test_ack_and_resolve_are_validated_and_forwarded_to_the_engine(monkeypatch):
     assert client.post("/api/ack", json={"id": "x; drop", "by": "a.rao"}).status_code == 422 and client.post("/api/ack", json={"id": "INC-0007", "by": ""}).status_code == 422
     assert client.post("/api/resolve", json={"id": "INC-0007", "by": "<b>a.rao</b>", "note": "n" * 500}).status_code == 200
     assert sent[0][1] == {"kind": "ack", "name": "INC-0007", "by": "a.rao"} and sent[1][1]["by"] == "ba.raob" and len(sent[1][1]["text"]) == 200
+
+
+@needs_node
+def test_with_no_data_every_step_waits_and_nothing_pulses():
+    st = run_js("c.trackerStages([], 9e15, {final: false})")
+    assert [s["state"] for s in st] == ["wait"] * 8
+    live = run_js("c.trackerStages([], 9e15, {final: false, live: true})")
+    assert live[0]["state"] == "active" and live[1]["state"] == "wait"            # a fault being noticed right now: only the first step is in progress

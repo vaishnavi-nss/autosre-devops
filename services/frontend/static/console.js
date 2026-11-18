@@ -30,7 +30,7 @@
       else if (stop) { st = 'stop'; text = stop.text; t = ms(stop.t); blocked = true; }
       else if (done) { st = done.state === 'na' ? 'skip' : (done.state === 'warn' ? 'warn' : 'done'); text = done.text; t = ms(done.t); }
       else if (started) { st = 'active'; text = started.text; t = ms(started.t); }
-      else if (n === 1 || (prev && (prev.state === 'done' || prev.state === 'warn' || prev.state === 'skip' && n === 4))) {
+      else if ((n === 1 && (seen.length > 0 || opts.live)) || (n > 1 && prev && (prev.state === 'done' || prev.state === 'warn' || prev.state === 'skip' && n === 4))) {
         if (opts.final) { st = 'skip'; text = n === 6 || n === 7 || n === 8 ? (opts.reason || 'Not run') : 'Not reached'; }
         else { st = 'active'; text = n === 6 ? 'Waiting for the playbook to start' : (n === 7 ? 'Waiting for the verification' : 'Waiting'); }
       } else { st = opts.final ? 'skip' : 'wait'; text = opts.final ? 'Not reached' : 'Waiting'; }
@@ -259,7 +259,7 @@
   function renderReplay() {
     if (!$('rp-pipe')) return;
     const t = trackerInput(), nowMs = t.now === Infinity ? Date.now() : t.now;
-    const stages = trackerStages(t.events, t.now === Infinity ? 8.64e15 : t.now, { final: t.final, reason: t.inc && t.inc.reason, alertsQuiet: t.quiet });
+    const stages = trackerStages(t.events, t.now === Infinity ? 8.64e15 : t.now, { final: t.final, live: t.live, reason: t.inc && t.inc.reason, alertsQuiet: t.quiet });
     const startAt = stages.length && stages[0].t !== null ? stages[0].t : null;
     $('rp-pipe').innerHTML = stages.map(s => {
       let when = '';
