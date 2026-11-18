@@ -131,3 +131,22 @@ spec:
             service: "{{ $labels.deployment }}"
           annotations:
             summary: "{{ $labels.deployment }} rollout has not finished: the new pods are not becoming ready"
+
+        # The pods are available but the Service has no ready endpoint behind it: the Service's selector no longer matches them (a bad edit).
+        # kube-state-metrics has one `kube_endpointslice_info` per slice and one `kube_endpointslice_endpoints` per ready endpoint, so a slice
+        # with none is a Service nobody can reach. Slices are named after their Service. The last line leaves out a Deployment that has no available
+        # replica, so a service that is simply down is DeploymentUnavailable, not this.
+        - alert: ServiceHasNoEndpoints
+          expr: >-
+            label_replace(
+              kube_endpointslice_info{namespace="autosre", endpointslice=~"(database|transaction-service|api-gateway)-.+"}
+                unless on(endpointslice) kube_endpointslice_endpoints{namespace="autosre", ready="true"},
+              "service", "$1", "endpointslice", "(database|transaction-service|api-gateway)-.+")
+            and on(service)
+            label_replace(kube_deployment_status_replicas_available{namespace="autosre"} > 0, "service", "$1", "deployment", "(.+)")
+          for: 1m
+          labels:
+            namespace: autosre
+            severity: critical
+          annotations:
+            summary: "{{ $labels.service }} has available pods but no endpoint: its Service selector does not match them"

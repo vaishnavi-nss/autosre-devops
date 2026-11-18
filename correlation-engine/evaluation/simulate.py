@@ -64,6 +64,9 @@ PLACEMENT: dict[str, dict[str, str]] = {
     "api_gateway_down": {"ErrorRateHigh": "frontend", "APILatencyHigh": "frontend"},
     "bad_rollout_transaction_service": {"PodRestartsHigh": "transaction-service"},
     "bad_rollout_api_gateway": {"PodRestartsHigh": "api-gateway"},
+    "database_unreachable": {"ErrorRateHigh": "transaction-service", "APILatencyHigh": "api-gateway"},
+    "transaction_service_unreachable": {"ErrorRateHigh": "api-gateway", "APILatencyHigh": "api-gateway"},
+    "api_gateway_unreachable": {"ErrorRateHigh": "frontend", "APILatencyHigh": "frontend"},
 }
 
 #: Consequence-type alerts an unrelated fault could produce. None of them is a

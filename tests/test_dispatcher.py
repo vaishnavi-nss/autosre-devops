@@ -40,12 +40,16 @@ class FakeCluster:
         self.scaled_to: list[int] = []
         self.http: dict[str, tuple[int, str]] = {}
         self.unreadable = False
+        self.endpoints = 1            # ready addresses behind the Service
         self.settle = True            # False: the rollout never completes
 
     def deployment(self, name, namespace):
         if self.unreadable:
             raise RuntimeError("forbidden")
         return dict(self.state)
+
+    def ready_endpoints(self, name, namespace):
+        return self.endpoints
 
     def scale(self, name, namespace, replicas):
         self.scaled_to.append(replicas)
@@ -96,6 +100,8 @@ def isolated(monkeypatch):
                 fake.restart()                                  # the playbook also rolls every pod
         elif "restore" in play and fake.__dict__.get("restores", True):
             fake.scale_out(max(int(yaml_vars(cmd).get("replicas", 1)), 1))
+        elif "selector" in play and fake.__dict__.get("fixes_selector", True):
+            fake.endpoints = 1                                  # the Service reaches its pods again; the Deployment is untouched
         elif "rollback" in play and fake.__dict__.get("rolls_back", True):
             fake.restart()                                      # going back to the previous template is a new generation
         return subprocess.CompletedProcess(cmd, fake.__dict__.get("rc", 0), "ok", "")
@@ -112,7 +118,7 @@ def yaml_vars(cmd):
 
 # ------------------------------------------------------------------------------------------------ policy
 def test_all_approved_playbooks_are_allowed():
-    assert disp.ALLOWED_PLAYBOOKS == {"restart_service.yml", "scale_replicas.yml", "clear_logs.yml", "restore_service.yml", "rollback_deployment.yml"}
+    assert disp.ALLOWED_PLAYBOOKS == {"restart_service.yml", "scale_replicas.yml", "clear_logs.yml", "restore_service.yml", "rollback_deployment.yml", "fix_service_selector.yml"}
     mapping = yaml.safe_load((ROOT / "ansible" / "remediation_map.yml").read_text())["remediations"]
     for cause, entry in mapping.items():
         spec = disp.POLICY[entry["playbook"]]
@@ -577,3 +583,89 @@ def test_rollback_counts_only_when_a_new_generation_is_complete(isolated):
     isolated.rolls_back = False                                  # the playbook exits 0 but the template was not changed
     rec = disp.run_execution(_accept(BAD_GW), sleep=lambda s: None)
     assert rec["status"] == "verification_failed" and "rollback not complete" in rec["reason"]
+
+
+DB_SEL = {"root_cause": "database_unreachable", "confidence": 0.85, "service": "database", "second_opinion": AGREE}
+TX_SEL = {"root_cause": "transaction_service_unreachable", "confidence": 1.0, "service": "transaction-service", "second_opinion": AGREE}
+GW_SEL = {"root_cause": "api_gateway_unreachable", "confidence": 1.0, "service": "api-gateway", "second_opinion": AGREE}
+
+
+@pytest.mark.parametrize("payload,target", [(DB_SEL, "database"), (TX_SEL, "transaction-service"), (GW_SEL, "api-gateway")])
+def test_a_selector_fault_maps_to_the_selector_playbook(payload, target):
+    d = disp.decide(payload)
+    assert d["status"] == "ready" and d["playbook"] == "fix_service_selector.yml" and d["target_service"] == target and d["extra_vars"] == {"target_service": target}
+
+
+def test_a_selector_fix_counts_only_when_the_service_has_a_ready_endpoint_and_the_deployment_was_not_touched(isolated):
+    isolated.endpoints = 0                                       # the broken state
+    rec = disp.run_execution(_accept(DB_SEL), sleep=lambda s: None)
+    assert rec["status"] == "succeeded" and "1 ready endpoint" in rec["reason"] and rec["after"]["generation"] == rec["before"]["generation"]
+    disp._cooldowns.clear(); disp._inflight.clear()
+    isolated.endpoints = 0
+    isolated.fixes_selector = False                              # the playbook exits 0 but the selector is still wrong
+    rec = disp.run_execution(_accept(TX_SEL), sleep=lambda s: None)
+    assert rec["status"] == "verification_failed" and "no ready endpoint" in rec["reason"]
+
+
+def test_a_selector_fix_that_restarted_the_pods_is_not_a_selector_fix(isolated):
+    isolated.endpoints = 1
+    isolated.restart()                                           # something rolled the deployment: the generation moved
+    before = disp.cluster.deployment("x", "autosre")
+    rec = _accept(GW_SEL)
+    ok, why = disp.verify(dict(rec, extra_vars={"target_service": "api-gateway"}), dict(before, generation=before["generation"] - 1), disp.settings(), sleep=lambda s: None)
+    assert ok is False
+
+
+# ------------------------------------------------------------------------------------------------ read-only evidence collection
+def _diag_playbook(isolated, monkeypatch, summary=None, rc=0):
+    """Stand in for ansible: write the JSON summary where the dispatcher told the playbook to."""
+    import json as _json
+
+    def fake_run(cmd, **kw):
+        isolated.ran.append(cmd)
+        if rc == 0:
+            Path(yaml_vars(cmd)["out_file"]).write_text(_json.dumps(summary or {"deployment": "replicas 1", "pods": [], "events": [], "logs": {}}), encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, rc, "ok", "boom" if rc else "")
+    monkeypatch.setattr(disp.subprocess, "run", fake_run)
+    monkeypatch.setattr(disp, "diagnostics_launcher", lambda record: disp.run_diagnostics(record))
+    disp._diagnostics.clear(); disp._last_diagnostics.clear()
+
+
+def test_evidence_collection_is_read_only_and_is_not_one_of_the_playbooks_that_may_change_the_cluster(isolated, monkeypatch):
+    assert "collect_diagnostics.yml" not in disp.POLICY and "collect_diagnostics.yml" not in disp.ALLOWED_PLAYBOOKS
+    _diag_playbook(isolated, monkeypatch, {"deployment": "replicas 1, ready 0", "pods": [{"name": "p1", "phase": "Running", "ready": False, "restarts": 4, "reason": "CrashLoopBackOff"}], "events": [], "logs": {"p1": "boom"}})
+    monkeypatch.setenv("AUTO_REMEDIATE", "false")                 # needs no live remediation
+    r = client.post("/diagnostics", json={"service": "transaction-service", "reason": "no known cause", "alerts": ["ErrorRateHigh"]})
+    assert r.status_code == 202
+    rec = client.get("/diagnostics").json()["diagnostics"][0]
+    assert rec["status"] == "collected" and rec["diagnostics"]["pods"][0]["reason"] == "CrashLoopBackOff" and rec["kind"] == "diagnostics"
+    cmd = isolated.ran[0]
+    assert cmd[3] == "playbooks/collect_diagnostics.yml" and yaml_vars(cmd)["target_service"] == "transaction-service" and "diagnostics-" in yaml_vars(cmd)["out_file"]
+    assert not disp._executions                                   # it is not a fix: the executions list is untouched
+
+
+def test_evidence_collection_refuses_unknown_services_and_is_limited_to_one_per_service_per_minute(isolated, monkeypatch):
+    _diag_playbook(isolated, monkeypatch)
+    assert client.post("/diagnostics", json={"service": "kube-apiserver"}).status_code == 422
+    assert client.post("/diagnostics", json={"service": "database; rm -rf /"}).status_code == 422
+    first = client.post("/diagnostics", json={"service": "database"})
+    again = client.post("/diagnostics", json={"service": "database"})
+    assert first.status_code == 202 and again.json()["status"] == "skipped" and again.json()["execution_id"] == first.json()["execution_id"] and len(isolated.ran) == 1
+    assert client.post("/diagnostics", json={"service": "frontend"}).status_code == 202            # another service is not limited by it
+
+
+def test_a_failed_collection_is_recorded_and_never_raises(isolated, monkeypatch):
+    _diag_playbook(isolated, monkeypatch, rc=2)
+    assert client.post("/diagnostics", json={"service": "api-gateway"}).status_code == 202
+    rec = client.get("/diagnostics").json()["diagnostics"][0]
+    assert rec["status"] == "failed" and "boom" in rec["reason"] and "diagnostics" not in rec
+
+
+def test_evidence_survives_a_restart_and_does_not_crowd_the_fixes(isolated, monkeypatch, tmp_path):
+    _diag_playbook(isolated, monkeypatch)
+    log_file = tmp_path / "executions.jsonl"
+    monkeypatch.setenv("EXEC_LOG", str(log_file))
+    client.post("/diagnostics", json={"service": "database"})
+    disp._diagnostics.clear(); disp._executions.clear()
+    assert disp._load_history(disp.settings()) == 0                # no fixes to reload...
+    assert len(disp._diagnostics) == 1                             # ...but the evidence is back

@@ -22,6 +22,7 @@ import logging
 import math
 import os
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -49,8 +50,13 @@ POLICY = {
     "clear_logs.yml": {"targets": {"database"}, "vars": {"target_service"}},
     "restore_service.yml": {"targets": {"database", "transaction-service", "api-gateway"}, "vars": {"target_service", "replicas"}},
     "rollback_deployment.yml": {"targets": {"transaction-service", "api-gateway"}, "vars": {"target_service"}},
+    "fix_service_selector.yml": {"targets": {"database", "transaction-service", "api-gateway"}, "vars": {"target_service"}},
 }
 ALLOWED_PLAYBOOKS = set(POLICY)               # kept for callers that import it
+# Read-only: collects evidence (pod states, recent events, log tails) for a person to read. It changes nothing, so it needs neither AUTO_REMEDIATE nor a
+# confidence level, and it is kept out of POLICY on purpose: POLICY is the list of playbooks that may change the cluster.
+READ_ONLY = {"collect_diagnostics.yml": {"targets": {"database", "transaction-service", "api-gateway", "frontend"}, "vars": {"target_service", "out_file", "tail_lines"}}}
+DIAG_MIN_INTERVAL_S = 60.0
 
 
 def _env_float(name: str, default: float) -> float:
@@ -92,6 +98,8 @@ _lock = threading.Lock()
 _executions: "OrderedDict[str, dict]" = OrderedDict()      # newest last
 _cooldowns: dict = {}                                        # (cause, target) -> monotonic time the cooldown ends
 _inflight: set = set()
+_diagnostics: "OrderedDict[str, dict]" = OrderedDict()     # evidence collections, newest last (kept apart from the fixes)
+_last_diagnostics: dict = {}                                 # service -> (monotonic time, id): one collection per service per minute
 MAX_KEPT = 100
 
 
@@ -131,6 +139,11 @@ class Cluster:
         return {"generation": d["metadata"].get("generation", 0), "observed": s.get("observedGeneration", 0),
                 "replicas": d["spec"].get("replicas", 0), "updated": s.get("updatedReplicas", 0),
                 "ready": s.get("readyReplicas", 0), "available": s.get("availableReplicas", 0)}
+
+    def ready_endpoints(self, name: str, namespace: str) -> int:
+        """How many ready addresses stand behind the Service of that name."""
+        ep = self._api("GET", f"/api/v1/namespaces/{namespace}/endpoints/{name}")
+        return sum(len(sub.get("addresses") or []) for sub in ep.get("subsets") or [])
 
     def scale(self, name: str, namespace: str, replicas: int) -> None:
         self._api("PATCH", f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}/scale", {"spec": {"replicas": replicas}},
@@ -259,6 +272,10 @@ def _load_history(cfg: dict) -> int:
             except ValueError:
                 continue
             if isinstance(rec, dict) and rec.get("id") and rec.get("started_at"):
+                if rec.get("kind") == "diagnostics":
+                    with _lock:
+                        _diagnostics[rec["id"]] = rec
+                    continue
                 records.append(rec)
     except OSError as exc:
         log.warning("could not read execution log: %s", exc)
@@ -331,6 +348,13 @@ def verify(record: dict, before: dict, cfg: dict, sleep=time.sleep) -> tuple[boo
                 want = record["extra_vars"].get("replicas", 1)
                 ok = settled and now["replicas"] >= want and now["available"] >= want
                 why = f"{now['available']}/{want} replicas available" if not ok else f"restored: {now['available']} replica(s) available"
+            elif playbook == "fix_service_selector.yml":
+                try:
+                    ready = cluster.ready_endpoints(target, ns)
+                except Exception as exc:                        # noqa: BLE001
+                    ready, why = 0, f"endpoints unreadable: {exc}"
+                ok = settled and ready >= 1 and now["generation"] == before["generation"]
+                why = f"the Service has {ready} ready endpoint(s)" if ok else (why if why.startswith("endpoints") else f"the Service still has no ready endpoint ({ready}); deployment {now}")
             elif playbook == "rollback_deployment.yml":
                 ok = settled and now["generation"] > before["generation"] and now["replicas"] >= 1
                 why = "rolled back and complete" if ok else f"rollback not complete: {now} (generation before {before['generation']})"
@@ -512,6 +536,64 @@ def execution(execution_id: str):
     if record is None:
         raise HTTPException(status_code=404, detail="unknown execution")
     return record
+
+
+def run_diagnostics(record: dict) -> dict:
+    """Run the read-only collection playbook and keep what it found on the record. Never raises."""
+    cfg = settings()
+    out_file = os.path.join(tempfile.gettempdir(), f"diagnostics-{record['id']}.json")           # /tmp in the container
+    record["steps"].append({"t": _now(), "step": "collect", "detail": record["target_service"]})
+    command = ["ansible-playbook", "-i", "inventory/localhost.yml", "playbooks/collect_diagnostics.yml", "--extra-vars",
+               json.dumps({"target_service": record["target_service"], "k8s_namespace": cfg["namespace"], "out_file": out_file})]
+    try:
+        result = subprocess.run(command, cwd=ANSIBLE_DIR, capture_output=True, text=True, timeout=120, check=False)
+        if result.returncode == 0 and Path(out_file).is_file():
+            record["diagnostics"] = json.loads(Path(out_file).read_text(encoding="utf-8"))
+            record["status"] = "collected"
+        else:
+            record.update(status="failed", reason=f"ansible exited {result.returncode}: {result.stderr[-200:]}")
+    except Exception as exc:                                    # noqa: BLE001 - evidence is a courtesy; its failure must never matter
+        record.update(status="failed", reason=f"{type(exc).__name__}: {exc}")
+    finally:
+        try:
+            Path(out_file).unlink()
+        except OSError:
+            pass
+    record["finished_at"] = _now()
+    record["steps"].append({"t": record["finished_at"], "step": record["status"], "detail": ""})
+    _persist(record, cfg)
+    return record
+
+
+diagnostics_launcher = lambda record: threading.Thread(target=run_diagnostics, args=(record,), daemon=True, name=f"diag-{record['id']}").start()   # noqa: E731
+
+
+@app.post("/diagnostics")
+def diagnostics(payload: dict):
+    """Collect evidence about a service for a person to read. Read-only; one collection per service per minute."""
+    service = payload.get("service")
+    if service not in READ_ONLY["collect_diagnostics.yml"]["targets"]:
+        return JSONResponse(status_code=422, content={"status": "refused", "reason": f"{service!r} is not an approved target for evidence collection"})
+    with _lock:
+        last = _last_diagnostics.get(service)
+        if last and time.monotonic() - last[0] < DIAG_MIN_INTERVAL_S and last[1] in _diagnostics:
+            return {"status": "skipped", "reason": "evidence for this service was collected less than a minute ago", "execution_id": last[1]}
+        record = {"id": uuid.uuid4().hex[:12], "kind": "diagnostics", "status": "running", "started_at": _now(), "steps": [], "playbook": "collect_diagnostics.yml",
+                  "target_service": service, "reason": str(payload.get("reason") or "")[:200],
+                  "alerts": [str(a)[:60] for a in (payload.get("alerts") or [])][:10]}
+        _diagnostics[record["id"]] = record
+        _last_diagnostics[service] = (time.monotonic(), record["id"])
+        while len(_diagnostics) > MAX_KEPT:
+            _diagnostics.popitem(last=False)
+    diagnostics_launcher(record)
+    return JSONResponse(status_code=202, content={"status": "accepted", "execution_id": record["id"]})
+
+
+@app.get("/diagnostics")
+def list_diagnostics(limit: int = 20):
+    with _lock:
+        items = list(_diagnostics.values())[-max(1, min(limit, MAX_KEPT)):]
+    return {"diagnostics": list(reversed(items))}
 
 
 WATCHED = ("frontend", "api-gateway", "transaction-service", "database")

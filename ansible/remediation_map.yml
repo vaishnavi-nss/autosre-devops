@@ -58,6 +58,24 @@ remediations:
     extra_vars:
       target_service: api-gateway
 
+  database_unreachable:
+    playbook: fix_service_selector.yml
+    description: Point the database Service's selector back at its pods
+    extra_vars:
+      target_service: database
+
+  transaction_service_unreachable:
+    playbook: fix_service_selector.yml
+    description: Point the transaction service's Service selector back at its pods
+    extra_vars:
+      target_service: transaction-service
+
+  api_gateway_unreachable:
+    playbook: fix_service_selector.yml
+    description: Point the API gateway's Service selector back at its pods
+    extra_vars:
+      target_service: api-gateway
+
 # Fallback for unmapped root causes.
 default:
   action: notify_human

@@ -1,0 +1,71 @@
+---
+# Evidence collection for an incident a person has been asked to handle. READ-ONLY: it changes nothing in the cluster.
+#
+# Gathers, for one service: the Deployment's state, each pod's phase / readiness / restart count / waiting or terminated reason, the recent
+# events about those pods, and the tail of each pod's log. It writes one JSON summary to `out_file`, which the dispatcher attaches to the incident so
+# the website can show it to the engineer without anyone having to run kubectl first.
+#
+#   ansible-playbook -i ../inventory/localhost.yml collect_diagnostics.yml -e target_service=transaction-service -e out_file=/tmp/d.json
+- name: Collect evidence about a service (read-only)
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    k8s_namespace: autosre
+    target_service: transaction-service
+    out_file: /tmp/diagnostics.json
+    tail_lines: 25
+    allowed_services: [database, transaction-service, api-gateway, frontend]
+    allowed_namespaces: [autosre]
+
+  tasks:
+    - name: Refuse anything outside the approved targets
+      ansible.builtin.assert:
+        that:
+          - target_service in allowed_services
+          - k8s_namespace in allowed_namespaces
+          - out_file is match('^/tmp/diagnostics[A-Za-z0-9._-]*\.json$')
+        fail_msg: "{{ k8s_namespace }}/{{ target_service }} is not an approved evidence target."
+
+    - name: Read the deployment
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+      register: dep
+
+    - name: Read the pods of the service
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ k8s_namespace }}"
+        label_selectors:
+          - "app={{ target_service }}"
+      register: pods
+
+    - name: Read the namespace's recent events
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Event
+        namespace: "{{ k8s_namespace }}"
+      register: events
+
+    - name: Read the tail of each pod's log
+      kubernetes.core.k8s_log:
+        api_version: v1
+        kind: Pod
+        name: "{{ item.metadata.name }}"
+        namespace: "{{ k8s_namespace }}"
+        tail_lines: "{{ tail_lines | int }}"
+      loop: "{{ pods.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      register: pod_logs
+      failed_when: false
+
+    - name: Write the summary where the dispatcher will read it
+      ansible.builtin.copy:
+        dest: "{{ out_file }}"
+        mode: "0600"
+        content: "{{ lookup('ansible.builtin.template', 'collect_diagnostics.json.j2') }}"

@@ -106,11 +106,12 @@ async def api_history(limit: int = 500):
     dispatcher, which keep their history on a persistent volume that the lab's sync script copies to the S3 bucket."""
     limit = max(1, min(limit, 500))
     async with httpx.AsyncClient(timeout=4.0) as client:
-        (inc, e1), (ex, e2), (ev, e3) = await asyncio.gather(
+        (inc, e1), (ex, e2), (ev, e3), (dg, _e4) = await asyncio.gather(
             _json(client, f"{ENGINE_URL}/incidents", {"limit": limit}),
             _json(client, f"{DISPATCHER_URL}/executions", {"limit": 100}),
-            _json(client, f"{ENGINE_URL}/events", {"limit": 500}))
-    out = history.build((inc or {}).get("incidents", []), (ex or {}).get("executions", []), (ev or {}).get("events", []))
+            _json(client, f"{ENGINE_URL}/events", {"limit": 500}),
+            _json(client, f"{DISPATCHER_URL}/diagnostics", {"limit": 100}))
+    out = history.build((inc or {}).get("incidents", []), (ex or {}).get("executions", []), (ev or {}).get("events", []), (dg or {}).get("diagnostics", []))
     out["errors"] = {k: v for k, v in {"engine": e1 or e3, "dispatcher": e2}.items() if v}
     return out
 

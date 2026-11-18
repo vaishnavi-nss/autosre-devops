@@ -38,7 +38,7 @@ from fastapi import FastAPI, HTTPException, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
 
 import second_opinion
-from correlate import correlate, firing_only, why_unmatched
+from correlate import correlate, deepest_alerting_service, firing_only, why_unmatched
 from signatures import SIGNATURES
 from transparency import build_variants
 
@@ -155,6 +155,7 @@ async def receive_alerts(payload: dict):
             "reason": reason,
             "received_alerts": len(firing),
             "variants": build_variants(firing, rules_only, opinion0, SECOND_OPINION_MODE, ESCALATE_ON_AMBIGUITY),
+            "diagnostics": await _request_diagnostics(firing, reason),
         })
 
     opinion = None
@@ -175,6 +176,7 @@ async def receive_alerts(payload: dict):
                 "second_opinion": opinion,
                 "received_alerts": len(firing),
                 "variants": build_variants(firing, rules_only, opinion, SECOND_OPINION_MODE, ESCALATE_ON_AMBIGUITY),
+                "diagnostics": await _request_diagnostics(firing, "vetoed by the second opinion"),
             })
 
     root_causes_identified_total.labels(SERVICE_NAME, result["root_cause"]).inc()
@@ -188,6 +190,8 @@ async def receive_alerts(payload: dict):
         response["second_opinion"] = opinion
     if remediation is not None:
         response["remediation"] = remediation
+        if remediation.get("status") == "escalated":
+            response["diagnostics"] = await _request_diagnostics(firing, str(remediation.get("reason") or "escalated by the dispatcher"))
     return _capture(payload, response)
 
 
@@ -204,6 +208,26 @@ async def _second_opinion(result: dict, firing: list) -> dict:
     second_opinion_verdicts_total.labels(result["service"], opinion["verdict"]).inc()
     log.info("second opinion on %s: %s (%s)", result["root_cause"], opinion["verdict"], opinion.get("reason"))
     return opinion
+
+
+async def _request_diagnostics(firing: list, reason: str) -> dict | None:
+    """When a person is being asked (an unknown cause, a vetoed diagnosis, an escalation by the dispatcher), have the dispatcher collect evidence about the
+    deepest alerting service: pod states, recent events and log tails. Read-only, never blocks and never raises."""
+    if not DISPATCHER_ENABLED or not DISPATCHER_URL:
+        return None
+    service = deepest_alerting_service(firing)
+    if not service:
+        return None
+    url = DISPATCHER_URL.rsplit("/dispatch", 1)[0] + "/diagnostics"
+    names = sorted({a.get("labels", {}).get("alertname") for a in firing if a.get("labels", {}).get("alertname")})
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            reply = await client.post(url, json={"service": service, "reason": reason, "alerts": names})
+            data = reply.json()
+            return {"execution_id": data.get("execution_id"), "service": service, "status": data.get("status")}
+    except Exception as exc:                                    # noqa: BLE001
+        log.warning("evidence collection not requested: %s", exc)
+        return None
 
 
 async def _dispatch_remediation(result: dict, opinion: dict | None = None) -> dict | None:
@@ -301,6 +325,7 @@ def _remember(firing: list, response: dict) -> None:
         "alerts": [{"alertname": a.get("labels", {}).get("alertname"), "service": a.get("labels", {}).get("service")}
                    for a in firing],
         "variants": response.get("variants"),
+        "diagnostics": response.get("diagnostics"),
         "second_opinion": {k: so.get(k) for k in ("verdict", "reason", "scorer_service", "scorer_fault", "confidence")} if so else None,
         "remediation": {k: rem.get(k) for k in ("status", "reason", "playbook", "target_service", "execution_id",
                                                  "cooldown_remaining_s", "second_opinion")} if rem else None,

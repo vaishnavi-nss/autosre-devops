@@ -1,0 +1,87 @@
+---
+# Remediation for: database_unreachable, transaction_service_unreachable, api_gateway_unreachable
+#
+# The pods are healthy but the Service in front of them selects nothing, so nobody can reach them. Every Service of this project selects its pods by the
+# label `app: <service name>` (the same label the Deployment's pods carry), so the fix is to put exactly that selector back. The selector is REPLACED
+# (a JSON patch), not merged, so a wrong extra label is removed too.
+#
+# Safe by construction: only the three approved services, only the autosre namespace, and it refuses unless the Deployment has pods with that label to
+# point at (otherwise there is nothing to repair and a person must look).
+#
+#   ansible-playbook -i ../inventory/localhost.yml fix_service_selector.yml -e target_service=database
+- name: Put a Service's selector back so it reaches its pods
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    k8s_namespace: autosre
+    target_service: database
+    allowed_services: [database, transaction-service, api-gateway]
+    allowed_namespaces: [autosre]
+
+  tasks:
+    - name: Refuse anything outside the approved targets
+      ansible.builtin.assert:
+        that:
+          - target_service in allowed_services
+          - k8s_namespace in allowed_namespaces
+        fail_msg: "{{ k8s_namespace }}/{{ target_service }} is not an approved selector repair."
+
+    - name: Read the Service
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Service
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+      register: svc
+
+    - name: Fail early if the Service does not exist
+      ansible.builtin.assert:
+        that: svc.resources | length == 1
+        fail_msg: "Service {{ target_service }} not found in {{ k8s_namespace }}."
+
+    - name: Make sure there are pods with the label this selector should point at
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ k8s_namespace }}"
+        label_selectors:
+          - "app={{ target_service }}"
+      register: pods
+
+    - name: Refuse when there is nothing to point the Service at
+      ansible.builtin.assert:
+        that: pods.resources | length >= 1
+        fail_msg: "No pod labelled app={{ target_service }} exists; this is not a selector problem."
+
+    - name: Put the selector back (replace it, do not merge)
+      kubernetes.core.k8s_json_patch:
+        api_version: v1
+        kind: Service
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+        patch:
+          - op: replace
+            path: /spec/selector
+            value:
+              app: "{{ target_service }}"
+
+    - name: Wait until the Service has an endpoint again
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Endpoints
+        name: "{{ target_service }}"
+        namespace: "{{ k8s_namespace }}"
+      register: ep
+      until:
+        - ep.resources | length == 1
+        - ep.resources[0].subsets | default([]) | length > 0
+        - ep.resources[0].subsets[0].addresses | default([]) | length > 0
+      retries: 24
+      delay: 5
+
+    - name: Report the outcome
+      ansible.builtin.debug:
+        msg: >-
+          Service {{ target_service }} selects app={{ target_service }} again and has
+          {{ ep.resources[0].subsets[0].addresses | length }} ready endpoint(s).

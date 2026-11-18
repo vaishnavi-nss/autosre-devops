@@ -108,7 +108,7 @@ def _events(inc: dict, ex: dict | None, action: str) -> list[dict]:
     return ev
 
 
-def normalize(inc: dict, executions: dict[str, dict], acks: dict[str, dict], resolved: dict[str, dict]) -> dict:
+def normalize(inc: dict, executions: dict[str, dict], acks: dict[str, dict], resolved: dict[str, dict], evidence: dict[str, dict] | None = None) -> dict:
     rem = inc.get("remediation") or {}
     ex = executions.get(rem.get("execution_id")) if rem.get("execution_id") else None
     action, reason = _action(inc, ex)
@@ -134,10 +134,19 @@ def normalize(inc: dict, executions: dict[str, dict], acks: dict[str, dict], res
         "ttr_s": ttr, "sev": "SEV2" if needs_human else "SEV3", "assignee": (ack or {}).get("by"), "open": bool(needs_human and not res),
         "variants": inc.get("variants"), "ambiguous": (inc.get("variants") or {}).get("ambiguous_causes") or [], "explanation": inc.get("explanation"),
         "events": events, "note": (res or {}).get("text"), "execution_id": rem.get("execution_id"),
+        "evidence": _evidence((inc.get("diagnostics") or {}).get("execution_id"), evidence or {}),
     }
 
 
-def build(incidents: list[dict], executions: list[dict], events: list[dict]) -> dict:
+def _evidence(ref, collected: dict[str, dict]) -> dict | None:
+    """What the dispatcher gathered for a person to read (pod states, events, log tails), or the fact that it is still being gathered."""
+    rec = collected.get(ref) if ref else None
+    if not rec:
+        return None
+    return {"status": rec.get("status"), "service": rec.get("target_service"), "at": rec.get("finished_at") or rec.get("started_at"), "data": rec.get("diagnostics"), "reason": rec.get("reason")}
+
+
+def build(incidents: list[dict], executions: list[dict], events: list[dict], diagnostics: list[dict] | None = None) -> dict:
     """The website's history: normalised incidents (newest first), setting changes and scenario runs (newest first)."""
     by_exec = {e.get("id"): e for e in executions}
     acks: dict[str, dict] = {}
@@ -147,6 +156,7 @@ def build(incidents: list[dict], executions: list[dict], events: list[dict]) -> 
             acks[e["name"]] = {"by": e.get("by"), "t": e.get("t")}
         elif e.get("kind") == "resolve" and e.get("name"):
             resolved[e["name"]] = {"by": e.get("by"), "t": e.get("t"), "text": e.get("text")}
-    inc = [normalize(i, by_exec, acks, resolved) for i in incidents]
+    evidence = {d.get("id"): d for d in diagnostics or []}
+    inc = [normalize(i, by_exec, acks, resolved, evidence) for i in incidents]
     inc.sort(key=lambda i: i["t"] or "", reverse=True)
     return {"incidents": inc, "changes": [e for e in events if e.get("kind") == "change"], "runs": [e for e in events if e.get("kind") == "run"]}

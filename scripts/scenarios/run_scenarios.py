@@ -80,6 +80,13 @@ SCENARIOS = {
                            "transaction-service", "real: the image is set to a tag that does not exist; the new pod never starts and never restarts", "bad_image", expect="escalate"),
     "rollout:gw-probe": _s("bad_rollout", "Bad readiness probe: the new gateway pod never becomes ready", "RolloutStalled", "bad_rollout_api_gateway", "rollback_deployment.yml",
                            "api-gateway", "real: the readiness probe path is changed to one that does not exist; the new pod runs but never becomes ready", "bad_probe", expect="escalate"),
+    # ---- a Service whose selector was edited so that it matches nothing
+    "selector:database": _s("selector", "The database Service selects nothing", "ServiceHasNoEndpoints", "database_unreachable", "fix_service_selector.yml", "database",
+                            "real: the database Service's selector is changed to a label no pod has, so nothing can reach the database", "bad_selector"),
+    "selector:transaction-service": _s("selector", "The transaction service's Service selects nothing", "ServiceHasNoEndpoints", "transaction_service_unreachable",
+                                       "fix_service_selector.yml", "transaction-service", "real: the transaction service's Service selector is changed to a label no pod has", "bad_selector"),
+    "selector:api-gateway": _s("selector", "The API gateway's Service selects nothing", "ServiceHasNoEndpoints", "api_gateway_unreachable", "fix_service_selector.yml",
+                               "api-gateway", "real: the API gateway's Service selector is changed to a label no pod has", "bad_selector"),
     # ---- faults with no known cause: the system must hand them to a person
     "unknown:errors": _s("unknown", "Half of the transactions fail", "ErrorRateHigh", None, None, "transaction-service",
                          "real: the transaction service fails 50% of requests (no signature fits)", "errors", expect="escalate", rate=0.5),
@@ -379,6 +386,8 @@ class Runner:
             lambda: self.c.kubectl("-n", NS, "scale", "deploy/database", "deploy/api-gateway", "--replicas=1", check=False),
             lambda: self.c.kubectl("-n", NS, "delete", "networkpolicy", "chaos-deny-database", "--ignore-not-found", check=False),
             lambda: [self.heal_rollout(d) for d in ("transaction-service", "api-gateway")],
+            lambda: [self.c.kubectl("-n", NS, "patch", f"svc/{d}", "--type=merge", "-p", json.dumps({"spec": {"selector": {"app": d}}}), check=False)
+                     for d in ("database", "transaction-service", "api-gateway")],
             lambda: self.set_env("transaction-service", CHAOS_ENABLED="false"),
             lambda: self.set_env("database", CHAOS_ENABLED="false"),
             lambda: self.set_env("correlation-engine", SECOND_OPINION_MODE="shadow", ESCALATE_ON_AMBIGUITY=None),
@@ -416,6 +425,9 @@ spec:
         if fault == "scale_zero":
             self.c.kubectl("-n", NS, "scale", f"deploy/{svc}", "--replicas=0")
             return {"fault": fault, "service": svc, "consequence": f"real: {svc} has no replica"}
+        if fault == "bad_selector":
+            self.c.kubectl("-n", NS, "patch", f"svc/{svc}", "--type=merge", "-p", json.dumps({"spec": {"selector": {"app": "does-not-exist"}}}))
+            return {"fault": fault, "service": svc, "consequence": "real: the Service has no endpoint, so callers get connection errors"}
         if fault == "bad_env":
             self.c.kubectl("-n", NS, "set", "env", f"deploy/{svc}", f"{spec['env']}={spec['value']}")
             return {"fault": fault, "service": svc, "env": spec["env"], "consequence": "real: the new pod crash-loops and the old pod is kept"}
@@ -647,6 +659,8 @@ spec:
             self.heal_rollout(svc)
         elif fault == "partition":
             self.c.kubectl("-n", NS, "delete", "networkpolicy", "chaos-deny-database", "--ignore-not-found", check=False)
+        elif fault == "bad_selector":                           # always safe: put the Service's own selector back
+            self.c.kubectl("-n", NS, "patch", f"svc/{svc}", "--type=merge", "-p", json.dumps({"spec": {"selector": {"app": svc}}}), check=False)
         self.reset_faults()
         if fault == "memory":
             self.cleanup_memory_fault()

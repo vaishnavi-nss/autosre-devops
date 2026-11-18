@@ -1,0 +1,21 @@
+{#- Builds the evidence summary the dispatcher reads: the deployment line, one row per pod, the latest events about the service, and each pod's log tail. -#}
+{%- set ns = namespace(pods=[], events=[], logs={}) -%}
+{%- for p in pods.resources -%}
+  {%- set cs = p.status.containerStatuses | default([]) -%}
+  {%- set st = cs[0].state if cs else {} -%}
+  {%- set reason = st.waiting.reason if st.waiting is defined else (st.terminated.reason if st.terminated is defined else '') -%}
+  {%- set ready = (p.status.conditions | default([]) | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | list | first | default('False')) == 'True' -%}
+  {%- set ns.pods = ns.pods + [{'name': p.metadata.name, 'phase': p.status.phase | default('Unknown'), 'ready': ready, 'restarts': (cs | map(attribute='restartCount') | list | sum), 'reason': reason}] -%}
+{%- endfor -%}
+{%- for e in events.resources | sort(attribute='lastTimestamp', reverse=true) -%}
+  {%- if e.involvedObject.name is defined and e.involvedObject.name.startswith(target_service) and ns.events | length < 10 -%}
+    {%- set ns.events = ns.events + [{'reason': e.reason | default(''), 'message': (e.message | default(''))[:200]}] -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- for r in pod_logs.results | default([]) -%}
+  {%- if r.item is defined and r.log_lines is defined -%}
+    {%- set ns.logs = ns.logs | combine({r.item.metadata.name: (r.log_lines[-(tail_lines | int):] | join('
+'))[-1500:]}) -%}
+  {%- endif -%}
+{%- endfor -%}
+{{ {'deployment': ('replicas ' ~ (dep.resources[0].spec.replicas | default(0)) ~ ', ready ' ~ (dep.resources[0].status.readyReplicas | default(0)) ~ ', available ' ~ (dep.resources[0].status.availableReplicas | default(0)) ~ ', generation ' ~ dep.resources[0].metadata.generation) if dep.resources | length > 0 else 'not found', 'pods': ns.pods, 'events': ns.events, 'logs': ns.logs} | to_json }}

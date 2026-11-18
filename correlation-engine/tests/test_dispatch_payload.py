@@ -64,3 +64,73 @@ def test_a_disabled_or_unconfigured_dispatcher_never_blocks_correlation(monkeypa
     monkeypatch.setattr(engine, "DISPATCHER_ENABLED", True)
     monkeypatch.setattr(engine, "DISPATCHER_URL", None)
     assert asyncio.run(engine._dispatch_remediation(RESULT, None))["status"] == "unavailable"
+
+
+# ---------------------------------------------------------------------------------------------------- evidence for a person
+def _alert(name, service):
+    return {"status": "firing", "labels": {"alertname": name, "service": service, "severity": "warning"}}
+
+
+class _DiagReply:
+    def __init__(self, data):
+        self.data = data
+
+    def json(self):
+        return self.data
+
+
+def _diag_client(sent, reply):
+    class Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json):
+            sent.append((url, json))
+            if isinstance(reply, Exception):
+                raise reply
+            return _DiagReply(reply)
+    return Client
+
+
+def test_evidence_is_requested_for_the_deepest_alerting_service(monkeypatch):
+    import app as engine
+    sent = []
+    monkeypatch.setattr(engine, "DISPATCHER_ENABLED", True)
+    monkeypatch.setattr(engine, "DISPATCHER_URL", "http://dispatcher:8001/dispatch")
+    monkeypatch.setattr(engine.httpx, "AsyncClient", _diag_client(sent, {"status": "accepted", "execution_id": "abc123"}))
+    out = asyncio.run(engine._request_diagnostics([_alert("ErrorRateHigh", "api-gateway"), _alert("PodRestartsHigh", "transaction-service")], "no known cause"))
+    assert out == {"execution_id": "abc123", "service": "transaction-service", "status": "accepted"}
+    url, body = sent[0]
+    assert url == "http://dispatcher:8001/diagnostics" and body == {"service": "transaction-service", "reason": "no known cause", "alerts": ["ErrorRateHigh", "PodRestartsHigh"]}
+
+
+def test_evidence_never_blocks_or_raises(monkeypatch):
+    import app as engine
+    monkeypatch.setattr(engine, "DISPATCHER_ENABLED", True)
+    monkeypatch.setattr(engine, "DISPATCHER_URL", "http://dispatcher:8001/dispatch")
+    monkeypatch.setattr(engine.httpx, "AsyncClient", _diag_client([], RuntimeError("down")))
+    assert asyncio.run(engine._request_diagnostics([_alert("ErrorRateHigh", "api-gateway")], "x")) is None
+    monkeypatch.setattr(engine, "DISPATCHER_ENABLED", False)
+    assert asyncio.run(engine._request_diagnostics([_alert("ErrorRateHigh", "api-gateway")], "x")) is None
+    monkeypatch.setattr(engine, "DISPATCHER_ENABLED", True)
+    assert asyncio.run(engine._request_diagnostics([_alert("SomethingElse", "not-a-service")], "x")) is None        # no service in the chain to look at
+
+
+def test_an_unmatched_incident_records_which_evidence_was_requested(client, monkeypatch):
+    import app as engine
+    sent = []
+    engine.RECENT_INCIDENTS.clear()
+    monkeypatch.setattr(engine, "SECOND_OPINION_URL", None)
+    monkeypatch.setattr(engine, "DISPATCHER_ENABLED", True)
+    monkeypatch.setattr(engine, "DISPATCHER_URL", "http://dispatcher:8001/dispatch")
+    monkeypatch.setattr(engine.httpx, "AsyncClient", _diag_client(sent, {"status": "accepted", "execution_id": "e1"}))
+    body = client.post("/alerts", json={"alerts": [_alert("ErrorRateHigh", "api-gateway"), _alert("APILatencyHigh", "api-gateway")]}).json()
+    assert body["status"] == "unmatched" and body["diagnostics"]["execution_id"] == "e1"
+    assert client.get("/incidents").json()["incidents"][0]["diagnostics"]["execution_id"] == "e1"
+    assert [u for u, _ in sent] == ["http://dispatcher:8001/diagnostics"]                          # no fix was asked for, only evidence

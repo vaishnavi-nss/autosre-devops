@@ -402,7 +402,7 @@ def test_every_scenario_is_consistent_with_the_signatures_the_map_and_the_alert_
     alerts = set(re.findall(r"-\s+alert:\s*(\w+)", rules))
     mapping = yaml.safe_load((root / "ansible" / "remediation_map.yml").read_text(encoding="utf-8"))["remediations"]
     families = {spec["family"] for spec in rs.SCENARIOS.values()}
-    assert {"pool", "memory", "disk", "service_down", "bad_rollout", "unknown"} <= families and len(rs.SCENARIOS) >= 17
+    assert {"pool", "memory", "disk", "service_down", "bad_rollout", "selector", "unknown"} <= families and len(rs.SCENARIOS) >= 20
     for key, spec in rs.SCENARIOS.items():
         assert spec["alert"] in alerts, key
         assert spec["expect"] in ("act", "escalate") and spec["label"] and spec["kind"].startswith("real:"), key
@@ -455,6 +455,7 @@ def runner_with(c):
 @pytest.mark.parametrize("key,expected", [
     ("down:database", ("-n", "autosre", "scale", "deploy/database", "--replicas=0")),
     ("rollout:tx-crash", ("-n", "autosre", "set", "env", "deploy/transaction-service", "DB_POOL_MAX=not-a-number")),
+    ("selector:database", ("-n", "autosre", "patch", "svc/database", "--type=merge", "-p", '{"spec": {"selector": {"app": "does-not-exist"}}}')),
     ("rollout:tx-image", ("-n", "autosre", "set", "image", "deploy/transaction-service", "transaction-service=autosre/transaction-service:does-not-exist"))])
 def test_the_new_faults_are_real_kubernetes_changes_in_the_autosre_namespace(key, expected):
     c = Recorder()
@@ -495,3 +496,11 @@ def test_cleanup_scales_a_stopped_service_back_up_and_only_undoes_a_rollout_that
     r3 = runner_with(stuck); r3.reset_faults = lambda: None
     r3.cleanup_fault("rollout:gw-crash")
     assert any(call[0][:5] == ("-n", "autosre", "rollout", "undo", "deploy/api-gateway") for call in stuck.calls)
+
+
+def test_cleanup_puts_a_services_own_selector_back_even_when_the_dispatcher_already_did():
+    c = Recorder()
+    r = runner_with(c)
+    r.reset_faults = lambda: None
+    r.cleanup_fault("selector:transaction-service")
+    assert any(call[0] == ("-n", "autosre", "patch", "svc/transaction-service", "--type=merge", "-p", '{"spec": {"selector": {"app": "transaction-service"}}}') for call in c.calls)

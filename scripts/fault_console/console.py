@@ -42,7 +42,7 @@ def _load_scenarios() -> dict:
 SCENARIOS = _load_scenarios()
 FAMILIES = {
     "pool": "Database pool exhaustion", "memory": "High memory", "disk": "Database disk full", "service_down": "A service is down",
-    "bad_rollout": "A bad rollout", "unknown": "Faults with no known cause (must be handed to a person)",
+    "bad_rollout": "A bad rollout", "selector": "A Service selects nothing", "unknown": "Faults with no known cause (must be handed to a person)",
 }
 
 

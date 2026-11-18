@@ -92,6 +92,28 @@ SIGNATURES: dict[str, dict] = {
         "playbook": "restore_service.yml",
         "description": "The API gateway has no available replica.",
     },
+    # ---- a Service whose selector no longer matches its pods: the pods are fine and nobody can reach them
+    "database_unreachable": {
+        "owner": "database",
+        "required_symptoms": ["ServiceHasNoEndpoints"],
+        "weights": {"ServiceHasNoEndpoints": 0.60, "ErrorRateHigh": 0.25, "APILatencyHigh": 0.15},
+        "playbook": "fix_service_selector.yml",
+        "description": "The database pods are available but its Service has no endpoint (the selector does not match).",
+    },
+    "transaction_service_unreachable": {
+        "owner": "transaction-service",
+        "required_symptoms": ["ServiceHasNoEndpoints"],
+        "weights": {"ServiceHasNoEndpoints": 0.60, "ErrorRateHigh": 0.25, "APILatencyHigh": 0.15},
+        "playbook": "fix_service_selector.yml",
+        "description": "The transaction service pods are available but its Service has no endpoint.",
+    },
+    "api_gateway_unreachable": {
+        "owner": "api-gateway",
+        "required_symptoms": ["ServiceHasNoEndpoints"],
+        "weights": {"ServiceHasNoEndpoints": 0.60, "ErrorRateHigh": 0.25, "APILatencyHigh": 0.15},
+        "playbook": "fix_service_selector.yml",
+        "description": "The API gateway pods are available but its Service has no endpoint.",
+    },
     # As everywhere, the deciding symptom alone stays below the 0.75 gate. A crash-looping revision also restarts its pods (PodRestartsHigh), so it
     # reaches 1.0 and is rolled back by itself; a revision that only fails its readiness probe or its image pull never restarts, stays at 0.60 and
     # is left to a person.

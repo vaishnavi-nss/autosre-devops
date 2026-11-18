@@ -85,7 +85,8 @@
   const SECTION = { overview: 'view-dashboard', telemetry: 'view-status' };
   const CAUSE = { db_connection_pool_exhaustion: 'DB connection pool exhausted', high_memory_usage: 'High memory usage', db_disk_full: 'Database disk full',
     database_down: 'Database is down', transaction_service_down: 'Transaction service is down', api_gateway_down: 'API gateway is down',
-    bad_rollout_transaction_service: 'Bad rollout: transaction service', bad_rollout_api_gateway: 'Bad rollout: API gateway' };
+    bad_rollout_transaction_service: 'Bad rollout: transaction service', bad_rollout_api_gateway: 'Bad rollout: API gateway',
+    database_unreachable: 'Database unreachable (selector)', transaction_service_unreachable: 'Transaction service unreachable (selector)', api_gateway_unreachable: 'API gateway unreachable (selector)' };
   const cname = c => c ? (CAUSE[c] || String(c).replace(/_/g, ' ')) : 'Unknown cause';
   const ACTION = { auto_fixed: ['Auto-fixed', 'p-auto'], escalated: ['Escalated', 'p-esc'], dry_run: ['Dry run', 'p-dry'], vetoed: ['Held by ML gate', 'p-veto'], skipped: ['Skipped (cooldown)', 'p-dry'], running: ['Fixing now', 'p-run'], decision: ['Decision only', 'p-dry'] };
   const label = i => i.open ? ['Open', 'p-open'] : (ACTION[i.action] || [i.action, 'p-dry']);
@@ -214,6 +215,7 @@
       '<div class="card cx-sec"><h3>Summary</h3><div class="cx-kv"><div>Cause</div><div>' + esc(cname(i.cause)) + '</div><div>First alert</div><div>' + fmt(ms(i.t)) + '</div><div>Incident received</div><div>' + fmt(ms(i.received)) + '</div><div>Confidence</div><div>' + (i.confidence === null || i.confidence === undefined ? '-' : Math.round(i.confidence * 100) + '%') + '</div><div>ML second opinion</div><div>' + esc(i.ml || 'not consulted') + '</div><div>Decision</div><div>' + esc(i.reason || (i.action === 'auto_fixed' ? 'Fixed by ' + i.playbook + ' and verified' : '-')) + '</div><div>Playbook</div><div>' + esc(i.playbook || '-') + (i.duration_s ? ' (' + i.duration_s + ' s)' : '') + '</div><div>Time to fix</div><div>' + dur(i.ttr_s) + '</div><div>Owner</div><div>' + esc(who(i.assignee) || (i.action === 'auto_fixed' ? 'automation' : 'nobody yet')) + '</div>' + (i.note ? '<div>Resolution note</div><div>' + esc(i.note) + '</div>' : '') + '</div>' + (i.explanation ? '<p class="mute" style="margin-top:0.6rem;font-size:0.8rem">' + esc(i.explanation) + '</p>' : '') + '</div>' +
       '<div class="card cx-sec"><h3>Actions</h3><div class="cx-actions">' + (i.open && !i.assignee ? '<button class="cx-btn primary" id="a-ack">Acknowledge</button>' : '') + (i.open ? '<input type="text" id="a-note" placeholder="Resolution note" maxlength="200" style="min-width:200px"><button class="cx-btn" id="a-res">Mark resolved</button>' : '') +
       '<button class="cx-btn" id="a-replay">Replay this incident</button><a class="cx-btn" target="_blank" href="http://' + host + ':3000/d/autosre-main/autosre">Open in Grafana</a><button class="cx-btn" id="a-link">Copy link</button></div></div>' +
+      (i.evidence ? evidenceCard(i.evidence) : '') +
       '<div class="card cx-sec"><h3>Timeline</h3><ul class="cx-tl">' + tl + '</ul></div>' +
       '<div class="card cx-sec"><h3>Evidence</h3><p class="mute" style="margin-bottom:0.5rem;font-size:0.8rem">Alerts: ' + (i.alerts || []).map(x => '<span class="mono">' + esc(x.name) + '</span> on ' + esc(x.service)).join(', ') + '</p>' + (ev ? '<table><thead><tr><th>Symptom of the matched cause</th><th>State</th></tr></thead><tbody>' + ev + '</tbody></table>' : '<p class="mute">No known signature matched these alerts.</p>') + '</div>' +
       '<div class="card cx-sec tm-panel"><h3>What each setting would have decided</h3><table><thead><tr><th>Setting</th><th>Decision</th><th>Why</th></tr></thead><tbody>' + (vt || '<tr><td colspan="3" class="mute">Not recorded for this incident.</td></tr>') + '</tbody></table></div></div>';
@@ -224,6 +226,17 @@
     if ($('a-res')) $('a-res').onclick = () => post('/api/resolve', { note: $('a-note').value }, 'Marked resolved.');
     $('a-replay').onclick = () => { closeDrawer(); REPLAY.id = i.id; go('replay'); startReplay(); };
     $('a-link').onclick = () => { const u = location.origin + '/#' + i.id; (navigator.clipboard ? navigator.clipboard.writeText(u) : Promise.reject()).then(() => toast('Link copied'), () => toast(u)); };
+  }
+  // Evidence the dispatcher collected on its own when a person was asked: pod states, recent events and log tails.
+  function evidenceCard(e) {
+    const d = e.data || {};
+    if (!e.data) return '<div class="card cx-sec"><h3>Evidence collected for you</h3><p class="mute">' + (e.status === 'running' ? 'Being collected right now...' : 'Could not be collected: ' + esc(e.reason || e.status)) + '</p></div>';
+    const pods = (d.pods || []).map(p => '<tr><td class="mono">' + esc(p.name) + '</td><td>' + esc(p.phase) + '</td><td>' + esc(p.ready ? 'ready' : 'not ready') + '</td><td>' + esc(p.restarts) + '</td><td>' + esc(p.reason || '-') + '</td></tr>').join('');
+    const evs = (d.events || []).map(x => '<div class="mono" style="font-size:0.74rem"><span class="mute">' + esc(x.reason) + '</span> ' + esc(x.message) + '</div>').join('');
+    const logs = Object.entries(d.logs || {}).map(([k, v]) => '<div style="margin-top:0.5rem"><b class="mono" style="font-size:0.74rem">' + esc(k) + '</b><pre class="rp-log" style="max-height:150px;margin-top:0.2rem">' + esc(v) + '</pre></div>').join('');
+    return '<div class="card cx-sec"><h3>Evidence collected for you (read-only, ' + esc(e.service) + ')</h3>' + (d.deployment ? '<p class="mute" style="font-size:0.8rem;margin-bottom:0.4rem">Deployment: ' + esc(d.deployment) + '</p>' : '') +
+      (pods ? '<table><thead><tr><th>Pod</th><th>Phase</th><th>Ready</th><th>Restarts</th><th>Waiting / terminated</th></tr></thead><tbody>' + pods + '</tbody></table>' : '<p class="mute">No pod found.</p>') +
+      (evs ? '<div style="margin-top:0.6rem"><b style="font-size:0.72rem" class="mute">RECENT EVENTS</b>' + evs + '</div>' : '') + logs + '</div>';
   }
   function closeDrawer() { $('drawer').classList.remove('on'); $('scrim').classList.remove('on'); }
 
@@ -325,7 +338,9 @@
   }
   const CATALOG = [['restart_service.yml', 'Rolling restart of a service', 'transaction-service'], ['scale_replicas.yml', 'Scale out, optionally replace the pods (memory leak)', 'transaction-service'],
     ['clear_logs.yml', 'Clear old database logs', 'database'], ['restore_service.yml', 'Bring a service with no replica back to a ready replica', 'database, transaction-service, api-gateway'],
-    ['rollback_deployment.yml', 'Go back to the previous working revision (kubernetes.core.k8s_rollback)', 'transaction-service, api-gateway']];
+    ['rollback_deployment.yml', 'Go back to the previous working revision (kubernetes.core.k8s_rollback)', 'transaction-service, api-gateway'],
+    ['fix_service_selector.yml', 'Put a Service selector back so it reaches its pods again', 'database, transaction-service, api-gateway'],
+    ['collect_diagnostics.yml', 'Read-only: collect pod states, events and log tails for a person (no approval needed)', 'all four services']];
   window.CX_PLAYBOOKS = CATALOG;
   function pagePlaybooks() {
     const all = incs();

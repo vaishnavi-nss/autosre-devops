@@ -5,7 +5,7 @@ metadata:
   name: remediation-dispatcher
   namespace: autosre
 ---
-# Least privilege for the five approved playbooks, in the autosre namespace only:
+# Least privilege for the approved playbooks, in the autosre namespace only:
 #   restart_service.yml / scale_replicas.yml : read and patch deployments, scale them
 #   clear_logs.yml                          : find the database pod and run a command in it (pods/exec)
 #   verification                            : read deployments and pods
@@ -18,12 +18,21 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "deployments/scale"]
     verbs: ["get", "list", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "patch"]       # fix_service_selector.yml puts a Service's selector back
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list"]                # verification: does the Service have a ready endpoint again
   - apiGroups: ["apps"]
     resources: ["replicasets"]
     verbs: ["get", "list"]                # rollback_deployment.yml reads the previous revision's pod template
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log", "events"]
+    verbs: ["get", "list"]                # collect_diagnostics.yml reads log tails and events (read-only)
   - apiGroups: [""]
     resources: ["pods/exec"]
     # The python client opens exec as a WebSocket (GET), so `get` is needed as well as `create` (found on the real cluster: 403 on pods/exec).

@@ -232,3 +232,17 @@ def test_with_no_data_every_step_waits_and_nothing_pulses():
     assert [s["state"] for s in st] == ["wait"] * 8
     live = run_js("c.trackerStages([], 9e15, {final: false, live: true})")
     assert live[0]["state"] == "active" and live[1]["state"] == "wait"            # a fault being noticed right now: only the first step is in progress
+
+
+def test_evidence_the_dispatcher_collected_is_attached_to_its_incident_and_shown_escaped():
+    inc = {"id": "INC-0009", "received_at": "2026-11-20T11:00:00+00:00", "status": "unmatched", "action": "escalate_to_human", "root_cause": None,
+           "reason": "no signature", "alerts": [{"alertname": "ErrorRateHigh", "service": "api-gateway"}], "diagnostics": {"execution_id": "d1", "service": "api-gateway"}}
+    diag = {"id": "d1", "kind": "diagnostics", "status": "collected", "target_service": "api-gateway", "finished_at": "2026-11-20T11:00:09+00:00",
+            "diagnostics": {"deployment": "replicas 1", "pods": [{"name": "p", "phase": "Running", "ready": True, "restarts": 0, "reason": ""}], "events": [], "logs": {"p": "x"}}}
+    out = history.build([inc], [], [], [diag])["incidents"][0]
+    assert out["evidence"]["status"] == "collected" and out["evidence"]["data"]["pods"][0]["name"] == "p" and out["evidence"]["service"] == "api-gateway"
+    assert history.build([inc], [], [], [])["incidents"][0]["evidence"] is None                  # still being collected, or none was asked for
+    js = JS.read_text(encoding="utf-8")
+    block = js[js.index("function evidenceCard"):js.index("function closeDrawer")]
+    for field in ("p.name", "p.phase", "p.reason", "x.message", "v)", "e.reason"):
+        assert "esc(" + field in block, field

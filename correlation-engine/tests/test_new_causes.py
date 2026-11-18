@@ -12,7 +12,8 @@ from signatures import SIGNATURES
 
 ROOT = Path(__file__).resolve().parents[2]
 NEW = {"database_down": "restore_service.yml", "transaction_service_down": "restore_service.yml", "api_gateway_down": "restore_service.yml",
-       "bad_rollout_transaction_service": "rollback_deployment.yml", "bad_rollout_api_gateway": "rollback_deployment.yml"}
+       "bad_rollout_transaction_service": "rollback_deployment.yml", "bad_rollout_api_gateway": "rollback_deployment.yml",
+       "database_unreachable": "fix_service_selector.yml", "transaction_service_unreachable": "fix_service_selector.yml", "api_gateway_unreachable": "fix_service_selector.yml"}
 
 
 def fire(*pairs):
@@ -21,7 +22,7 @@ def fire(*pairs):
 
 def test_the_new_causes_exist_with_their_playbooks_and_nothing_else_changed():
     assert {c: SIGNATURES[c]["playbook"] for c in NEW} == NEW
-    assert {"db_connection_pool_exhaustion", "high_memory_usage", "db_disk_full"} <= set(SIGNATURES) and len(SIGNATURES) == 8
+    assert {"db_connection_pool_exhaustion", "high_memory_usage", "db_disk_full"} <= set(SIGNATURES) and len(SIGNATURES) == 11
 
 
 def test_every_alert_playbook_and_map_entry_the_new_causes_need_exists():
@@ -75,3 +76,16 @@ def test_alert_rules_hold_times_and_service_labels_are_set_for_the_new_alerts():
     for name in ("DeploymentUnavailable", "RolloutStalled"):
         block = rules.split(f"alert: {name}")[1].split("- alert:")[0]
         assert 'service: "{{ $labels.deployment }}"' in block and "namespace: autosre" in block and re.search(r"for:\s*\d+[sm]", block)
+
+
+@pytest.mark.parametrize("service,cause", [("database", "database_unreachable"), ("transaction-service", "transaction_service_unreachable"), ("api-gateway", "api_gateway_unreachable")])
+def test_a_service_with_pods_but_no_endpoint_is_a_selector_problem_not_a_service_that_is_down(service, cause):
+    out = correlate(fire(("ServiceHasNoEndpoints", service), ("ErrorRateHigh", "api-gateway"), ("APILatencyHigh", "api-gateway")))
+    assert out["root_cause"] == cause and out["playbook"] == "fix_service_selector.yml" and out["confidence"] >= 0.75
+    assert ambiguous_causes(fire(("ServiceHasNoEndpoints", service), ("ErrorRateHigh", "api-gateway"))) == [cause]      # never also the 'down' cause
+
+
+def test_the_alert_that_means_no_endpoint_leaves_out_a_deployment_with_no_replica():
+    rules = (ROOT / "monitoring" / "alert-rules.yaml").read_text(encoding="utf-8")
+    block = rules.split("alert: ServiceHasNoEndpoints")[1]
+    assert "kube_endpointslice_info" in block and "unless on(endpointslice)" in block and "kube_deployment_status_replicas_available" in block and "> 0" in block
