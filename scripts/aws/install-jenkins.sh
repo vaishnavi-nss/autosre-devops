@@ -10,13 +10,13 @@ BRANCH="${BRANCH:-devops-completion}"
 HOME_DIR=/var/lib/jenkins
 PASSFILE="/home/$OWNER/.jenkins-admin-pass"
 
-apt-get update -qq
-apt-get install -y -qq openjdk-17-jre-headless fontconfig python3-venv git curl >/dev/null
+apt-get -o DPkg::Lock::Timeout=900 update -qq
+apt-get -o DPkg::Lock::Timeout=900 install -y -qq openjdk-17-jre-headless fontconfig python3-venv git curl >/dev/null
 install -d -m 0755 /usr/share/keyrings
 curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key -o /usr/share/keyrings/jenkins-keyring.asc
 echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" > /etc/apt/sources.list.d/jenkins.list
-apt-get update -qq
-apt-get install -y -qq jenkins >/dev/null
+apt-get -o DPkg::Lock::Timeout=900 update -qq
+apt-get -o DPkg::Lock::Timeout=900 install -y -qq jenkins >/dev/null
 systemctl stop jenkins || true
 
 # Plugins, installed before first start so no setup wizard is needed.
