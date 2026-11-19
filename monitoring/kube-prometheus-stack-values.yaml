@@ -42,6 +42,15 @@ alertmanager:
       group_interval: 1m
       repeat_interval: 1h
       routes:
+        # A crash-looping revision raises PodRestartsHigh about a minute before RolloutStalled (the deciding alert) does. Grouped on its own for 3 minutes, both arrive in
+        # one webhook, so the engine never sees the early half as an unknown cause. A restart storm without a stalled rollout is still handed to a person, 3 minutes later.
+        - receiver: autosre-correlation
+          matchers:
+            - namespace = "autosre"
+            - service =~ "frontend|api-gateway|transaction-service|database"
+            - alertname =~ "PodRestartsHigh|RolloutStalled"
+          group_wait: 3m
+          continue: false
         - receiver: autosre-correlation
           matchers:
             - namespace = "autosre"
