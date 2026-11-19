@@ -294,3 +294,16 @@ def test_a_gate_veto_still_stops_the_replay():
     ev = history.build([inc], [], [])["incidents"][0]["events"]
     st = run_js(f"c.trackerStages({json.dumps(ev)}, 9e15, {{final: true}})")
     assert st[3]["state"] == "stop"
+
+
+def test_an_early_low_confidence_notice_is_partial_when_the_same_fault_follows_with_more_confidence():
+    first = _inc("INC-1", "2026-11-19T08:03:22+00:00", ["DeploymentUnavailable"], "database", "database_down")
+    first.update(confidence=0.6, remediation={"status": "escalated", "reason": "Confidence below threshold"})
+    second = _inc("INC-2", "2026-11-19T08:04:21+00:00", ["DeploymentUnavailable", "ErrorRateHigh", "APILatencyHigh"], "database", "database_down")
+    second.update(confidence=1.0)
+    lone = _inc("INC-3", "2026-11-19T09:30:00+00:00", ["DeploymentUnavailable"], "database", "database_down")
+    lone.update(confidence=0.6, remediation={"status": "escalated", "reason": "Confidence below threshold"})
+    out = {i["id"]: i for i in history.build([first, second, lone], [], [])["incidents"]}
+    assert out["INC-1"]["partial"] is True and out["INC-1"]["superseded_by"] == "INC-2"
+    assert out["INC-2"]["partial"] is False
+    assert out["INC-3"]["partial"] is False      # nothing better follows it: a real low-confidence escalation stays visible

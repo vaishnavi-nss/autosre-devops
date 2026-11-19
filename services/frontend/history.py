@@ -169,7 +169,18 @@ def mark_partial(incs: list[dict]) -> None:
     named = [i for i in incs if i.get("cause")]
     for i in incs:
         i["partial"], i["superseded_by"] = False, None
-        if i.get("cause") or i.get("action") != "escalated":
+    for i in incs:
+        if i.get("action") != "escalated":
+            continue
+        if i.get("cause"):
+            # a first webhook with only the deciding symptom scores below the gate (for example 60%); the next webhook of the same fault carries the full
+            # symptom set. If the same cause on the same service arrives within the window with a higher confidence, this one is only the early part of it.
+            r = parse(i.get("received"))
+            for b in named:
+                rb = parse(b.get("received"))
+                if b is not i and b["cause"] == i["cause"] and b.get("service") == i.get("service") and r and rb and 0 < (rb - r).total_seconds() <= PARTIAL_WINDOW_S                         and (b.get("confidence") or 0) > (i.get("confidence") or 0):
+                    i["partial"], i["superseded_by"] = True, b["id"]
+                    break
             continue
         r = parse(i.get("received"))
         names = {a["name"] for a in i.get("alerts") or []}
