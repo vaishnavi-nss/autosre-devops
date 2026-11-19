@@ -60,3 +60,17 @@ One run per fault (two where the first failed). No success rate is claimed: this
   (Alertmanager groups by namespace, group_wait 30 s), then a second webhook names the cause. They inflate the "escalated" count and are noise for an on-call
   engineer. A superseded-incident rule would remove them; not done in this session.
 * Screenshots: `docs/completion/screenshots/200-` to `225-` (website, Jenkins, live results, the InfoInhibitor rule, the drift run).
+
+## Final deploy and the lab restart test
+
+* **Jenkins build #3** of the final commit (28 commits since build #2): every stage green, including the unit tests (9 min 1 s), the image build, the deploy and the
+  verify stage; `Finished: SUCCESS`, all eight deployments 1/1, `AUTO_REMEDIATE=false`. Screenshots 240 and 241.
+* **Is the history really in the bucket?** Before ending the lab the bucket and the cluster held the same records: 91 incidents, 92 events and 63 playbook executions
+  (`autosre/history/*.jsonl`), plus 86 result folders under `autosre/results/`.
+* **Real restart.** The lab was ended (instance stopped) and started again. The instance came back with a new public address (the old one stopped working). `bring-up.sh` started
+  Minikube, waited for all eight deployments, pulled the history from the bucket (91 / 92 / 63, already up to date), and confirmed `AUTO_REMEDIATE=false`. The website at the
+  new address showed the same history as before: 91 incidents, 39 validation runs, 53 setting changes, no errors (screenshots 250 to 253).
+* Lessons from the restart: the AWS console and CloudShell need a fresh session from the lab's own AWS link after Start Lab, the new session sometimes keeps a "cancelled
+  credentials" deny for a minute or two, and the public address changes, so anything that bookmarks the old address must be updated.
+* The engine now also closes incidents once Alertmanager reports that every alert of the group has cleared (a `resolve` event by Alertmanager), so early partial
+  notifications stop sitting in the on-call queue; incidents recorded before this deploy stay open until someone resolves them.
