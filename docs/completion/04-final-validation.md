@@ -7,7 +7,7 @@ one fault at a time, with `AUTO_REMEDIATE` switched on for that run only and con
 What "passed" means: the alert fired, the engine named the right cause, the dispatcher's gate allowed it, the approved playbook ran, **and a separate check read the
 Deployment, Service or pod afterwards and confirmed the fault was gone**. A playbook exiting with code 0 is not enough.
 
-## Result: 17 faults and variations, all recovered live; 5 needed a fix first
+## Result: 17 faults and variations, all recovered live; 5 were not recovered on the first attempt
 
 | Scenario | Outcome | Alert (s) | Incident (s) | Fix (s) | Conf. | Second opinion | Playbook |
 |---|---|---:|---:|---:|---:|---|---|
@@ -36,7 +36,7 @@ Deployment, Service or pod afterwards and confirmed the fault was gone**. A play
 
 One run per fault (two where the first failed). No success rate is claimed: this shows each playbook works against its fault at least once, not how often.
 
-## The five first-attempt failures, each with a real cause
+## The five first-attempt failures, each with a real cause (four were then fixed; the memory one recovered on a re-run)
 
 1. **down:database, 1st run: the scorer vetoed a fault it had never seen.** The dispatcher requires the second opinion to `agree`. The metric scorer was trained on the
    original three causes and a Deployment with no pods has no metrics, so it said `disagree`. Fix: the scorer now answers `no_opinion` for the 14 Kubernetes-state
