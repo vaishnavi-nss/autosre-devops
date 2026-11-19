@@ -246,3 +246,20 @@ def test_evidence_the_dispatcher_collected_is_attached_to_its_incident_and_shown
     block = js[js.index("function evidenceCard"):js.index("function closeDrawer")]
     for field in ("p.name", "p.phase", "p.reason", "x.message", "v)", "e.reason"):
         assert "esc(" + field in block, field
+
+
+def _inc(iid, recv, alerts, service, cause=None, status=None):
+    return {"id": iid, "received_at": recv, "started_at": "2026-11-19T07:18:46+00:00", "service": service, "root_cause": cause,
+            "status": status or ("unmatched" if not cause else "ok"), "alerts": [{"alertname": a, "service": service} for a in alerts],
+            "remediation": {"status": "accepted", "execution_id": "x1"} if cause else {}}
+
+
+def test_a_partial_notification_is_flagged_and_the_diagnosed_incident_is_never_hidden():
+    ex = [{"id": "x1", "status": "succeeded", "finished_at": "2026-11-19T07:23:39+00:00", "playbook": "scale_replicas.yml"}]
+    stray = _inc("INC-1", "2026-11-19T07:23:21+00:00", ["APILatencyHigh", "CPUThrottlingHigh"], "api-gateway")
+    real = _inc("INC-2", "2026-11-19T07:23:22+00:00", ["ContainerMemoryHigh", "APILatencyHigh"], "transaction-service", "high_memory_usage")
+    far = _inc("INC-3", "2026-11-19T09:00:00+00:00", ["APILatencyHigh"], "api-gateway")
+    out = {i["id"]: i for i in history.build([stray, real, far], ex, [])["incidents"]}
+    assert out["INC-1"]["partial"] is True and out["INC-1"]["superseded_by"] == "INC-2"
+    assert out["INC-2"]["partial"] is False
+    assert out["INC-3"]["partial"] is False          # nothing with a cause near it: a real unknown-cause escalation stays visible

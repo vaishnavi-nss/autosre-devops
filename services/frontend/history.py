@@ -146,6 +146,30 @@ def _evidence(ref, collected: dict[str, dict]) -> dict | None:
     return {"status": rec.get("status"), "service": rec.get("target_service"), "at": rec.get("finished_at") or rec.get("started_at"), "data": rec.get("diagnostics"), "reason": rec.get("reason")}
 
 
+PARTIAL_WINDOW_S = 600
+
+
+def mark_partial(incs: list[dict]) -> None:
+    """Flag the early partial notifications: an incident with no named cause whose alerts overlap (same alert name or same service) with an incident
+    that does have a cause, received within ten minutes. Alertmanager can post a group before its deciding alert has fired, or a group of stray
+    alerts at the same moment as a real fault; the later or sibling incident carries the diagnosis, so the partial one is only noise for an on-call
+    engineer. Sets `partial` (True/False) and `superseded_by` (the id of the incident that carries the diagnosis)."""
+    named = [i for i in incs if i.get("cause")]
+    for i in incs:
+        i["partial"], i["superseded_by"] = False, None
+        if i.get("cause") or i.get("action") != "escalated":
+            continue
+        r = parse(i.get("received"))
+        names = {a["name"] for a in i.get("alerts") or []}
+        for b in named:
+            rb = parse(b.get("received"))
+            if not r or not rb or abs((rb - r).total_seconds()) > PARTIAL_WINDOW_S:
+                continue
+            if names & {a["name"] for a in b.get("alerts") or []} or (i.get("service") and i.get("service") == b.get("service")):
+                i["partial"], i["superseded_by"] = True, b["id"]
+                break
+
+
 def build(incidents: list[dict], executions: list[dict], events: list[dict], diagnostics: list[dict] | None = None) -> dict:
     """The website's history: normalised incidents (newest first), setting changes and scenario runs (newest first)."""
     by_exec = {e.get("id"): e for e in executions}
@@ -158,5 +182,6 @@ def build(incidents: list[dict], executions: list[dict], events: list[dict], dia
             resolved[e["name"]] = {"by": e.get("by"), "t": e.get("t"), "text": e.get("text")}
     evidence = {d.get("id"): d for d in diagnostics or []}
     inc = [normalize(i, by_exec, acks, resolved, evidence) for i in incidents]
-    inc.sort(key=lambda i: i["t"] or "", reverse=True)
+    inc.sort(key=lambda i: (i["t"] or "", i["received"] or ""), reverse=True)
+    mark_partial(inc)
     return {"incidents": inc, "changes": [e for e in events if e.get("kind") == "change"], "runs": [e for e in events if e.get("kind") == "run"]}

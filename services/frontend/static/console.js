@@ -76,7 +76,7 @@
   let VIEW = 'overview';
   let HIST = { incidents: [], changes: [], runs: [], errors: {} };
   let BUNDLE = { runs: [], changes: [] };
-  const F = { range: 9999, q: '', action: '', cause: '', service: '', ml: '', page: 0 };
+  const F = { range: 9999, q: '', action: '', cause: '', service: '', ml: '', page: 0, partial: false };
   const REPLAY = { id: '', playing: false, speed: 10, clock: 0, from: 0, to: 0, timer: null, watch: null };
   const NAVS = {
     executive: [['overview', 'Overview'], ['telemetry', 'Telemetry & Deep-Dive'], ['replay', 'Fault Replay'], ['trends', 'Trends']],
@@ -95,7 +95,8 @@
   const fmt = v => v === null ? '-' : new Date(v).toLocaleString('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' UTC';
   const ago = v => { if (v === null) return '-'; const s = (Date.now() - v) / 1000; if (s < 90) return 'just now'; const m = s / 60; if (m < 90) return Math.round(m) + ' min ago'; const h = m / 60; if (h < 36) return Math.round(h) + ' h ago'; return Math.round(h / 24) + ' d ago'; };
   const who = a => a ? (a === ME ? a + ' (you)' : a) : null;
-  const incs = () => HIST.incidents || [];
+  const incs = () => (HIST.incidents || []).filter(i => F.partial || !i.partial);            // partial notifications are hidden unless asked for
+  const partials = () => (HIST.incidents || []).filter(i => i.partial).length;
   const toast = t => { const e = $('toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => { e.style.display = 'none'; }, 2600); };
   const host = location.hostname;
 
@@ -162,6 +163,7 @@
     if ($('f-clear')) $('f-clear').onclick = () => { Object.assign(F, { action: '', cause: '', service: '', ml: '', q: '', page: 0 }); render(); };
     if ($('prev')) $('prev').onclick = () => { F.page--; render(); };
     if ($('next')) $('next').onclick = () => { F.page++; render(); };
+    if ($('f-partial')) $('f-partial').onchange = e => { F.partial = e.target.checked; F.page = 0; render(); };
     if ($('export')) $('export').onclick = exportCsv;
   }
   const matches = i => {
@@ -177,11 +179,23 @@
   const kpi = (l, v, d) => '<div class="card cx-kpi"><div class="l">' + l + '</div><div class="v">' + v + '</div><div class="d">' + d + '</div></div>';
   const opt = (arr, cur, all) => '<option value="">' + all + '</option>' + arr.map(([v, l]) => '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + l + '</option>').join('');
 
+  // A fault is one real event: incidents with the same cause and service that follow each other within 15 minutes count once.
+  // Fixed = any of them was auto-fixed; needed a human = it was run live and none was fixed; dry runs and decision-only records are not counted as live.
+  function faultsOf(list) {
+    const out = [], last = {};
+    list.slice().sort((a, b) => (ms(a.received) || 0) - (ms(b.received) || 0)).forEach(i => {
+      const k = (i.cause || 'unknown') + '|' + i.service, t = ms(i.received) || 0, f = last[k];
+      if (f && t - f.end <= 15 * 60e3) { f.items.push(i); f.end = Math.max(f.end, t); } else { const n = { items: [i], end: t }; last[k] = n; out.push(n); }
+    });
+    out.forEach(f => { f.live = f.items.some(i => i.action !== 'dry_run' && i.action !== 'decision'); f.fixed = f.items.some(i => i.action === 'auto_fixed'); });
+    return out;
+  }
   function pageIncidents() {
     const all = incs(), list = all.filter(matches), open = all.filter(i => i.open);
     const inr = all.filter(i => F.range >= 9999 || Date.now() - ms(i.t) <= F.range * 864e5);
     const fixed = inr.filter(i => i.action === 'auto_fixed'), esc_ = inr.filter(i => i.action === 'escalated' || i.action === 'vetoed');
     const live = inr.filter(i => i.action !== 'dry_run' && i.action !== 'decision');
+    const fl = faultsOf(inr), flLive = fl.filter(f => f.live), flFixed = flLive.filter(f => f.fixed), flEsc = flLive.filter(f => !f.fixed);
     const needs = open.map(i => '<div class="item" data-id="' + i.id + '"><span class="cx-pill p-open">OPEN</span><b class="mono">' + esc(i.id) + '</b><span class="' + (i.sev === 'SEV2' ? 'sev2' : '') + '">' + i.sev + '</span><span>' + esc(i.service) + '</span><span class="why">' + esc(cname(i.cause)) + ': ' + esc(i.reason) + '</span><span class="mute">' + ago(ms(i.received)) + (i.assignee ? ' &middot; ' + esc(who(i.assignee)) + ' investigating' : ' &middot; <b style="color:var(--status-err)">unacknowledged</b>') + '</span></div>').join('');
     const per = 25, pages = Math.max(1, Math.ceil(list.length / per)); F.page = Math.min(F.page, pages - 1);
     const rows = list.slice(F.page * per, F.page * per + per).map(i => { const a = label(i);
@@ -189,15 +203,15 @@
     const err = HIST.errors && Object.keys(HIST.errors).length ? '<div class="cx-note">Some data sources did not answer (' + esc(Object.keys(HIST.errors).join(', ')) + '); the list shows what was available.</div>' : '';
     return '<h1>Incidents</h1><p class="sub">' + list.length + ' of ' + all.length + ' recorded incidents match. Click a row for its timeline, evidence and, with Transparency mode on, what each setting would have decided.</p>' + err +
       (open.length ? '<div class="card cx-need"><h2>Needs you now (' + open.length + ')</h2>' + needs + '</div>' : '') +
-      '<div class="cx-kpis">' + kpi('Incidents', inr.length, 'in the selected range') + kpi('Auto-resolved', pct(fixed.length, live.length), fixed.length + ' of ' + live.length + ' with live remediation') +
-      kpi('Escalated to a person', pct(esc_.length, live.length), esc_.length + ' needed a human') + kpi('Time to fix (auto)', dur(mean(fixed.map(i => i.ttr_s))), 'first alert to verified recovery') +
+      '<div class="cx-kpis">' + kpi('Faults', fl.length, inr.length + ' incident records' + (partials() && !F.partial ? ', ' + partials() + ' partial notifications hidden' : '')) + kpi('Auto-resolved', pct(flFixed.length, flLive.length), flFixed.length + ' of ' + flLive.length + ' faults run with live remediation') +
+      kpi('Escalated to a person', pct(flEsc.length, flLive.length), flEsc.length + ' faults needed a human') + kpi('Time to fix (auto)', dur(mean(fixed.map(i => i.ttr_s))), 'first alert to verified recovery') +
       kpi('Time to fix (human)', dur(mean(esc_.map(i => i.ttr_s))), 'first alert to resolved') + kpi('Open now', open.length, 'waiting for a person') + '</div>' +
       '<div class="cx-bar"><select id="f-range"><option value="1"' + (F.range === 1 ? ' selected' : '') + '>Last 24 hours</option><option value="7"' + (F.range === 7 ? ' selected' : '') + '>Last 7 days</option><option value="30"' + (F.range === 30 ? ' selected' : '') + '>Last 30 days</option><option value="9999"' + (F.range === 9999 ? ' selected' : '') + '>All time</option></select>' +
       '<select id="f-action">' + opt([['open', 'Open now'], ['auto_fixed', 'Auto-fixed'], ['escalated', 'Escalated'], ['vetoed', 'Held by ML gate'], ['dry_run', 'Dry run'], ['running', 'Fixing now']], F.action, 'All outcomes') + '</select>' +
       '<select id="f-cause">' + opt(Object.keys(CAUSE).map(k => [k, CAUSE[k]]).concat([['unknown', 'Unknown cause']]), F.cause, 'All causes') + '</select>' +
       '<select id="f-service">' + opt(['api-gateway', 'transaction-service', 'database', 'frontend'].map(s => [s, s]), F.service, 'All services') + '</select>' +
       '<select id="f-ml">' + opt([['agree', 'ML agrees'], ['disagree', 'ML disagrees'], ['unavailable', 'ML unavailable'], ['none', 'ML not consulted']], F.ml, 'Any ML verdict') + '</select>' +
-      '<input type="search" id="f-q" placeholder="Search id, service, cause, person" value="' + esc(F.q === '' ? '' : F.q).replace(/^-$/, '') + '"><button class="cx-btn" id="f-clear">Clear</button><div class="cx-grow"></div><button class="cx-btn" id="export">Export CSV</button></div>' +
+      '<input type="search" id="f-q" placeholder="Search id, service, cause, person" value="' + esc(F.q === '' ? '' : F.q).replace(/^-$/, '') + '"><button class="cx-btn" id="f-clear">Clear</button><label class="cx-chk"><input type="checkbox" id="f-partial"' + (F.partial ? ' checked' : '') + '> show partial notifications (' + partials() + ')</label><div class="cx-grow"></div><button class="cx-btn" id="export">Export CSV</button></div>' +
       '<div class="card cx-tw"><table><thead><tr><th>When</th><th>ID</th><th>Sev</th><th>Service</th><th>Cause</th><th>Conf.</th><th>ML</th><th>Outcome</th><th>Time to fix</th><th>Owner</th></tr></thead><tbody>' + (rows || '<tr><td colspan="10" class="mute">No incidents recorded yet. They appear here as the engine receives them.</td></tr>') + '</tbody></table></div>' +
       '<div class="cx-pager"><button class="cx-btn" id="prev"' + (F.page === 0 ? ' disabled' : '') + '>Previous</button> page ' + (F.page + 1) + ' of ' + pages + ' <button class="cx-btn" id="next"' + (F.page >= pages - 1 ? ' disabled' : '') + '>Next</button></div>';
   }
@@ -208,7 +222,7 @@
 
   // ---- drawer
   function openDrawer(id) {
-    const i = incs().find(x => x.id === id); if (!i) return;
+    const i = (HIST.incidents || []).find(x => x.id === id); if (!i) return;
     const a = label(i), vr = variantRows(i);
     const tl = (i.events || []).map(e => '<li class="s-' + esc(e.state) + '"><span class="mono mute">' + hms(ms(e.t)) + '</span><span class="dot"></span><span>' + esc(e.text) + '</span></li>').join('');
     const ev = (i.matched || []).map(k => '<tr><td class="mono">' + esc(k) + '</td><td>fired</td></tr>').concat((i.missing || []).map(k => '<tr><td class="mono">' + esc(k) + '</td><td class="mute">did not fire</td></tr>')).join('');
@@ -246,7 +260,7 @@
   function currentIncident() {
     const all = incs();
     if (REPLAY.id) return all.find(i => i.id === REPLAY.id) || null;
-    return all[0] || null;                                      // newest
+    return all.slice().sort((a, b) => (ms(b.received) || 0) - (ms(a.received) || 0))[0] || null;      // newest received, never a hidden partial one
   }
   function pageReplay() {
     const opts = incs().slice(0, 100).map(i => '<option value="' + esc(i.id) + '"' + (i.id === REPLAY.id ? ' selected' : '') + '>' + esc(i.id) + ' ' + esc(cname(i.cause)) + ' (' + fmt(ms(i.t)).slice(0, 17) + ')</option>').join('');
