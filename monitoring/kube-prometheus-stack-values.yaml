@@ -45,7 +45,7 @@ alertmanager:
         - receiver: autosre-correlation
           matchers:
             - namespace = "autosre"
-            - service =~ ".+"      # only AutoSRE's own symptom rules carry a service label; default kube-prometheus-stack alerts (CPUThrottlingHigh and the like) are noise here
+            - service =~ "frontend|api-gateway|transaction-service|database"   # only the four AutoSRE services; default kube-prometheus-stack alerts (CPUThrottlingHigh and the like carry service=kubelet) are noise here
           continue: false
 
     receivers:
