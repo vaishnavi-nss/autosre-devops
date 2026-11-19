@@ -190,7 +190,7 @@ def test_capture_records_what_the_engine_decided_not_just_what_it_received(clien
     # an unmatched incident is captured too, with its escalation
     sample_payload["alerts"] = [a for a in sample_payload["alerts"]
                                 if a["labels"]["alertname"] != "DBPoolNearExhaustion"]
-        engine.RECENT_INCIDENTS.clear()                                   # with no recent diagnosis these effect symptoms are an unknown cause, not a residual notice
+    engine.RECENT_INCIDENTS.clear()                                   # with no recent diagnosis these effect symptoms are an unknown cause, not a residual notice
     client.post("/alerts", json=sample_payload)
     last = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])
     assert last["response"]["status"] == "unmatched" and last["response"]["action"] == "escalate_to_human"
