@@ -91,3 +91,5 @@
 .cx-chain { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin: 0.4rem 0 0.9rem; } .cx-chain span.node { border: 1px solid var(--border-color); background: var(--card-bg); border-radius: 6px; padding: 0.4rem 0.8rem; font-weight: 700; font-size: 0.82rem; }
 @media (max-width: 900px) { .rp-pipe { grid-template-columns: repeat(2, 1fr); } .cx-grid2 { grid-template-columns: 1fr; } }
 .cx-chk { font-size: 0.82rem; color: var(--muted, #7a8aa8); display: inline-flex; gap: 0.35rem; align-items: center; }
+
+.rp-stage.soft { border-top-color: var(--status-err); background: var(--status-ok-bg); } .rp-stage.soft .when { color: var(--status-err); }

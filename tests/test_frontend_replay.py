@@ -263,3 +263,34 @@ def test_a_partial_notification_is_flagged_and_the_diagnosed_incident_is_never_h
     assert out["INC-1"]["partial"] is True and out["INC-1"]["superseded_by"] == "INC-2"
     assert out["INC-2"]["partial"] is False
     assert out["INC-3"]["partial"] is False          # nothing with a cause near it: a real unknown-cause escalation stays visible
+
+
+def _state_fault(verdict, action_status="accepted"):
+    inc = {"id": "INC-9", "received_at": "2026-11-19T07:50:23+00:00", "started_at": "2026-11-19T07:48:51+00:00", "service": "database", "root_cause": "database_down",
+           "confidence": 1.0, "status": "ok", "alerts": [{"alertname": "DeploymentUnavailable", "service": "database"}], "matched_symptoms": ["DeploymentUnavailable"],
+           "second_opinion": {"verdict": verdict, "scorer_fault": "db_connection_pool_exhaustion", "scorer_service": "transaction-service"},
+           "remediation": {"status": action_status, "execution_id": "x1"}}
+    ex = {"id": "x1", "status": "succeeded", "playbook": "restore_service.yml", "started_at": "2026-11-19T07:50:22+00:00", "finished_at": "2026-11-19T07:50:53+00:00",
+          "duration_s": 30.8, "steps": [{"step": "verify", "t": "2026-11-19T07:50:52+00:00"}, {"step": "recovered", "t": "2026-11-19T07:50:53+00:00"}]}
+    return history.build([inc], [ex], [])["incidents"][0]
+
+
+def test_an_ml_disagree_on_a_state_fault_is_advisory_so_the_replay_carries_on():
+    i = _state_fault("disagree")
+    ml = [e for e in i["events"] if e["stage"] == 4][0]
+    assert ml["state"] == "done" and ml["advisory"] is True and "maybe disagrees" in ml["text"] and ml["text_full"].startswith("ML says disagree")
+    soft = run_js(f"c.trackerStages({json.dumps(i['events'])}, 9e15, {{final: true}})")
+    assert [s["state"] for s in soft[:8]] == ["done"] * 7 + ["done"] or soft[6]["state"] == "done"      # nothing stops; recovery is verified
+    assert soft[3]["state"] == "done" and soft[4]["state"] == "done" and soft[6]["state"] == "done"
+    full = run_js(f"c.trackerStages({json.dumps(i['events'])}, 9e15, {{final: true, transparency: true}})")
+    assert full[3]["state"] == "soft" and full[3]["text"].startswith("ML says disagree") and full[6]["state"] == "done"
+
+
+def test_a_gate_veto_still_stops_the_replay():
+    i = _state_fault("disagree")
+    i2 = dict(i)
+    inc = {"id": "INC-8", "received_at": "2026-11-19T07:50:23+00:00", "service": "database", "root_cause": "database_down", "confidence": 1.0, "status": "vetoed",
+           "alerts": [], "second_opinion": {"verdict": "disagree"}}
+    ev = history.build([inc], [], [])["incidents"][0]["events"]
+    st = run_js(f"c.trackerStages({json.dumps(ev)}, 9e15, {{final: true}})")
+    assert st[3]["state"] == "stop"

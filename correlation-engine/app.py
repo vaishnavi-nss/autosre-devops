@@ -46,6 +46,9 @@ SERVICE_NAME = os.getenv("SERVICE_NAME", "correlation-engine")
 CAPTURE_PATH = os.getenv("CAPTURE_PATH")  # unset = capture disabled
 SECOND_OPINION_URL = os.getenv("SECOND_OPINION_URL")          # unset = no second opinion
 SECOND_OPINION_MODE = os.getenv("SECOND_OPINION_MODE", "shadow")   # shadow | gate
+# Gate mode can only veto the original resource causes. For a Kubernetes-state cause the evidence is the cluster state itself (the scorer is blind to
+# several of these faults and once vetoed a correct database_down live), so its verdict is recorded and shown but never stops the fix, same as in the dispatcher.
+GATED_CAUSES = frozenset({"db_connection_pool_exhaustion", "high_memory_usage", "db_disk_full"})
 SECOND_OPINION_TIMEOUT = float(os.getenv("SECOND_OPINION_TIMEOUT", "4"))
 # Escalate rather than act when the deciding symptoms of two or more causes fire together. Off by default.
 ESCALATE_ON_AMBIGUITY = os.getenv("ESCALATE_ON_AMBIGUITY", "false").lower() in ("1", "true", "yes")
@@ -162,7 +165,7 @@ async def receive_alerts(payload: dict):
     opinion = None
     if SECOND_OPINION_URL:
         opinion = await _second_opinion(result, firing)
-        if SECOND_OPINION_MODE == "gate" and opinion["verdict"] == "disagree":
+        if SECOND_OPINION_MODE == "gate" and opinion["verdict"] == "disagree" and result["root_cause"] in GATED_CAUSES:
             vetoed_incidents_total.labels(SERVICE_NAME).inc()
             log.warning("second opinion disagrees, escalating: %s", opinion.get("reason"))
             return _capture(payload, {

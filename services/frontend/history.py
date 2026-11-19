@@ -74,8 +74,13 @@ def _events(inc: dict, ex: dict | None, action: str) -> list[dict]:
     so = inc.get("second_opinion")
     if cause and so:
         v = so.get("verdict")
-        add(4, "stop" if v == "disagree" else ("done" if v == "agree" else "warn"), recv,
-            f"ML says {v}" + (f": metrics point at {so.get('scorer_fault')}" + (f" on {so.get('scorer_service')}" if so.get("scorer_service") else "") if so.get("scorer_fault") else ""))
+        detail = (f": metrics point at {so.get('scorer_fault')}" + (f" on {so.get('scorer_service')}" if so.get("scorer_service") else "")) if so.get("scorer_fault") else ""
+        if v == "disagree" and cause in STATE_CAUSES and action != "vetoed":
+            # advisory for a state fault: it did not gate the fix, so the replay carries on and shows it softly; Transparency mode shows the full verdict
+            add(4, "done", recv, "ML maybe disagrees (advisory only: the cluster state decides this fault, so the fix went ahead)")
+            ev[-1].update(advisory=True, text_full=f"ML says disagree{detail}")
+        else:
+            add(4, "stop" if v == "disagree" else ("done" if v == "agree" else "warn"), recv, f"ML says {v}{detail}")
     elif cause:
         add(4, "na", recv, "The second opinion was not consulted")
     rem = inc.get("remediation")
@@ -146,6 +151,13 @@ def _evidence(ref, collected: dict[str, dict]) -> dict | None:
     return {"status": rec.get("status"), "service": rec.get("target_service"), "at": rec.get("finished_at") or rec.get("started_at"), "data": rec.get("diagnostics"), "reason": rec.get("reason")}
 
 
+# Kubernetes-state causes: the dispatcher records the scorer's verdict for these but never lets it gate the fix (mirrors remediation-dispatcher STATE_CAUSES).
+STATE_CAUSES = frozenset({
+    "database_down", "transaction_service_down", "api_gateway_down", "bad_rollout_transaction_service", "bad_rollout_api_gateway",
+    "database_unreachable", "transaction_service_unreachable", "api_gateway_unreachable", "deployment_paused_transaction_service",
+    "deployment_paused_api_gateway", "service_type_changed_database", "service_type_changed_transaction_service",
+    "service_type_changed_api_gateway", "replicas_above_baseline",
+})
 PARTIAL_WINDOW_S = 600
 
 

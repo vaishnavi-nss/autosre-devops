@@ -207,3 +207,13 @@ def test_with_the_ambiguity_rule_on_the_blocked_incident_still_shows_what_the_ru
     r = rows(body["variants"])
     assert body["action"] == "escalate_to_human" and r["rules"]["action"] == "act" and r["amb"]["action"] == "escalate"
     assert body["variants"]["second_opinion_verdict"] == "agree"
+
+
+def test_gate_mode_never_vetoes_a_kubernetes_state_cause(client, monkeypatch):
+    """The scorer is blind to several state faults and once vetoed a correct database_down live: in gate mode too its verdict is recorded, not obeyed."""
+    enable(monkeypatch, "gate", fake("disagree", "metrics point at the pool"))
+    alerts = [{"status": "firing", "labels": {"alertname": n, "service": s, "severity": "critical"}, "annotations": {}, "startsAt": "2026-11-19T07:48:51Z"}
+              for n, s in [("DeploymentUnavailable", "database"), ("ErrorRateHigh", "api-gateway"), ("APILatencyHigh", "api-gateway")]]
+    body = client.post("/alerts", json={"receiver": "x", "status": "firing", "alerts": alerts, "commonLabels": {}, "groupLabels": {}}).json()
+    assert body["root_cause"] == "database_down" and body["status"] != "vetoed"
+    assert body["second_opinion"]["verdict"] == "disagree"

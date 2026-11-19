@@ -28,9 +28,10 @@
       let st, text = '', t = null;
       if (blocked) { st = 'skip'; text = 'Not reached'; }
       else if (stop) { st = 'stop'; text = stop.text; t = ms(stop.t); blocked = true; }
-      else if (done) { st = done.state === 'na' ? 'skip' : (done.state === 'warn' ? 'warn' : 'done'); text = done.text; t = ms(done.t); }
+      else if (done) { st = done.state === 'na' ? 'skip' : (done.state === 'warn' ? 'warn' : 'done'); text = done.text; t = ms(done.t);
+        if (done.advisory && opts.transparency) { st = 'soft'; text = done.text_full || done.text; } }          // advisory ML disagree: green, or red-edged (but not stopping) in Transparency mode
       else if (started) { st = 'active'; text = started.text; t = ms(started.t); }
-      else if ((n === 1 && (seen.length > 0 || opts.live)) || (n > 1 && prev && (prev.state === 'done' || prev.state === 'warn' || prev.state === 'skip' && n === 4))) {
+      else if ((n === 1 && (seen.length > 0 || opts.live)) || (n > 1 && prev && (prev.state === 'done' || prev.state === 'soft' || prev.state === 'warn' || prev.state === 'skip' && n === 4))) {
         if (opts.final) { st = 'skip'; text = n === 6 || n === 7 || n === 8 ? (opts.reason || 'Not run') : 'Not reached'; }
         else { st = 'active'; text = n === 6 ? 'Waiting for the playbook to start' : (n === 7 ? 'Waiting for the verification' : 'Waiting'); }
       } else { st = opts.final ? 'skip' : 'wait'; text = opts.final ? 'Not reached' : 'Waiting'; }
@@ -224,7 +225,8 @@
   function openDrawer(id) {
     const i = (HIST.incidents || []).find(x => x.id === id); if (!i) return;
     const a = label(i), vr = variantRows(i);
-    const tl = (i.events || []).map(e => '<li class="s-' + esc(e.state) + '"><span class="mono mute">' + hms(ms(e.t)) + '</span><span class="dot"></span><span>' + esc(e.text) + '</span></li>').join('');
+    const tmOn = document.body.classList.contains('tm-on');
+    const tl = (i.events || []).map(e => { const tm = e.advisory && tmOn; return '<li class="s-' + (tm ? 'stop' : esc(e.state)) + '"><span class="mono mute">' + hms(ms(e.t)) + '</span><span class="dot"></span><span>' + (tm && e.text_full ? esc(e.text_full) : esc(e.text)) + '</span></li>'; }).join('');
     const ev = (i.matched || []).map(k => '<tr><td class="mono">' + esc(k) + '</td><td>fired</td></tr>').concat((i.missing || []).map(k => '<tr><td class="mono">' + esc(k) + '</td><td class="mute">did not fire</td></tr>')).join('');
     const vt = vr.map(r => '<tr class="' + (r.active ? 'tm-active' : '') + '"><td>' + esc(r.label) + (r.active ? ' (in use)' : '') + '</td><td class="' + (r.escalate ? 'tm-esc' : 'tm-act') + '">' + esc(r.decision) + '</td><td>' + esc(r.why) + '</td></tr>').join('');
     $('drawer').innerHTML = '<div class="cx-dh"><h2 class="mono">' + esc(i.id) + '</h2><span class="cx-pill ' + a[1] + '">' + a[0] + '</span><span class="' + (i.sev === 'SEV2' ? 'sev2' : '') + '">' + i.sev + '</span><span>' + esc(i.service) + '</span><div class="cx-grow"></div><button class="cx-btn" id="dclose">Close</button></div><div class="cx-db cx">' +
@@ -285,18 +287,19 @@
     if (firing && REPLAY.watch) return { inc: null, events: [{ stage: 1, state: 'start', t: new Date(REPLAY.watch.since).toISOString(), text: 'Alerts firing: ' + REPLAY.watch.names.replace(/,/g, ', ') + '. Waiting for the engine.' }], now: Date.now(), final: false, live: true };
     return { inc: null, events: [], now: Date.now(), final: false, live: false };
   }
+  new MutationObserver(() => { if ($('rp-pipe')) renderReplay(); }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
   function renderReplay() {
     if (!$('rp-pipe')) return;
     const t = trackerInput(), nowMs = t.now === Infinity ? Date.now() : t.now;
-    const stages = trackerStages(t.events, t.now === Infinity ? 8.64e15 : t.now, { final: t.final, live: t.live, reason: t.inc && t.inc.reason, alertsQuiet: t.quiet });
+    const stages = trackerStages(t.events, t.now === Infinity ? 8.64e15 : t.now, { final: t.final, live: t.live, reason: t.inc && t.inc.reason, alertsQuiet: t.quiet, transparency: document.body.classList.contains('tm-on') });
     const startAt = stages.length && stages[0].t !== null ? stages[0].t : null;
     $('rp-pipe').innerHTML = stages.map(s => {
       let when = '';
       if (s.state === 'active') when = '<span class="rp-spin"></span>' + (s.t !== null ? Math.max(0, Math.round((nowMs - s.t) / 1000)) + ' s' : 'now');
-      else if (s.state === 'done' || s.state === 'stop' || s.state === 'warn') when = (s.state === 'stop' ? 'STOPPED ' : '') + (s.t !== null ? hms(s.t) + (startAt !== null && s.n > 1 ? ' (+' + Math.max(0, Math.round((s.t - startAt) / 1000)) + ' s)' : '') : '');
+      else if (s.state === 'done' || s.state === 'soft' || s.state === 'stop' || s.state === 'warn') when = (s.state === 'stop' ? 'STOPPED ' : (s.state === 'soft' ? 'DISAGREES ' : '')) + (s.t !== null ? hms(s.t) + (startAt !== null && s.n > 1 ? ' (+' + Math.max(0, Math.round((s.t - startAt) / 1000)) + ' s)' : '') : '');
       return '<div class="rp-stage ' + s.state + '"><span class="when">' + when + '</span><div class="n">Step ' + s.n + '</div><div class="t">' + esc(s.title) + '</div><div class="d">' + esc(s.text) + '</div></div>';
     }).join('');
-    const done = stages.filter(s => s.state === 'done' || s.state === 'warn').length, stopped = stages.some(s => s.state === 'stop');
+    const done = stages.filter(s => s.state === 'done' || s.state === 'soft' || s.state === 'warn').length, stopped = stages.some(s => s.state === 'stop');
     $('rp-bar').style.width = Math.round(100 * done / 8) + '%';
     const bad = $('rp-badge');
     const cls = (c, tx) => { bad.className = 'badge ' + c; bad.textContent = tx; };
@@ -305,7 +308,7 @@
     $('rp-why').textContent = t.inc ? (t.inc.explanation || t.inc.reason || '') : (t.live ? 'A fault is being noticed right now.' : 'Nothing to follow yet. When a fault raises alerts, each step lights up as it happens.');
     $('rp-clock').textContent = REPLAY.playing ? 'virtual time ' + hms(REPLAY.clock) : (t.live ? 'updates every few seconds' : '');
     $('rp-play').textContent = REPLAY.playing ? 'Stop replay' : 'Replay';
-    const logs = (t.events || []).filter(e => ms(e.t) === null || ms(e.t) <= (t.now === Infinity ? 8.64e15 : t.now)).map(e => '<div><span class="ts">' + hms(ms(e.t)) + '</span> <span class="k-' + esc(e.state) + '">' + (e.stage ? 'step ' + e.stage + ': ' : '') + esc(e.text) + '</span></div>').join('');
+    const logs = (t.events || []).filter(e => ms(e.t) === null || ms(e.t) <= (t.now === Infinity ? 8.64e15 : t.now)).map(e => { const tm = e.advisory && document.body.classList.contains('tm-on'); return '<div><span class="ts">' + hms(ms(e.t)) + '</span> <span class="k-' + (tm ? 'stop' : esc(e.state)) + '">' + (e.stage ? 'step ' + e.stage + ': ' : '') + (tm && e.text_full ? esc(e.text_full) : esc(e.text)) + '</span></div>'; }).join('');
     $('rp-log').innerHTML = logs || 'waiting for activity...';
     if (t.inc && $('rp-var')) { const rows = variantRows(t.inc); $('rp-var').innerHTML = rows.length ? '<div style="font-size:0.72rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:var(--text-muted);margin-bottom:0.3rem">What each setting would have decided</div><table><thead><tr><th>Setting</th><th>Decision</th><th>Why</th></tr></thead><tbody>' + rows.map(r => '<tr class="' + (r.active ? 'tm-active' : '') + '"><td>' + esc(r.label) + (r.active ? ' (in use)' : '') + '</td><td class="' + (r.escalate ? 'tm-esc' : 'tm-act') + '">' + esc(r.decision) + '</td><td>' + esc(r.why) + '</td></tr>').join('') + '</tbody></table>' : ''; }
     if ($('rp-pick')) $('rp-pick').onchange = e => { stopReplay(); REPLAY.id = e.target.value; renderReplay(); };
