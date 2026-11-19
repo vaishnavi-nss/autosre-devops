@@ -61,7 +61,7 @@ def fig_pipeline():
         ax.annotate("", xy=(b, 2.4), xytext=(a + 1.45, 2.4), arrowprops=dict(arrowstyle="->", color=INK, lw=1.3))
     ax.text(6, 0.95, "ML never starts anything. It can only say 'agree', 'disagree' or 'no opinion' about a diagnosis the rules already made.",
             ha="center", fontsize=8.6, color=INK, style="italic")
-    ax.text(6, 0.4, "If the ML disagrees, has no opinion, or is down: the dispatcher escalates to a human and runs nothing.", ha="center", fontsize=8.6, color=BAD)
+    ax.text(6, 0.4, "Original causes: if the ML disagrees, has no opinion or is down, the dispatcher escalates and runs nothing.", ha="center", fontsize=8.6, color=BAD)
     fig.tight_layout(); p = FIG / "f1_pipeline.png"; fig.savefig(p, dpi=170); plt.close(fig); return p
 
 
@@ -209,7 +209,7 @@ def build():
           P("The one-paragraph version", H2),
           P("AutoSRE fixes cluster faults on its own, but only when two independent things agree. First, a <b>hand-written rule engine</b> reads Prometheus alerts and names a "
             "root cause with a confidence. Second, a small <b>machine-learning model (the 'second opinion')</b> looks at the raw metrics, which the rules never see, and says "
-            "whether it reaches the same conclusion. The dispatcher runs a fix only if the rules are confident (>= 0.75) <i>and</i> the ML agrees (for the Kubernetes-state faults the model was not trained on, it says 'no opinion', which the dispatcher accepts; a real 'disagree' always stops it). The ML cannot start a fix by itself; "
+            "whether it reaches the same conclusion. The dispatcher runs a fix only if the rules are confident (>= 0.75) <i>and</i> the ML agrees (for Kubernetes-state faults the dispatcher records the ML's verdict but does not let it gate the fix). The ML cannot start a fix by itself; "
             "it is a safety check. Everything below is about that check: its code, its training data, and how well it works."),
           P("The numbers to remember", H2)]
     s.append(table([
@@ -236,7 +236,7 @@ def build():
           table([["Setting", "Default", "Meaning"],
                  ["AUTO_REMEDIATE", "false", "Nothing executes at all unless this is switched on for a named live run."],
                  ["MIN_CONFIDENCE", "0.75", "The rule engine's confidence must be at least this."],
-                 ["SECOND_OPINION_POLICY", "agree", "The ML must answer 'agree'. 'disagree' and 'unavailable' always escalate to a human, and so does 'no_opinion' for the original three causes. For the newer Kubernetes-state causes 'no_opinion' is accepted, because the scorer cannot see some of those faults."],
+                 ["SECOND_OPINION_POLICY", "agree", "The ML must answer 'agree'. 'disagree', 'no_opinion' and 'unavailable' escalate to a human for the original three causes. For the newer Kubernetes-state causes the verdict is recorded and shown but never gates the fix."],
                  ["COOLDOWN_SECONDS", "600", "The same fix for the same cause and service is not repeated inside this window."]],
                 [W * 0.27, W * 0.13, W * 0.60]),
           Spacer(1, 6),
@@ -404,7 +404,7 @@ def leave_one_trial_out(cases):
                 [W * 0.40, W * 0.12, W * 0.26, W * 0.22]), Spacer(1, 4),
           P(f"Only kinds at {own2['kinds_kept_bar']*100:.0f}% or better were kept, so for selector faults (and for extra replicas, which has no trial) the scorer says <i>no opinion</i>. On the held-out windows of the kept kinds the judge "
             f"backed the true claim {J2['true_claims']['agree']} of {sum(J2['true_claims'].values())} times and caught {J2['wrong_claims']['disagree']} of {sum(J2['wrong_claims'].values())} wrong claims. "
-            "Two trials of each state fault is little: these figures show how separable the faults are, not a live accuracy."),
+            "Two trials of each state fault is little: these figures show how separable the faults are, not a live accuracy. Live, the scorer wrongly vetoed a correct database_down, so for these causes its verdict is advisory (chapter 8)."),
           P("Real faults the model had never seen", H2),
           P("The faults were then made real: pool exhaustion leaks every slot of the service's bounded pool, memory holds real memory with real work per request, disk really fills the database's log directory. "
             "Windows from those runs were scored by models that had not trained on them:"),
@@ -438,7 +438,7 @@ def judge(cause, service, scorer_service, scorer_fault, confidence, min_confiden
           table([["Verdict", "Dispatcher does", "Why it is safe"],
                  ["agree", "May run the approved playbook (if confidence >= 0.75, not in cooldown, AUTO_REMEDIATE on)", "Two independent views match."],
                  ["disagree", "Escalates to a human, runs nothing", "Metrics and alerts tell different stories."],
-                 ["no_opinion", "Escalates for the original three causes; accepted for the Kubernetes-state causes", "Silence is not consent. For a state fault the model cannot see, the rules decide alone, still behind the gate and the recovery check."],
+                 ["no_opinion", "Escalates for the original three causes; for state faults the verdict never gates the fix", "Silence is not consent. A state fault is decided by the rules, behind the gate and the recovery check."],
                  ["unavailable", "Escalates", "Service down or slow: the client returns this on any error so it can never make an incident worse."]],
                 [W * 0.14, W * 0.50, W * 0.36]), Spacer(1, 4),
           P("What happened live (on the AWS lab cluster, real faults, safe defaults restored and confirmed after each run)", H2),
@@ -447,7 +447,7 @@ def judge(cause, service, scorer_service, scorer_fault, confidence, min_confiden
                  ["coll2 (retrained model, dry)", "8 of 8 agree; the two-fault 'pair gate' check passed (the gate vetoed when two causes were present)"],
                  ["comp13 (live)", "memory x3, pool x2, disk x2: 6 passed and 1 escalated by policy because the ML said <b>disagree</b> on a real memory fault"],
                  ["cloud1 / cloud2 (live, cold start)", "pool, memory, disk, unknown cause all passed; unknown cause correctly escalated"],
-                 ["final sessions (live, 18 to 19 Nov)", "17 faults and variations recovered; the first down:database and the first memory run were escalated by a <b>disagree</b>, and both recovered afterwards (retrained scorer, re-run)"]],
+                 ["final sessions (live, 18 to 19 Nov)", "17 faults recovered; the first down:database, the first memory run and a later database_down were escalated by a <b>disagree</b>, so state faults no longer gate on the verdict"]],
                 [W * 0.27, W * 0.73]), Spacer(1, 4),
           P("The one disagreement", H2),
           P("In comp13 trial 1, and again on the first memory run of the final session, the ML disagreed with a correct memory diagnosis, so the dispatcher escalated instead of acting. That is the safe outcome, and it is the system working as designed, but it was a <i>false alarm</i> by the scorer. "
@@ -473,7 +473,7 @@ def estimate_fault_start(alerts, deciding):
                  ["Public-dataset model", "Right service 91% of the time but right fault only 67%; kept for reference, not used live."]],
                 [W * 0.30, W * 0.70]),
           P("What to take away", H2),
-          P("1. The ML is a <b>veto</b>, not a decision-maker. It can only cause an escalation, never an action.<br/>"
+          P("1. The ML is a <b>veto</b>, never a decision-maker (advisory only for Kubernetes-state faults).<br/>"
             "2. It looks at <b>different evidence</b> from the rules (raw metrics, not alerts), which is why its agreement means something.<br/>"
             "3. Training on <b>our own</b> injected faults beat training on a public dataset, because the public data lacked our disk and pool signals and used different fault types.<br/>"
             "4. We measured honestly: leave-one-trial-out, a verdict test with a deliberately wrong claim, real faults as a final check, and we reported that retraining did <b>not</b> help.<br/>"
@@ -485,10 +485,6 @@ def estimate_fault_start(alerts, deciding):
 python second-opinion/retrain_with_state_faults.py --old docs/live-validation-run3 docs/live-validation-run4 \\
     docs/live-validation-run5-early docs/live-validation-run8 --new docs/completion/state-fault-trials/A \\
     docs/completion/state-fault-trials/A2 docs/completion/state-fault-trials/B
-
-# the first cluster-trained model
-python second-opinion/train_own.py docs/live-validation-run3 docs/live-validation-run4 \\
-    docs/live-validation-run5-early docs/live-validation-run8
 
 # compare current vs retrained on the real-fault trials
 python second-opinion/eval_real.py --old docs/live-validation-run3 ... --real docs/completion/real-fault-trials
@@ -505,8 +501,6 @@ python scripts/scenarios/run_scenarios.py --out results/run \\
                  ["Root cause", "The underlying fault (pool exhausted, memory held, disk full), not a symptom."],
                  ["Symptom / deciding symptom", "An alert that fired. The deciding one is the symptom that distinguishes one cause from the others."],
                  ["Robust z-score", "How far a metric moved from its normal level, in units of its normal wobble, ignoring outliers."],
-                 ["Leave one out", "Test on a trial (or system) the model never trained on, repeated for every trial."],
-                 ["Calibration (Platt)", "Re-scaling a model's confidence so it better matches how often it is actually right."],
                  ["Escalate", "Hand the incident to a human and run nothing."]],
                 [W * 0.28, W * 0.72])]
     doc = SimpleDocTemplate(str(OUT), pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm, topMargin=14 * mm, bottomMargin=16 * mm,

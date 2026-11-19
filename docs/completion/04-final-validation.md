@@ -74,3 +74,15 @@ One run per fault (two where the first failed). No success rate is claimed: this
   credentials" deny for a minute or two, and the public address changes, so anything that bookmarks the old address must be updated.
 * The engine now also closes incidents once Alertmanager reports that every alert of the group has cleared (a `resolve` event by Alertmanager), so early partial
   notifications stop sitting in the on-call queue; incidents recorded before this deploy stay open until someone resolves them.
+
+## The retrained scorer, and one more live finding
+
+* The scorer was retrained on 32 new state-fault trials plus the 53 earlier ones (two trials of each of 16 causes), learning the *kind* of fault. Held out (leave one trial out, 85 trials): right service
+  98.0%, right service and fault 95.7%. Kept only the kinds at 95% or better (service down, bad rollout, paused, Service type changed, pool, disk, memory); selector faults (83%) are left out.
+  Judge on the held-out windows of the kept kinds: 206 of 208 true claims backed, 206 of 208 wrong claims caught.
+* Live re-check after deploying it: `memory` passed (scorer agreed, 0.75), `paused:api-gateway` passed, but **`down:database` was escalated** ("Second opinion disagrees"): the scorer's metrics pointed at
+  `transaction-service`, a false veto of a correct diagnosis, although held out it had scored right. Live the engine asks at incident time with an estimated fault start, not at the fixed times of the collection runs.
+* Fix: for the Kubernetes-state causes the scorer's verdict is recorded and shown but no longer gates the fix (the evidence is the cluster state itself and each playbook checks its precondition and is verified);
+  the original resource causes still need `agree`. Test `test_a_state_fault_is_never_gated_by_the_scorer_but_the_verdict_is_still_recorded`.
+* Re-run after the policy change: **`down:database` passed** (06:17:15, 2 min 40 s from injection): the scorer still said `disagree` (recorded, no longer gating) and the independent check confirmed the database was
+  back. Live re-check summary with the retrained scorer: memory passed (scorer agreed), paused:api-gateway passed (agreed), down:database escalated on the first run (false veto) and passed after the change.
