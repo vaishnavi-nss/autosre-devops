@@ -125,8 +125,9 @@ async def receive_alerts(payload: dict):
         # and, worse, `unmatched_incidents_total` - the dashboard's "escalated to a human"
         # read 48 after a run that produced only a handful of real escalations.
         resolved_notifications_total.labels(SERVICE_NAME).inc()
-        log.info("resolved notification (%d alert(s)); nothing to diagnose", len(alerts))
-        return {"status": "resolved", "action": "none", "received_alerts": 0}
+        cleared = await _auto_resolve(alerts) if payload.get("status") == "resolved" else []
+        log.info("resolved notification (%d alert(s)); nothing to diagnose; %d incident(s) closed", len(alerts), len(cleared))
+        return {"status": "resolved", "action": "none", "received_alerts": 0, "closed_incidents": cleared}
 
     incidents_received_total.labels(SERVICE_NAME).inc()
 
@@ -332,6 +333,25 @@ def _remember(firing: list, response: dict) -> None:
     }
     RECENT_INCIDENTS.append(record)
     _append(INCIDENT_LOG, record)
+
+
+async def _auto_resolve(alerts: list) -> list[str]:
+    """Close incidents whose alerts have all cleared.
+
+    Alertmanager sets the group's status to "resolved" only when every alert in the group has stopped firing. Every open incident whose alerts are all among the
+    ones that just cleared is then over, whether it was fixed by a playbook or went away by itself; it is recorded as a normal `resolve` event by "Alertmanager",
+    which is how an early partial notification (one generic alert, sent before the deciding alert) stops sitting in the on-call queue for ever. An incident that
+    is already resolved is left alone, and nothing here influences a decision."""
+    cleared_names = {a.get("labels", {}).get("alertname") for a in alerts}
+    done = {e.get("name") for e in RECENT_EVENTS if e.get("kind") == "resolve"}
+    closed = []
+    for inc in list(RECENT_INCIDENTS):
+        names = {a.get("alertname") for a in inc.get("alerts") or []}
+        if inc.get("id") in done or not names or not names <= cleared_names:
+            continue
+        await add_event({"kind": "resolve", "name": inc["id"], "by": "Alertmanager", "text": "every alert of this incident has cleared"})
+        closed.append(inc["id"])
+    return closed
 
 
 @app.get("/incidents")

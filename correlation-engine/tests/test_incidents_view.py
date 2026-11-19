@@ -93,3 +93,33 @@ def test_events_are_recorded_filtered_and_whitelisted(client, monkeypatch, tmp_p
     assert client.post("/events", json={"kind": "change", "text": "x" * 5000}).status_code == 413
     assert len((tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()) == 2
     engine.RECENT_EVENTS.clear(); engine._seq["event"] = 0
+
+
+def _resolved(*names, status="resolved"):
+    return {"status": status, "alerts": [{"status": "resolved", "labels": {"alertname": n, "service": "transaction-service"}} for n in names]}
+
+
+def test_a_group_that_has_fully_cleared_closes_every_open_incident_made_of_those_alerts(client, monkeypatch):
+    import app as engine
+    engine.RECENT_INCIDENTS.clear(); engine.RECENT_EVENTS.clear()
+    monkeypatch.setattr(engine, "SECOND_OPINION_URL", None)
+    monkeypatch.setattr(engine, "DISPATCHER_ENABLED", False)
+    client.post("/alerts", json=_payload(("ErrorRateHigh", "transaction-service")))                                             # an early partial webhook
+    client.post("/alerts", json=_payload(("DBPoolNearExhaustion", "transaction-service"), ("ErrorRateHigh", "transaction-service")))
+    client.post("/alerts", json=_payload(("DBDiskNearFull", "database")))                                                       # a different fault, not cleared
+    body = client.post("/alerts", json=_resolved("DBPoolNearExhaustion", "ErrorRateHigh")).json()
+    assert body["status"] == "resolved" and len(body["closed_incidents"]) == 2
+    events = client.get("/events", params={"kind": "resolve"}).json()["events"]
+    assert {e["name"] for e in events} == set(body["closed_incidents"]) and all(e["by"] == "Alertmanager" for e in events)
+    # asking again closes nothing twice
+    assert client.post("/alerts", json=_resolved("DBPoolNearExhaustion", "ErrorRateHigh")).json()["closed_incidents"] == []
+
+
+def test_a_partial_clearing_closes_nothing(client, monkeypatch):
+    import app as engine
+    engine.RECENT_INCIDENTS.clear(); engine.RECENT_EVENTS.clear()
+    monkeypatch.setattr(engine, "SECOND_OPINION_URL", None)
+    monkeypatch.setattr(engine, "DISPATCHER_ENABLED", False)
+    client.post("/alerts", json=_payload(("DBPoolNearExhaustion", "transaction-service"), ("ErrorRateHigh", "transaction-service")))
+    body = client.post("/alerts", json=_resolved("ErrorRateHigh", status="firing")).json()          # the group is still firing: only one alert cleared
+    assert body.get("closed_incidents", []) == [] and client.get("/events", params={"kind": "resolve"}).json()["events"] == []
