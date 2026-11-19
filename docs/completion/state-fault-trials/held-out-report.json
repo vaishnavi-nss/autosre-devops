@@ -1,0 +1,153 @@
+{
+ "None": {
+  "trials": 10,
+  "probes": 23,
+  "service": 0.782608695652174,
+  "both": 0.782608695652174,
+  "trials_all_right": 9,
+  "wrong": [
+   [
+    "transaction-service",
+    "gateway_fault"
+   ]
+  ]
+ },
+ "api_gateway_down": {
+  "trials": 2,
+  "probes": 8,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 2,
+  "wrong": []
+ },
+ "api_gateway_unreachable": {
+  "trials": 2,
+  "probes": 8,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 2,
+  "wrong": []
+ },
+ "bad_rollout_api_gateway": {
+  "trials": 2,
+  "probes": 8,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 2,
+  "wrong": []
+ },
+ "bad_rollout_transaction_service": {
+  "trials": 2,
+  "probes": 8,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 2,
+  "wrong": []
+ },
+ "database_down": {
+  "trials": 2,
+  "probes": 8,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 2,
+  "wrong": []
+ },
+ "database_unreachable": {
+  "trials": 2,
+  "probes": 8,
+  "service": 1.0,
+  "both": 0.5,
+  "trials_all_right": 1,
+  "wrong": [
+   [
+    "database",
+    "gateway_fault"
+   ]
+  ]
+ },
+ "db_connection_pool_exhaustion": {
+  "trials": 16,
+  "probes": 42,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 16,
+  "wrong": []
+ },
+ "db_disk_full": {
+  "trials": 17,
+  "probes": 44,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 17,
+  "wrong": []
+ },
+ "deployment_paused_api_gateway": {
+  "trials": 2,
+  "probes": 8,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 2,
+  "wrong": []
+ },
+ "deployment_paused_transaction_service": {
+  "trials": 2,
+  "probes": 8,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 2,
+  "wrong": []
+ },
+ "high_memory_usage": {
+  "trials": 16,
+  "probes": 42,
+  "service": 1.0,
+  "both": 0.9523809523809523,
+  "trials_all_right": 15,
+  "wrong": [
+   [
+    "transaction-service",
+    "db_connection_pool_exhaustion"
+   ]
+  ]
+ },
+ "service_type_changed_api_gateway": {
+  "trials": 2,
+  "probes": 8,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 2,
+  "wrong": []
+ },
+ "service_type_changed_database": {
+  "trials": 2,
+  "probes": 8,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 2,
+  "wrong": []
+ },
+ "service_type_changed_transaction_service": {
+  "trials": 2,
+  "probes": 8,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 2,
+  "wrong": []
+ },
+ "transaction_service_down": {
+  "trials": 2,
+  "probes": 8,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 2,
+  "wrong": []
+ },
+ "transaction_service_unreachable": {
+  "trials": 2,
+  "probes": 8,
+  "service": 1.0,
+  "both": 1.0,
+  "trials_all_right": 2,
+  "wrong": []
+ }
+}

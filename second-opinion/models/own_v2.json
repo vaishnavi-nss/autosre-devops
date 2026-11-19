@@ -1,0 +1,79 @@
+{
+  "trained_on": [
+    "docs/live-validation-run3",
+    "docs/live-validation-run4",
+    "docs/live-validation-run5-early",
+    "docs/live-validation-run8",
+    "docs/completion/state-fault-trials"
+  ],
+  "trials": 79,
+  "cases": 231,
+  "faults": [
+    "bad_rollout",
+    "db_connection_pool_exhaustion",
+    "db_disk_full",
+    "deployment_paused",
+    "gateway_fault",
+    "high_memory_usage",
+    "service_down",
+    "service_type_changed"
+  ],
+  "kinds_kept_bar": 0.95,
+  "kinds_dropped": [
+    "gateway_fault",
+    "service_unreachable"
+  ],
+  "leave_one_trial_out": {
+    "windows": 255,
+    "service": 0.98,
+    "service_and_fault": 0.957,
+    "by_kind": {
+      "bad_rollout": {
+        "windows": 16,
+        "accuracy": 1.0
+      },
+      "db_connection_pool_exhaustion": {
+        "windows": 42,
+        "accuracy": 1.0
+      },
+      "db_disk_full": {
+        "windows": 44,
+        "accuracy": 1.0
+      },
+      "deployment_paused": {
+        "windows": 16,
+        "accuracy": 1.0
+      },
+      "gateway_fault": {
+        "windows": 23,
+        "accuracy": 0.783
+      },
+      "high_memory_usage": {
+        "windows": 42,
+        "accuracy": 0.952
+      },
+      "service_down": {
+        "windows": 24,
+        "accuracy": 1.0
+      },
+      "service_type_changed": {
+        "windows": 24,
+        "accuracy": 1.0
+      },
+      "service_unreachable": {
+        "windows": 24,
+        "accuracy": 0.833
+      }
+    }
+  },
+  "judge_on_held_out_windows": {
+    "true_claims": {
+      "agree": 206,
+      "disagree": 2
+    },
+    "wrong_claims": {
+      "disagree": 206,
+      "agree": 2
+    }
+  }
+}

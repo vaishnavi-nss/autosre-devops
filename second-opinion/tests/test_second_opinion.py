@@ -288,10 +288,20 @@ def test_the_scorer_abstains_on_a_state_cause_it_was_not_trained_on():
 
 def test_a_model_trained_on_a_state_cause_judges_it_like_any_other():
     from opinion import judge
-    vocab = {"database_down"}
-    assert judge("database_down", "database", "database", "database_down", 0.9, 0.3, vocab)["verdict"] == "agree"
-    assert judge("database_down", "database", "api-gateway", "database_down", 0.9, 0.3, vocab)["verdict"] == "disagree"
+    vocab = {"service_down"}                 # the model learns the KIND of fault, on whichever service
+    assert judge("database_down", "database", "database", "service_down", 0.9, 0.3, vocab)["verdict"] == "agree"
+    assert judge("api_gateway_down", "api-gateway", "api-gateway", "service_down", 0.9, 0.3, vocab)["verdict"] == "agree"
+    assert judge("database_down", "database", "api-gateway", "service_down", 0.9, 0.3, vocab)["verdict"] == "disagree"
     assert judge("database_down", "database", "database", "high_memory_usage", 0.9, 0.3, vocab)["verdict"] == "disagree"
+    # a state cause whose kind the model does not know still gets no opinion
+    assert judge("database_unreachable", "database", "api-gateway", "service_down", 0.9, 0.3, vocab)["verdict"] == "no_opinion"
+
+
+def test_every_state_cause_maps_to_one_fault_kind_and_the_training_truth_uses_the_same_kinds():
+    import opinion, train_own
+    assert set(opinion.KIND_OF) == set(opinion.STATE_CAUSES)
+    for cause, kind in opinion.KIND_OF.items():
+        assert train_own.TRUTH[cause][1] == kind, cause
 
 
 def test_every_state_signal_has_a_query_a_label_and_a_column_name_the_scorer_parses():
