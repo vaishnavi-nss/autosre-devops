@@ -552,8 +552,10 @@ def test_each_new_cause_maps_to_its_playbook_and_target(payload, playbook, targe
         assert d["extra_vars"] == {"target_service": target, "replicas": 1}
 
 
-def test_a_new_cause_is_still_refused_without_agreement_or_for_the_wrong_service():
-    assert disp.decide(dict(DB_DOWN, second_opinion={"verdict": "disagree"}))["status"] == "escalated"
+def test_a_new_cause_is_still_refused_for_the_wrong_service_or_low_confidence_and_an_original_cause_still_needs_agreement():
+    assert disp.decide(dict(DB_DOWN, second_opinion={"verdict": "disagree"}))["status"] == "ready"           # a state fault: the scorer's verdict is advisory
+    assert disp.decide(dict(POOL, second_opinion={"verdict": "disagree"}))["status"] == "escalated"          # an original resource cause still needs agree
+    assert disp.decide(dict(POOL, second_opinion={"verdict": "no_opinion"}))["status"] == "escalated"
     assert disp.decide(dict(DB_DOWN, service="transaction-service"))["status"] == "escalated"                 # diagnosed service must be the target
     assert disp.decide(dict(BAD_GW, confidence=0.6))["status"] == "escalated"                                  # lone deciding symptom stays below the gate
 
@@ -718,10 +720,13 @@ def test_scaling_back_to_the_baseline_is_verified_by_the_replica_count(isolated,
 
 
 # ---------------------------------------------------------------------------------- state faults and the metric scorer
-def test_a_state_fault_is_not_vetoed_by_a_scorer_that_cannot_see_it():
-    for verdict, status in (("no_opinion", "ready"), ("agree", "ready"), ("disagree", "escalated")):
-        d = disp.decide({**PAUSED_TX, "second_opinion": {"verdict": verdict}})
-        assert d["status"] == status, verdict
+def test_a_state_fault_is_never_gated_by_the_scorer_but_the_verdict_is_still_recorded():
+    """Live, the scorer wrongly vetoed a correct database_down (it pointed at the service above): the evidence for a state fault is the cluster state, so the verdict is advisory."""
+    for verdict in ("no_opinion", "agree", "disagree", None):
+        payload = {**PAUSED_TX, "second_opinion": {"verdict": verdict}} if verdict else {k: v for k, v in PAUSED_TX.items() if k != "second_opinion"}
+        d = disp.decide(payload)
+        assert d["status"] == "ready", verdict
+        assert d["second_opinion"] == verdict
 
 
 def test_the_original_causes_still_need_the_scorer_to_agree():

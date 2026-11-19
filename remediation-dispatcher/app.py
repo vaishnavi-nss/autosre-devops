@@ -244,8 +244,11 @@ def decide(payload: dict, cfg: dict | None = None) -> dict:
                 "playbook": playbook}
 
     verdict, policy = _verdict_of(payload), cfg["second_opinion_policy"]
-    if policy == "agree" and root_cause in STATE_CAUSES:
-        policy = "not_disagree"             # the scorer cannot observe a wrong Kubernetes state; it says no_opinion, which is not a veto
+    if root_cause in STATE_CAUSES and policy in ("agree", "not_disagree"):
+        # The evidence for a wrong Kubernetes state is the cluster state itself (zero available replicas, a Service that selects nothing, a paused Deployment), and every playbook
+        # checks its own precondition and is verified afterwards. The metric scorer cannot see a service with no pods, and live its verdict on `database_down` was a false
+        # veto (it pointed at the service above, 2026-11-19). So for these causes the verdict is recorded and shown but never gates the fix. The original resource causes still need `agree`.
+        policy = "ignore"
     if policy == "agree" and verdict != "agree":
         return {**base, "status": "escalated", "reason": f"Second opinion is {verdict or 'missing'}, policy requires agree",
                 "playbook": playbook, "second_opinion": verdict}
