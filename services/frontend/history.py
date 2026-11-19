@@ -138,7 +138,7 @@ def normalize(inc: dict, executions: dict[str, dict], acks: dict[str, dict], res
         "playbook": inc.get("playbook") or (ex or {}).get("playbook"), "duration_s": (ex or {}).get("duration_s"), "verified": (True if action == "auto_fixed" else None),
         "ttr_s": ttr, "sev": "SEV2" if needs_human else "SEV3", "assignee": (ack or {}).get("by"), "open": bool(needs_human and not res),
         "variants": inc.get("variants"), "ambiguous": (inc.get("variants") or {}).get("ambiguous_causes") or [], "explanation": inc.get("explanation"),
-        "events": events, "note": (res or {}).get("text"), "execution_id": rem.get("execution_id"),
+        "events": events, "residual_of": inc.get("residual_of"), "note": (res or {}).get("text"), "execution_id": rem.get("execution_id"),
         "evidence": _evidence((inc.get("diagnostics") or {}).get("execution_id"), evidence or {}),
     }
 
@@ -170,6 +170,9 @@ def mark_partial(incs: list[dict]) -> None:
     for i in incs:
         i["partial"], i["superseded_by"] = False, None
     for i in incs:
+        if i.get("residual_of"):                 # the engine already decided nobody needs to be asked: effects still clearing after a diagnosed fault
+            i["partial"], i["superseded_by"] = True, i["residual_of"]
+            continue
         if i.get("action") != "escalated":
             continue
         if i.get("cause"):

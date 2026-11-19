@@ -49,6 +49,11 @@ SECOND_OPINION_MODE = os.getenv("SECOND_OPINION_MODE", "shadow")   # shadow | ga
 # Gate mode can only veto the original resource causes. For a Kubernetes-state cause the evidence is the cluster state itself (the scorer is blind to
 # several of these faults and once vetoed a correct database_down live), so its verdict is recorded and shown but never stops the fix, same as in the dispatcher.
 GATED_CAUSES = frozenset({"db_connection_pool_exhaustion", "high_memory_usage", "db_disk_full"})
+# After a fix the deciding alert clears first and the effect symptoms (errors, latency) clear a little later. Alertmanager then notifies a group that holds only those
+# effects; no cause owns them, so the engine used to escalate it as an unknown cause although nothing was wrong any more. If a diagnosis was made in the last
+# RESIDUAL_WINDOW_S and every firing alert is an effect symptom, the notification is recorded as residual and nobody is asked.
+EFFECT_SYMPTOMS = frozenset({"ErrorRateHigh", "APILatencyHigh"})
+RESIDUAL_WINDOW_S = float(os.getenv("RESIDUAL_WINDOW_S", "900"))
 SECOND_OPINION_TIMEOUT = float(os.getenv("SECOND_OPINION_TIMEOUT", "4"))
 # Escalate rather than act when the deciding symptoms of two or more causes fire together. Off by default.
 ESCALATE_ON_AMBIGUITY = os.getenv("ESCALATE_ON_AMBIGUITY", "false").lower() in ("1", "true", "yes")
@@ -145,6 +150,11 @@ async def receive_alerts(payload: dict):
     rules_only = result if not ESCALATE_ON_AMBIGUITY else correlate(firing, False)     # for transparency mode: what the rules alone would say
 
     if result is None:
+        recent = _recent_diagnosis()
+        if recent is not None and {a.get("labels", {}).get("alertname") for a in firing} <= EFFECT_SYMPTOMS:
+            log.info("residual effect symptoms after %s (%s): not an unknown cause, nothing to escalate", recent["id"], recent["root_cause"])
+            return _capture(payload, {"root_cause": None, "confidence": None, "status": "residual", "action": "none", "received_alerts": len(firing),
+                                      "reason": f"effect symptoms still clearing after {recent['id']} ({recent['root_cause']})", "residual_of": recent["id"]})
         opinion0 = None
         if rules_only is not None and SECOND_OPINION_URL:                   # ambiguity rule stopped it before the second opinion was asked; ask for the record
             opinion0 = await _second_opinion(rules_only, firing)
@@ -307,6 +317,21 @@ def _iso(epoch: float | None) -> str | None:
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds") if epoch else None
 
 
+def _recent_diagnosis() -> dict | None:
+    """The newest incident that named a cause within RESIDUAL_WINDOW_S, or None."""
+    now = datetime.now(timezone.utc)
+    for inc in reversed(RECENT_INCIDENTS):
+        if inc.get("status") not in ("correlated", "vetoed") or not inc.get("root_cause"):
+            continue
+        try:
+            age = (now - datetime.fromisoformat(inc["received_at"])).total_seconds()
+        except (KeyError, ValueError, TypeError):
+            continue
+        if age <= RESIDUAL_WINDOW_S:
+            return inc
+    return None
+
+
 def _remember(firing: list, response: dict) -> None:
     """Keep what the engine decided about the latest incidents, for the dashboard. Nothing here influences a decision."""
     so = response.get("second_opinion") or {}
@@ -326,6 +351,7 @@ def _remember(firing: list, response: dict) -> None:
         "missing_symptoms": response.get("missing_symptoms"),
         "explanation": response.get("explanation"),
         "reason": response.get("reason"),
+        "residual_of": response.get("residual_of"),
         "alerts": [{"alertname": a.get("labels", {}).get("alertname"), "service": a.get("labels", {}).get("service")}
                    for a in firing],
         "variants": response.get("variants"),

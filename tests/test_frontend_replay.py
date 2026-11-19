@@ -307,3 +307,10 @@ def test_an_early_low_confidence_notice_is_partial_when_the_same_fault_follows_w
     assert out["INC-1"]["partial"] is True and out["INC-1"]["superseded_by"] == "INC-2"
     assert out["INC-2"]["partial"] is False
     assert out["INC-3"]["partial"] is False      # nothing better follows it: a real low-confidence escalation stays visible
+
+
+def test_a_residual_notice_is_partial_and_never_open():
+    res = {"id": "INC-9", "received_at": "2026-11-19T10:45:21+00:00", "started_at": "2026-11-19T10:43:21+00:00", "status": "residual", "action": "none", "root_cause": None,
+           "residual_of": "INC-8", "reason": "effect symptoms still clearing", "alerts": [{"alertname": "APILatencyHigh", "service": "api-gateway"}], "service": "api-gateway"}
+    out = history.build([res], [], [])["incidents"][0]
+    assert out["partial"] is True and out["superseded_by"] == "INC-8" and out["open"] is False and out["action"] == "decision"
