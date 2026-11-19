@@ -344,7 +344,7 @@ def test_the_manifest_is_safe_by_default_and_grants_what_clear_logs_needs():
     docs = list(yaml.safe_load_all((ROOT / "k8s" / "remediation-dispatcher.yaml").read_text()))
     deploy = next(d for d in docs if d and d["kind"] == "Deployment")
     env = {e["name"]: e["value"] for e in deploy["spec"]["template"]["spec"]["containers"][0]["env"]}
-    assert env["AUTO_REMEDIATE"] == "false" and env["MIN_CONFIDENCE"] == "0.75" and env["SECOND_OPINION_POLICY"] == "agree"
+    assert env["AUTO_REMEDIATE"] == "false" and env["MIN_CONFIDENCE"] == "0.75" and env["SECOND_OPINION_POLICY"] == "ignore"
     role = next(d for d in docs if d and d["kind"] == "Role")
     granted = {(g, r, v) for rule in role["rules"] for g in rule["apiGroups"] for r in rule["resources"] for v in rule["verbs"]}
     assert ("", "pods/exec", "create") in granted and ("", "pods/exec", "get") in granted and ("", "pods", "list") in granted

@@ -75,8 +75,8 @@ def _events(inc: dict, ex: dict | None, action: str) -> list[dict]:
     if cause and so:
         v = so.get("verdict")
         detail = (f": metrics point at {so.get('scorer_fault')}" + (f" on {so.get('scorer_service')}" if so.get("scorer_service") else "")) if so.get("scorer_fault") else ""
-        if v == "disagree" and cause in STATE_CAUSES and action != "vetoed":
-            # advisory for a state fault: it did not gate the fix, so the replay carries on and shows it softly; Transparency mode shows the full verdict
+        if v == "disagree" and action != "vetoed" and (cause in STATE_CAUSES or (inc.get("remediation") or {}).get("status") in GO):
+            # advisory: it did not gate the fix (a state fault, or a policy that ignores the scorer and the dispatcher went ahead), so the replay carries on and shows it softly; Transparency mode shows the full verdict
             add(4, "done", recv, "ML maybe disagrees (advisory only: the cluster state decides this fault, so the fix went ahead)")
             ev[-1].update(advisory=True, text_full=f"ML says disagree{detail}")
         else:

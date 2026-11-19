@@ -74,14 +74,14 @@ SIGNATURES: dict[str, dict] = {
     "database_down": {
         "owner": "database",
         "required_symptoms": ["DeploymentUnavailable"],
-        "weights": {"DeploymentUnavailable": 0.60, "ErrorRateHigh": 0.25, "APILatencyHigh": 0.15},
+        "weights": {"DeploymentUnavailable": 1.0},
         "playbook": "restore_service.yml",
         "description": "The database has no available replica (scaled to zero or every pod gone).",
     },
     "transaction_service_down": {
         "owner": "transaction-service",
         "required_symptoms": ["DeploymentUnavailable"],
-        "weights": {"DeploymentUnavailable": 0.60, "ErrorRateHigh": 0.25, "APILatencyHigh": 0.15},
+        "weights": {"DeploymentUnavailable": 1.0},
         "playbook": "restore_service.yml",
         "description": "The transaction service has no available replica.",
     },
@@ -98,14 +98,14 @@ SIGNATURES: dict[str, dict] = {
     "database_unreachable": {
         "owner": "database",
         "required_symptoms": ["ServiceHasNoEndpoints"],
-        "weights": {"ServiceHasNoEndpoints": 0.60, "ErrorRateHigh": 0.25, "APILatencyHigh": 0.15},
+        "weights": {"ServiceHasNoEndpoints": 1.0},
         "playbook": "fix_service_selector.yml",
         "description": "The database pods are available but its Service has no endpoint (the selector does not match).",
     },
     "transaction_service_unreachable": {
         "owner": "transaction-service",
         "required_symptoms": ["ServiceHasNoEndpoints"],
-        "weights": {"ServiceHasNoEndpoints": 0.60, "ErrorRateHigh": 0.25, "APILatencyHigh": 0.15},
+        "weights": {"ServiceHasNoEndpoints": 1.0},
         "playbook": "fix_service_selector.yml",
         "description": "The transaction service pods are available but its Service has no endpoint.",
     },
@@ -182,10 +182,14 @@ SIGNATURES: dict[str, dict] = {
 }
 
 #: Causes whose single deciding symptom is a definitive state: the only ones allowed to clear the confidence gate on that symptom alone. The six drift causes are wrong by
-#: themselves; the two gateway causes cannot have a second symptom, because a gateway with no pods or no endpoint cannot report its own failures.
+#: themselves; the gateway causes cannot have a second symptom (a gateway with no pods or no endpoint cannot report its own failures); and a service with no replica or no
+#: endpoint is a Kubernetes state fact (the database and transaction-service versions used to wait for corroboration and produced early 60% notices).
 DEFINITIVE = frozenset({"deployment_paused_transaction_service", "deployment_paused_api_gateway", "service_type_changed_database",
                         "service_type_changed_transaction_service", "service_type_changed_api_gateway", "replicas_above_baseline",
-                        "api_gateway_down", "api_gateway_unreachable"})
+                        "api_gateway_down", "api_gateway_unreachable",
+                        # a Deployment with no available replica, or a Service with no endpoint while its pods are available, is a Kubernetes state fact on its own
+                        # (the alert already has to hold for a minute); waiting for error and latency symptoms only produced early partial notices at 60%
+                        "database_down", "transaction_service_down", "database_unreachable", "transaction_service_unreachable"})
 
 # `expected_symptoms` is derived from the weights, never written by hand, so the
 # two can never drift apart.

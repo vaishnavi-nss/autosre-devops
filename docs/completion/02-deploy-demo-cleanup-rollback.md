@@ -89,7 +89,7 @@ A run that was cut off may leave fault injection switched on in the two services
 |---|---|---|
 | `AUTO_REMEDIATE` | `false` (decisions are recorded, nothing is executed) | `k8s/remediation-dispatcher.yaml` |
 | `MIN_CONFIDENCE` | `0.75` | same |
-| `SECOND_OPINION_POLICY` | `agree` (the scorer must agree before anything runs) | same |
+| `SECOND_OPINION_POLICY` | `ignore` (the scorer is recorded and shown, never blocks; `agree` makes it a veto again) | same |
 | `COOLDOWN_SECONDS` | `600` per (cause, service) | same |
 | `CHAOS_ENABLED` | off on every service | `k8s/*.yaml` |
 | `SECOND_OPINION_MODE` | `shadow` (the scorer annotates, never vetoes) | `k8s/correlation-engine.yaml` |

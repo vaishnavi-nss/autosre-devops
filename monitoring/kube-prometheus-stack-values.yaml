@@ -38,13 +38,14 @@ alertmanager:
       # instead of one webhook per symptom. Do not re-implement grouping in the
       # engine unless this config changes.
       group_by: ["namespace"]
-      group_wait: 30s
+      group_wait: 90s       # long enough for the effect symptoms (errors, latency) to join the deciding alert, so the first webhook is usually the whole picture
       group_interval: 1m
       repeat_interval: 1h
       routes:
         - receiver: autosre-correlation
           matchers:
             - namespace = "autosre"
+            - service =~ ".+"      # only AutoSRE's own symptom rules carry a service label; default kube-prometheus-stack alerts (CPUThrottlingHigh and the like) are noise here
           continue: false
 
     receivers:

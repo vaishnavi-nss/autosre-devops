@@ -110,7 +110,8 @@ def test_a_drifted_state_is_named_on_its_own_with_full_confidence(cause, spec):
 
 def test_only_the_documented_drift_causes_may_act_on_a_lone_symptom():
     from signatures import DEFINITIVE
-    assert DEFINITIVE == set(DRIFT) | {"api_gateway_down", "api_gateway_unreachable"}
+    assert DEFINITIVE == set(DRIFT) | {"api_gateway_down", "api_gateway_unreachable", "database_down", "transaction_service_down",
+                                       "database_unreachable", "transaction_service_unreachable"}
     for cause, spec in SIGNATURES.items():
         if cause not in DEFINITIVE:
             assert max(spec["weights"][s] for s in spec["required_symptoms"]) < 0.75, cause
@@ -135,9 +136,12 @@ def test_the_gateway_is_named_on_its_deciding_alert_alone_because_it_cannot_repo
                                    ("ServiceHasNoEndpoints", "api_gateway_unreachable", "fix_service_selector.yml")):
         out = correlate(fire((alert, "api-gateway")))
         assert out["root_cause"] == cause and out["playbook"] == playbook and out["confidence"] == 1.0
-    # the database and transaction service are different: errors surface above them, so their lone alert stays under the gate
-    assert correlate(fire(("DeploymentUnavailable", "database")))["confidence"] < 0.75
-    assert correlate(fire(("ServiceHasNoEndpoints", "transaction-service")))["confidence"] < 0.75
+    # the database and transaction service are Kubernetes state facts too (a Deployment with no available replica, a Service with no endpoint): their lone alert is
+    # enough. Waiting for error and latency symptoms only produced early partial notices at 60% that were escalated and then superseded.
+    for alert, service, cause in (("DeploymentUnavailable", "database", "database_down"), ("DeploymentUnavailable", "transaction-service", "transaction_service_down"),
+                                  ("ServiceHasNoEndpoints", "database", "database_unreachable"), ("ServiceHasNoEndpoints", "transaction-service", "transaction_service_unreachable")):
+        out = correlate(fire((alert, service)))
+        assert out["root_cause"] == cause and out["confidence"] == 1.0
 
 
 def test_no_alert_uses_severity_info_because_the_chart_default_alertmanager_inhibits_it():

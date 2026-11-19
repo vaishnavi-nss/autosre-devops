@@ -59,13 +59,13 @@ PLACEMENT: dict[str, dict[str, str]] = {
         "APILatencyHigh": "api-gateway",
     },
     # causes added in the completion session; the simulator's incident mix does not generate them, but every signature must be placed
-    "database_down": {"ErrorRateHigh": "transaction-service", "APILatencyHigh": "api-gateway"},
-    "transaction_service_down": {"ErrorRateHigh": "api-gateway", "APILatencyHigh": "api-gateway"},
+    "database_down": {},          # a Kubernetes state fact on its own (definitive): no consequence symptoms are needed
+    "transaction_service_down": {},          # a Kubernetes state fact on its own (definitive): no consequence symptoms are needed
     "api_gateway_down": {},                       # no consequences exist: a gateway with no pods cannot report its own failures (observed live)
     "bad_rollout_transaction_service": {"PodRestartsHigh": "transaction-service"},
     "bad_rollout_api_gateway": {"PodRestartsHigh": "api-gateway"},
-    "database_unreachable": {"ErrorRateHigh": "transaction-service", "APILatencyHigh": "api-gateway"},
-    "transaction_service_unreachable": {"ErrorRateHigh": "api-gateway", "APILatencyHigh": "api-gateway"},
+    "database_unreachable": {},          # a Kubernetes state fact on its own (definitive): no consequence symptoms are needed
+    "transaction_service_unreachable": {},          # a Kubernetes state fact on its own (definitive): no consequence symptoms are needed
     "api_gateway_unreachable": {},
     # drift causes have no consequences: the deciding symptom is all there is
     "deployment_paused_transaction_service": {}, "deployment_paused_api_gateway": {}, "service_type_changed_database": {},

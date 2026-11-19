@@ -90,7 +90,7 @@ spec:
               value: "0.75"
             # agree: the second opinion must agree. not_disagree: only a disagreement blocks. ignore: not consulted.
             - name: SECOND_OPINION_POLICY
-              value: "agree"
+              value: "ignore"      # the scorer is a recorded, visible second opinion; it never blocks a fix (set "agree" to make it a veto again)
             - name: COOLDOWN_SECONDS
               value: "600"
             - name: TARGET_NAMESPACE
