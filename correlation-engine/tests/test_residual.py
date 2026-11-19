@@ -23,7 +23,13 @@ def test_the_same_effects_with_no_recent_diagnosis_are_still_an_unknown_cause_fo
     assert body["status"] == "unmatched" and body["action"] == "escalate_to_human"
 
 
+def test_restarts_still_counted_after_a_rollback_are_residual_too(client):
+    client.post("/alerts", json=alerts(("RolloutStalled", "transaction-service"), ("PodRestartsHigh", "transaction-service")))
+    body = client.post("/alerts", json=alerts(("PodRestartsHigh", "transaction-service"))).json()
+    assert body["status"] == "residual" and body["action"] == "none"
+
+
 def test_a_non_effect_alert_is_never_called_residual(client):
     client.post("/alerts", json=alerts(("DeploymentUnavailable", "database")))
-    body = client.post("/alerts", json=alerts(("PodRestartsHigh", "transaction-service"))).json()
+    body = client.post("/alerts", json=alerts(("ServiceHasNoEndpoints", "transaction-service"), ("PodRestartsHigh", "transaction-service"))).json()
     assert body["status"] != "residual"

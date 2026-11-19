@@ -52,7 +52,7 @@ GATED_CAUSES = frozenset({"db_connection_pool_exhaustion", "high_memory_usage", 
 # After a fix the deciding alert clears first and the effect symptoms (errors, latency) clear a little later. Alertmanager then notifies a group that holds only those
 # effects; no cause owns them, so the engine used to escalate it as an unknown cause although nothing was wrong any more. If a diagnosis was made in the last
 # RESIDUAL_WINDOW_S and every firing alert is an effect symptom, the notification is recorded as residual and nobody is asked.
-EFFECT_SYMPTOMS = frozenset({"ErrorRateHigh", "APILatencyHigh"})
+EFFECT_SYMPTOMS = frozenset({"ErrorRateHigh", "APILatencyHigh", "PodRestartsHigh"})    # PodRestartsHigh counts restarts over five minutes, so it outlives a rollback
 RESIDUAL_WINDOW_S = float(os.getenv("RESIDUAL_WINDOW_S", "900"))
 SECOND_OPINION_TIMEOUT = float(os.getenv("SECOND_OPINION_TIMEOUT", "4"))
 # Escalate rather than act when the deciding symptoms of two or more causes fire together. Off by default.

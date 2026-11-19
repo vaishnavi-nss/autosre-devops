@@ -18,6 +18,8 @@ from app import app  # noqa: E402
 
 @pytest.fixture
 def client() -> TestClient:
+    import app as engine
+    engine.RECENT_INCIDENTS.clear()          # a diagnosis made by an earlier test must not turn this test's effect-only alerts into a residual notice
     return TestClient(app)
 
 
